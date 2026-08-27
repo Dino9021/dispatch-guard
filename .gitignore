@@ -1,0 +1,31 @@
+# This file must exist HERE, not only in a parent repository.
+# This folder is published on its own and is also copied wholesale into new
+# projects, and a parent's rules do not travel with a copied directory.
+__pycache__/
+*.pyc
+
+# Local state, if anyone points --dir at this folder.
+limits.json
+*.alive
+*.log
+
+# ⛔ Written by install.py --all, and it holds an ABSOLUTE path to this machine's plugin
+# cache with the version number in it. Committing it hands the next person a task that
+# points at a directory they do not have.
+.vscode/tasks.json
+
+# ⭐ Memory/ IS TRACKED NOW, deliberately. This repository is PRIVATE and is the only copy,
+# so the task folders - plans, sub-task prompts, agent reports - are the work log and belong
+# in it. Before that it was ignored, for a reason that still applies to anyone publishing
+# from here: every task folder would otherwise be copied into every user's plugin cache, and
+# one review left 80 KB of its own reports in a shipped package before that line existed.
+# ⚠ SO IF THIS REPOSITORY EVER BECOMES A MARKETPLACE SOURCE AGAIN, Memory/ ships with it.
+# The fix then is a release branch without Memory/, not un-ignoring it here.
+
+# ⛔ EVERYTHING THE CHECKS IN Tools/Debug PRODUCE, and nothing else of theirs. The scripts
+# themselves are committed - they are the record of which silent failure each one caught -
+# but a run's files must never reach a commit. Two of those failures were tests writing
+# OUTSIDE their sandbox, into the working tree and into ~/.claude, so a single ignored
+# directory that everything is funnelled into is also the check that they stayed put:
+# after a run, `git status` must be clean.
+Tools/Debug/scratch/

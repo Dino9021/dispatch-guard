@@ -1,0 +1,27 @@
+{
+  "name": "dispatch-guard",
+  "description": "Enforces a sub-task dispatch protocol and brakes on usage limits. One sub-task at a time unless the owner approves a count; the plan and every sub-task prompt land on disk before any dispatch; and dispatching is refused outright once the usage window is nearly spent. Also ships the unattended-work skill: how to work for a long stretch with nobody watching.",
+  "version": "0.24.0",
+  "license": "MIT",
+  "author": {
+    "name": "Dino9021"
+  },
+  "keywords": [
+    "dispatch",
+    "subagents",
+    "usage-limits",
+    "rate-limit",
+    "guardrails",
+    "hooks",
+    "unattended",
+    "autonomy"
+  ],
+  "userConfig": {
+    "announce_unattended_work": {
+      "type": "boolean",
+      "title": "Remind every session to load the unattended-work skill",
+      "description": "On by default. Turn it off to keep the skill installed but invoke it yourself. It cannot disable the hook - a plugin's hooks always fire - so what it switches off is what the hook PRINTS.",
+      "default": true
+    }
+  }
+}

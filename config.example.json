@@ -1,0 +1,238 @@
+{
+  "__": "dispatch-guard configuration. Copy to ~/.claude/dispatch-guard/config.json and delete whatever you do not want to change. EVERY key is optional; the defaults work in a repository that has never seen this plugin. Keys beginning with _ are documentation and are ignored.",
+  "___zh": "dispatch-guard 的設定檔。複製到 ~/.claude/dispatch-guard/config.json，不想改的都可以刪掉。每一個鍵都是選用的；在一個從沒裝過這個外掛的儲存庫裡，預設值就能work。開頭是 _ 的鍵是說明文字，程式會忽略。",
+
+  "__scope": "That path is the default. --dir <path> overrides it for one command, and $CLAUDE_DISPATCH_DIR overrides it for a whole shell. A project may also carry <repo>/.claude/dispatch-guard.json, which is read AFTER this file and therefore wins - but only for the dispatch.* keys.",
+  "__scope_zh": "那個路徑是預設值。--dir <路徑> 可以覆蓋單一次指令，$CLAUDE_DISPATCH_DIR 可以覆蓋整個 shell。專案也可以自己帶一份 <repo>/.claude/dispatch-guard.json，它會在這個檔案之後被讀取、所以會贏 — 但只對 dispatch.* 那些鍵有效。",
+
+
+  "_thresholds": "======== when to slow down and when to stop ========",
+  "_thresholds_zh": "======== 什麼時候放慢、什麼時候停 ========",
+
+  "_soft_pct": "PACE at or above this. Dispatch is still allowed; the sub-task is told to finish its unit and not expand scope.",
+  "_soft_pct_zh": "到這個百分比以上就是 PACE。派工還是允許的；子任務會被告知把手上這個單位做完、不要擴大範圍。",
+  "soft_pct": 70,
+
+  "_hard_pct": "STOP at or above this. A dispatch is REFUSED. Dispatching a sub-task is the most expensive thing an agent does, so it is the thing worth gating.",
+  "_hard_pct_zh": "到這個百分比以上就是 STOP，派工會被「拒絕」。派出一個子任務是 agent 做的最貴的一件事，所以那才是值得設閘門的地方。",
+  "hard_pct": 85,
+
+  "_stale_min": "Data older than this is not trusted. Past it the percentage is shown as -- rather than as a number, and the verdict says how old it is.",
+  "_stale_min_zh": "資料比這個時間更舊就不信任。超過之後百分比會顯示成 -- 而不是數字，判定也會講出它多舊了。",
+  "stale_min": 15,
+
+  "_near_reset_min": "Within this long of a reset, thresholds soften by one level, so 95% can read PACE rather than STOP. Deliberate: hitting the cap there costs a pause of a few minutes, not lost work. It is also why a caller must act on the VERDICT WORD and never on the percentage.",
+  "_near_reset_min_zh": "距離重置這麼久之內，門檻會軟化一級，所以 95% 可能讀成 PACE 而不是 STOP。這是刻意的：那個時候撞到上限的代價是暫停幾分鐘，不是丟掉工作。這也是為什麼呼叫者一定要看「判定的那個詞」，永遠不要看百分比。",
+  "near_reset_min": 20,
+
+  "_seven_day_binding_pct": "The weekly window is only called BINDING at or above this. Below it, and whenever it resets before the current short window ends, it cannot constrain anything you do now and is reported as ignorable.",
+  "_seven_day_binding_pct_zh": "七天窗只有在這個百分比以上才會被稱為「有約束力」。低於它、以及每當它在當前短窗結束之前就重置的時候，它限制不了你現在做的任何事，會被回報成可以忽略。",
+  "seven_day_binding_pct": 95,
+
+
+  "_display": "======== what the status line looks like ========",
+  "_display_zh": "======== 狀態列長什麼樣子 ========",
+
+  "_colour": "Colour the bars. Accepts 'color' as a spelling alias.",
+  "_colour_zh": "讓長條圖上色。也接受 'color' 這個拼法。",
+  "colour": true,
+
+  "_colour_warn_pct": "The bar turns ORANGE at or above this. Deliberately NOT soft_pct: that decides what is REFUSED, and a person wants a warning colour a little before anything starts being refused.",
+  "_colour_warn_pct_zh": "長條圖在這個百分比以上變成「橘色」。刻意不等於 soft_pct：那個決定什麼會被「拒絕」，而人會希望在任何東西開始被拒絕之前，就先看到警告顏色。",
+  "colour_warn_pct": 70,
+
+  "_colour_alarm_pct": "The bar turns RED at or above this. Deliberately NOT hard_pct, for the same reason.",
+  "_colour_alarm_pct_zh": "長條圖在這個百分比以上變成「紅色」。理由同上，刻意不等於 hard_pct。",
+  "colour_alarm_pct": 85,
+
+  "_show_context": "Show the context-window bar beside the two usage windows.",
+  "_show_context_zh": "在兩個用量時間窗旁邊，一起顯示上下文視窗的長條。",
+  "show_context": true,
+
+  "_show_model": "Show the model name and effort at the end of the line.",
+  "_show_model_zh": "在行尾顯示模型名稱和思考強度。",
+  "show_model": true,
+
+  "_show_time_marker": "The bar carries a mark where the CLOCK is, so fill ahead of it means burning faster than the window is passing. It reads as a gap until you know what it is, so it can be switched off.",
+  "_show_time_marker_zh": "長條上會有一個標記表示「時鐘走到哪裡」，所以填色超過那個標記，代表你燒得比時間窗流逝得更快。在你知道那是什麼之前它看起來像個缺口，所以可以關掉。",
+  "show_time_marker": true,
+
+  "_stale_hides_numbers": "A percentage that cannot still be true is shown as -- rather than as a number: no data, data older than stale_min, or a window that has already turned over. A figure on screen is read as the CURRENT figure, and under-reading is the dangerous direction - it holds the brake off exactly when it should fire. false shows the old value anyway.",
+  "_stale_hides_numbers_zh": "一個「不可能還是真的」的百分比會顯示成 -- 而不是數字：沒有資料、資料比 stale_min 更舊、或者時間窗已經翻過去了。螢幕上的數字會被讀成「現在的數字」，而「少報」是危險的方向 — 它會在煞車最該作用的時候把它鬆開。設 false 會照樣顯示舊值。",
+  "stale_hides_numbers": true,
+
+  "_width": "Columns available. null auto-detects from $COLUMNS, then the terminal. The line drops its least load-bearing parts from the right until it fits, and NEVER drops the short window - that is the one the brake acts on. An unknown width renders everything rather than guessing narrow.",
+  "_width_zh": "可用的欄寬。null 會自動從 $COLUMNS、然後從終端機偵測。這一行會從右邊開始丟掉最不重要的部分直到塞得進去，而且「永遠不會」丟掉短時間窗 — 那是煞車實際依據的那一個。寬度不明的時候會全部畫出來，而不是猜它很窄。",
+  "width": null,
+
+  "_watch_scroll": "usage.py --watch rewrites ONE line by default; a watcher that scrolls fills a panel with history nobody asked for. true keeps every line. Output redirected to a file or a pipe always scrolls - there is no cursor to rewrite.",
+  "_watch_scroll_zh": "usage.py --watch 預設只重寫「一行」；一個會往下捲的監看程式會用沒人要的歷史塞滿整個面板。設 true 會保留每一行。輸出被導向檔案或管線的時候一定會往下捲 — 那裡沒有游標可以重寫。",
+  "watch_scroll": false,
+
+
+  "_data": "======== where the numbers come from and go ========",
+  "_data_zh": "======== 數字從哪裡來、往哪裡去 ========",
+
+  "_fetch_seconds": "How often usage.py may ASK THE API for the numbers. It fetches GET https://api.anthropic.com/api/oauth/usage with the OAuth token from ~/.claude/.credentials.json (or $ANTHROPIC_TOKEN), and serves every other call from the cached limits.json.",
+  "_fetch_seconds_zh": "usage.py 多久才可以「問一次 API」。它會用 ~/.claude/.credentials.json（或 $ANTHROPIC_TOKEN）裡的 OAuth token 去打 GET https://api.anthropic.com/api/oauth/usage，其他每一次呼叫都從快取的 limits.json 讀。",
+  "_fetch_seconds_floor": "MINIMUM 120, ENFORCED - a smaller value is clamped and a line is printed saying so. This is not tuning. The endpoint allows only about FIVE CALLS PER ACCESS TOKEN (documented by onWatch, https://github.com/onllm-dev/onwatch, whose own default poll is 120 s while it watches ten providers). Below ~120 s the allowance is gone within minutes, every later call returns HTTP 429, and the brake goes BLIND for the rest of the window - during exactly the heavy run it exists to govern, because that run is what burned the calls. claude-code issue #31021 is that outcome, reported and CLOSED AS NOT PLANNED, so no retry recovers from it. And blind means the last good number goes stale and reads LOW, which is the direction that keeps dispatching: too fast a poll does not waste calls, it turns a working brake into one that fails open.",
+  "_fetch_seconds_floor_zh": "最小 120，「程式強制」 — 設更小會被拉回來，而且會印一行說明。這不是調校。這支端點每個 access token 大概只能打「五次」（onWatch 記錄的，https://github.com/onllm-dev/onwatch，它自己監控十家供應商、預設也是 120 秒）。低於約 120 秒，額度會在幾分鐘內用完，之後每一次呼叫都回 HTTP 429，而煞車會在剩下的時間窗裡「變瞎」 — 而且剛好是在它最該作用的重載期間，因為那個重載正是把呼叫燒掉的東西。claude-code issue #31021 就是這個結果，被回報之後「以不修結案」，所以沒有任何重試能從裡面恢復。而「變瞎」意味著最後那個好數字會過期並且讀成「偏低」，那正是會讓你繼續派工的方向：問太快不是浪費呼叫，是把一個有效的煞車變成一個會 fail open 的煞車。",
+  "fetch_seconds": 120,
+
+  "_fetch_seconds_jitter": "Randomness added to every interval, rolled fresh each time. Default 30, so fetch_seconds 120 means an actual wait of 120-150 s. 0 disables it. Two reasons it exists: it DE-SYNCHRONISES independent processes - several sessions' status lines all tick on the same 60 s refresh and would otherwise drift into lockstep and hit the interval boundary together, which is exactly the burst that spends the call budget - and it spreads load on an endpoint that rate-limits hard instead of delivering it as a spike.",
+  "_fetch_seconds_jitter_zh": "加在每一次間隔上的隨機量，每次重新擲。預設 30，所以 fetch_seconds 120 的實際等待是 120～150 秒。設 0 就關掉。存在的兩個理由：它讓各個獨立行程「去同步化」 — 好幾個 session 的狀態列都是同一個 60 秒節拍，不然它們會慢慢對齊、同時撞到同一個間隔邊界，那正是把呼叫額度一次燒掉的情況 — 以及它把負載攤開，而不是變成一根尖峰打在一支會嚴格限流的端點上。",
+  "_fetch_seconds_jitter_clamps": "ALWAYS ADDED, NEVER SUBTRACTED: a NEGATIVE value is refused and reset to 0 with a line saying so, because subtracting could put the real interval under the 120 s floor - the one thing that floor exists to prevent. And if fetch_seconds plus this exceeds stale_min, a warning is printed but the value is HONOURED: the data would then go stale between fetches, render as -- and read NO-DATA, which is a brake that fails OPEN. Warned rather than clamped, because stale_min may have been raised deliberately and silently overriding a deliberate choice is its own trap.",
+  "_fetch_seconds_jitter_clamps_zh": "「永遠是加，絕不是減」：「負數」會被拒絕並重設為 0，還會印一行說明，因為減下去可能讓實際間隔低於 120 秒的下限 — 那正是那個下限存在要防的唯一一件事。而如果 fetch_seconds 加上這個超過 stale_min，會印出警告但「照樣採用」：那樣資料會在兩次撈取之間過期、顯示成 --、然後讀成 NO-DATA，也就是一個會 fail open 的煞車。只警告不夾限，是因為 stale_min 可能是刻意調高的，而安靜地覆蓋一個刻意的選擇是另一種陷阱。",
+  "fetch_seconds_jitter": 30,
+
+  "_fetch_gap": "usage.py fetches from --statusline and --watch only, NEVER from --verdict. --verdict runs inside the dispatch hook on every dispatch, and a synchronous HTTP call there would stall the dispatch whenever the interval boundary is crossed. CONSEQUENCE: with the VS Code extension and no statusline installed, nothing refreshes and the verdict reads NO-DATA - run `usage.py --watch` in a terminal, which fetches for itself and needs no statusline anywhere.",
+  "_fetch_gap_zh": "usage.py 只從 --statusline 和 --watch 去撈，「永遠不從 --verdict」。--verdict 是在派工 hook 裡執行的，每次派工都跑，在那裡做同步 HTTP 會在每次跨過間隔邊界的時候讓派工卡住。「後果」：在 VS Code 擴充套件裡、又沒有裝狀態列的時候，沒有任何東西會刷新，判定會讀成 NO-DATA — 這時就在終端機裡跑 `usage.py --watch`，它自己會去撈，不需要任何地方有狀態列。",
+
+  "_token_expiry": "usage.py READS the OAuth token's expiry from ~/.claude/.credentials.json and warns 10 minutes before it dies, on the status line and in --watch. It never writes or refreshes that token. An access token lasts about 8 hours and whichever Claude client is running rotates it roughly 5 minutes before expiry, so a warning that appears normally VANISHES ON ITS OWN - one that PERSISTS is the real signal that nothing is running to refresh it. A token already past its expiry is not asked about at all: the request would only return 401, arm the same backoff, and spend one of the five calls to learn what the file already said.",
+  "_token_expiry_zh": "usage.py 會「讀」~/.claude/.credentials.json 裡 OAuth token 的到期時間，並在它死掉前 10 分鐘警告 — 顯示在狀態列和 --watch 上。它永遠不會去寫或更新那個 token。access token 大約撐 8 小時，而只要有 Claude 客戶端在跑，它會在到期前約 5 分鐘自己輪替，所以出現的警告通常會「自己消失」 — 一個「一直不消失」的警告才是真正的訊號：沒有任何東西在跑會去更新它。一個已經過期的 token 根本不會被拿去問：那個請求只會回 401、啟動同樣的退避、並且花掉五次額度裡的一次，去換一個檔案早就寫著的答案。",
+
+  "_fetch_files": "Two files in the state directory belong to this. fetch.log gets one line per FAILED fetch, because a silent instrument is the trap this plugin exists to avoid - a persistent 429 with no record looks exactly like usage that stopped moving. fetch.claim is stamped BEFORE each request and is what makes fetch_seconds real: several processes share one limits.json, so two sessions crossing the interval boundary together would otherwise both fetch, and at ~5 calls per token that is most of the budget. It is also the only backoff there is - it is deliberately NOT cleared after a failure, so a 429 is not retried for fetch_seconds. Deleting it forces the next call to fetch.",
+  "_fetch_files_zh": "狀態目錄裡有兩個檔案屬於這件事。fetch.log 每一次「失敗」的撈取寫一行，因為「安靜的儀器」正是這個外掛存在要避免的陷阱 — 一個一直不退的 429 如果沒有紀錄，看起來就跟「用量停止移動」一模一樣。fetch.claim 會在「每一次請求之前」蓋章，它是讓 fetch_seconds 真正生效的東西：好幾個行程共用同一個 limits.json，兩個 session 同時撞到間隔邊界的話會兩個都去撈，而在大約五次的額度下那是大部分的預算。它同時也是「唯一的退避機制」 — 失敗後「刻意不清掉」，所以一個 429 在 fetch_seconds 之內不會被重試。刪掉它會讓下一次呼叫立刻去撈。",
+
+  "_refresh_seconds": "A DIFFERENT interval, easily confused with the one above. This is how often Claude Code RE-RUNS the status line; install.py copies it into Claude Code's own statusLine.refreshInterval, and usage.py never acts on it. Each re-run reads the cache and only reaches the network once fetch_seconds has elapsed, so leaving this at 60 costs no API calls - the display stays responsive while the API is asked at most once every fetch_seconds.",
+  "_refresh_seconds_zh": "「另一個」間隔，很容易跟上面那個搞混。這個是 Claude Code 多久「重跑一次狀態列」；install.py 會把它複製到 Claude Code 自己的 statusLine.refreshInterval，而 usage.py 從來不理它。每一次重跑都是讀快取，只有在 fetch_seconds 過去之後才會碰到網路，所以把它留在 60 不會花掉任何 API 呼叫 — 顯示保持靈敏，而 API 最多每 fetch_seconds 被問一次。",
+  "refresh_seconds": 60,
+
+  "_limits_file": "null means this plugin collects its own into the state directory. Point it at another tool's file to feed the BRAKE from that instead - but only --statusline and --watch fetch anything, so this plugin's own bar, colours and history stay dark unless it owns the status line slot or you leave `usage.py --watch` running.",
+  "_limits_file_zh": "null 表示這個外掛會自己收集到狀態目錄裡。把它指向另一個工具的檔案，可以讓「煞車」吃那邊的資料 — 但只有 --statusline 和 --watch 會撈任何東西，所以除非這個外掛佔到狀態列那個位置、或者你留著一個 `usage.py --watch` 在跑，它自己的長條、顏色和歷史都會是暗的。",
+  "limits_file": null,
+
+  "_keep_history": "OFF by design: the history records how much you used and when, indefinitely, and nobody asked for it. Turning it on also enables burn PROJECTION, which needs two samples of one window - so with it off, the 'projected to exceed by reset' half of PACE never fires. The soft and hard thresholds are unaffected either way.",
+  "_keep_history_zh": "「刻意預設關閉」：那份歷史會無限期記錄你用了多少、什麼時候用的，而沒有人要求過它。打開它也會啟用燃燒「推估」，那需要同一個時間窗的兩個樣本 — 所以關著的時候，PACE 裡「照這個速度到重置會超過」那一半永遠不會觸發。不管開或關，軟性和硬性門檻都不受影響。",
+  "keep_history": false,
+
+  "_history_dir": "Where those records go. null means a logs/ folder under the state directory - they accumulate one file per day forever and would otherwise bury the two files a person actually edits. Files are named limits-history-<YYYYMMDD-HHMMSS>.jsonl, a new one begins at each LOCAL midnight, and none is ever trimmed or deleted.",
+  "_history_dir_zh": "那些紀錄放哪裡。null 表示狀態目錄下的 logs/ 資料夾 — 它們會一天一個檔案永遠累積下去，否則會把人真正要編輯的那兩個檔案埋掉。檔名是 limits-history-<YYYYMMDD-HHMMSS>.jsonl，每個「本地午夜」開一個新的，而且永遠不會被裁切或刪除。",
+  "history_dir": null,
+
+
+  "_resume": "======== continuing after the window reopens ========",
+  "_resume_zh": "======== 時間窗重開之後怎麼接續 ========",
+
+  "resume": {
+    "_resume_offset_min": "How long AFTER the reset to fire. A few minutes of margin, not on the reset itself.",
+    "_resume_offset_min_zh": "在重置之「後」多久才觸發。留幾分鐘的餘裕，不要正好踩在重置那一刻。",
+    "resume_offset_min": 3,
+
+    "_retry_window_min": "Keep retrying for this long from the FIRST attempt, then stop for good and leave it to the person. Bounded by TIME rather than by a count, because 'keep trying for two hours' is something a person can reason about while 'three attempts' hides how long that covers. When it does give up it writes a marker the next Claude session reads out loud - a scheduled task has no terminal, so without that a resume that gave up at 03:40 is indistinguishable from one that was never armed.",
+    "_retry_window_min_zh": "從「第一次」嘗試算起，在這麼長的時間內持續重試，然後就永遠放棄、交給人處理。用「時間」而不是「次數」來設界，因為「持續嘗試兩小時」是人可以推理的，而「三次」會把它涵蓋多久藏起來。真的放棄的時候，它會寫一個標記，讓下一個 Claude session 大聲讀出來 — 排程任務沒有終端機，所以少了那個標記，一個在 03:40 放棄的續跑，跟一個從來沒被安排的續跑長得一模一樣。",
+    "retry_window_min": 120,
+
+    "_retry_every_min": "How long to wait between attempts inside that window. Each attempt re-checks whether the window really has reset before running anything.",
+    "_retry_every_min_zh": "在那個時間窗裡，每次嘗試之間等多久。每一次嘗試都會重新檢查那個時間窗是不是真的重置了，才會去跑任何東西。",
+    "retry_every_min": 20
+  },
+
+
+  "_dispatch": "======== the sub-task rules ======== (these keys, and only these, may also be set per project in <repo>/.claude/dispatch-guard.json)",
+  "_dispatch_zh": "======== 子任務規則 ======== （只有這些鍵，可以在 <repo>/.claude/dispatch-guard.json 裡按專案設定）",
+
+  "dispatch": {
+    "_task_root": "WHERE TASK FOLDERS LIVE, relative to the repository root. Memory/tasks is this plugin's declared default, and the gate CREATES it at SessionStart so an agent never has to choose a location - it makes its <YYYYMMDD-HHMMSS-task-name>/ folder inside one that already exists. Change it to put task files elsewhere; a relative path is resolved against the repository root, so an absolute path is not what you want here.",
+    "_task_root_null": "null means AUTO: the first of Memory/tasks, .agent-tasks or tasks that already exists in the repository, else Memory/tasks. That is the code default, so the shipped file must not pin a value - pinning one would silently move a repository that already keeps task folders somewhere else.",
+    "_task_root_null_zh": "null 代表「自動」：用 repository 裡已經存在的 Memory/tasks、.agent-tasks 或 tasks，都沒有就用 Memory/tasks。⛔ 那是程式的預設值，所以出貨的檔案不能寫死一個值 —— 寫死會把本來就用別的位置的專案悄悄搬走。",
+    "_task_root_zh": "「任務資料夾放在哪裡」，相對於儲存庫根目錄。Memory/tasks 是這個外掛「宣告的預設值」，而 gate 會在 SessionStart「建立」它，所以 agent 永遠不需要自己挑位置 — 它只要在一個已經存在的資料夾裡面，建自己的 <YYYYMMDD-HHMMSS-任務名>/ 就好。想把任務檔案放到別的地方就改這個值；相對路徑會以儲存庫根目錄為基準解析，所以這裡不要填絕對路徑。",
+    "_task_root_null": "null instead of a path falls back to COMPATIBILITY DETECTION: the first of Memory/tasks, .agent-tasks, tasks that already exists is used, and Memory/tasks is created when none of them does. That exists so a repository already keeping task folders under one of the other two is not forced into a second convention. A new repository should just leave the value below.",
+    "_task_root_null_zh": "填 null 而不是路徑，會退回「相容偵測」：Memory/tasks、.agent-tasks、tasks 裡面「第一個已經存在的」會被採用，三個都不存在時則建立 Memory/tasks。這個機制存在，是為了讓一個本來就把任務資料夾放在另外兩個名字底下的儲存庫，不會被迫多出第二套慣例。新的儲存庫就直接留著下面這個值。",
+    "task_root": null,
+
+    "_plan_glob": "What a dispatch plan is called inside a task folder. A dispatch with no matching file written in this session is refused.",
+    "_plan_glob_zh": "在任務資料夾裡，派工計畫叫什麼名字。這個 session 沒有寫過相符檔案的派工會被拒絕。",
+    "plan_glob": "prompts*.md",
+
+    "_approval_glob": "The artefact that records an owner's approval of concurrency. It must state the count as 'parallel N', 'N=<n>' or '平行N' - a bare integer is NOT accepted, because records conventionally start with a date and '2026-08-26' would parse as a count of 2026.",
+    "_approval_glob_zh": "記錄 owner 核准同時執行的那個檔案。它必須用 'parallel N'、'N=<n>' 或 '平行N' 寫出數量 — 「單純一個整數不被接受」，因為紀錄習慣上會用日期開頭，而 '2026-08-26' 會被解析成 2026 這個數量。",
+    "approval_glob": "PARALLEL-APPROVED*",
+
+    "_approval_ttl_min": "An approval expires. Left lying in a task folder it would otherwise silently grant concurrency to every later session that touched it. Nothing can stop an agent WRITING one - what this buys is that the act is deliberate, that it expires, and that its use is one log line.",
+    "_approval_ttl_min_zh": "核准會過期。被留在任務資料夾裡的話，它會安靜地把同時執行的權限發給後來每一個碰到它的 session。沒有任何東西能阻止 agent「自己寫」一份 — 這個機制買到的是：那個動作是刻意的、它會過期、而且它的使用會留下一行 log。",
+    "approval_ttl_min": 60,
+
+    "_protocol_doc": "Named in refusal messages and in the line printed at session start, so an agent that has been refused knows where to read.",
+    "_protocol_doc_zh": "會出現在拒絕訊息裡、以及每個 session 開場那一行裡，所以一個被拒絕的 agent 知道去哪裡讀。",
+    "protocol_doc": "PROTOCOL.md",
+
+    "_max_slots": "Ceiling on an approved concurrency count, however large a number the approval names.",
+    "_max_slots_zh": "已核准的同時執行數量的上限，不管那份核准寫了多大的數字。",
+    "max_slots": 16,
+
+    "_slot_ttl_min": "A slot older than this is assumed abandoned. A dispatch that dies without its PostToolUse - an interrupt, an API error, a killed process - would otherwise hold its slot forever and every later dispatch would be refused, which reads exactly like the rule working.",
+    "_slot_ttl_min_zh": "比這個更舊的佔位會被視為已放棄。一個死在 PostToolUse 之前的派工 — 被中斷、API 錯誤、行程被殺 — 否則會永遠佔著那個位子，而之後每一個派工都會被拒絕，「那看起來跟規則正常運作一模一樣」。",
+    "slot_ttl_min": 30,
+
+    "_brake_on_usage": "Refuse a dispatch when the verdict is STOP.",
+    "_brake_on_usage_zh": "判定是 STOP 的時候拒絕派工。",
+    "brake_on_usage": true,
+
+    "_warn_on_usage": "Attach a hold-your-scope note to the sub-task's prompt when the verdict is PACE.",
+    "_warn_on_usage_zh": "判定是 PACE 的時候，在子任務的提示上附一句「守住範圍」的提醒。",
+    "warn_on_usage": true,
+
+    "_auto_vscode_task": "ON by default: the SessionStart hook writes this project's `Claude usage watch` task into .vscode/tasks.json when it is missing, and repairs it when it points at an older version. It REFUSES on a conflict rather than overwriting: never when that file is tracked by git (the task holds an absolute path with this machine's plugin version in it, and committing that hands the next person a broken task), and never when the file exists but cannot be parsed - VS Code allows comments there and this reader does not. It says what it did, every time. Set false to keep it out of your projects; the usage brake does not need it, since the gate keeps its own clock.",
+    "_auto_vscode_task_zh": "預設開啟：SessionStart hook 會在這個專案缺少 `Claude usage watch` 工作時把它寫進 .vscode/tasks.json，指向舊版本時則修好它。⛔ 遇到衝突是「拒絕」而不是覆蓋：.vscode/tasks.json 被 git 追蹤時絕不寫（那裡面是這台機器的絕對路徑還帶版本號，commit 出去等於給下一個人一個壞掉的工作），檔案存在但解析不了時也絕不寫（VS Code 允許註解，這個讀取器不允許）。它每次都會說它做了什麼。設成 false 就完全不碰你的專案；⭐ 用量煎車不需要它，gate 自己有時鐘。",
+    "auto_vscode_task": true,
+
+    "_auto_statusline": "ON by default. When NOTHING owns the statusLine slot, the SessionStart hook installs the usage line into it, so the CLI shows the numbers with no command typed. An occupied slot is never touched, whoever owns it - taking one over stays behind --take-statusline. Set false to keep an empty slot empty.",
+    "_auto_statusline_zh": "預設開啟。狀態列那個位置沒有人佔的時候，SessionStart hook 會把用量那一行裝進去，於是 CLI 不用敲任何指令就看得到數字。⛔ 已經有人佔著就絕對不碰，不管是誰佔的 —— 要搶那個位置仍然只能用 --take-statusline。設成 false 就讓空的位置保持空的。",
+    "auto_statusline": true,
+
+    "_max_model_price": "The MOST a sub-agent's model may cost, in US dollars per million INPUT tokens. Default 5: that allows haiku ($1), sonnet ($2-3) and the current opus ($5), and refuses fable ($10), mythos ($10) and the retired opus-4-0/4-1 ($15). null or 0 switches the check off. ⭐ WHERE THE TABLE IS: `MODEL_PRICES` in hooks/dispatch_gate.py, one row per model, copied from the shipped model catalog's `pricing` field (`tier_<input>_<output>`) - regenerate it with the probe named in the comment above that table. The same four-row summary is in the `dispatch-protocol` skill, and a check asserts the two have not drifted apart. ⛔ A NUMBER RATHER THAN A MODEL NAME, because a name goes stale while a number does not: `opus` meant $15 in 2025 and means $5 now, so a limit written as a name silently changes what it permits when a family is repriced - the one thing a cost limit must never do. A model name IS still accepted and priced, because it is what a hand reaches for. ⭐ AND THE SAME LIMIT IS WRITTEN INTO THE SKILL, so an agent reads it before choosing rather than meeting it as a refusal: a rule an agent only ever meets as a refusal is a rule it tries to route around. ⚠ Omitting `model` is always allowed - the sub-agent inherits the model you chose - so this can never deadlock a session. A mistyped limit fails OPEN and is logged (MODEL-PRICE-LIMIT-UNKNOWN), and `availableModels` narrows it further (MODEL-PRICE-LIMIT-CLAMPED).",
+    "_max_model_price_zh": "「子代理」的模型最多可以花多少錢：每百萬「輸入」token 的美元。預設 5：這會放行 haiku（$1）、sonnet（$2-3）、以及目前的 opus（$5），並且拒絕 fable（$10）、mythos（$10）、還有已退役的 opus-4-0/4-1（$15）。設 null 或 0 就關掉這個檢查。⭐ 對照表在哪裡：hooks/dispatch_gate.py 裡的 `MODEL_PRICES`，一個模型一列，抄自出貨的模型目錄的 `pricing` 欄位（`tier_<輸入>_<輸出>`）—— 那張表上面的註解裡有寫用哪支探測程式重新產生它。同樣的四列摘要也寫在 `dispatch-protocol` skill 裡，而且有一項檢查會斷言兩邊沒有分岔。⛔ 為什麼用「數字」而不是「模型名稱」：名稱會過期，數字不會。`opus` 在 2025 年的意思是 $15，現在的意思是 $5 —— 所以一個用名稱寫的上限，會在某個家族被重新定價的時候「安靜地改變它允許什麼」，而那正是一個成本上限絕對不能做的事。⭐ 模型名稱「仍然」會被接受並換算成價格，因為那是手會順手打出來的東西。⭐ 而且同一個上限也寫進了 skill，讓 agent 在「選擇之前」就讀到，而不是被拒絕之後才遇到：一條 agent 只在「被拒絕」時才遇到的規則，就是一條它會想辦法繞過的規則。⚠ 不寫 `model` 永遠放行 —— 子代理會繼承你選的模型 —— 所以這條規則不可能鎖死 session。⚠ 上限打錯字會 fail open 並記一行 log（MODEL-PRICE-LIMIT-UNKNOWN），而 `availableModels` 會再把它收窄（MODEL-PRICE-LIMIT-CLAMPED）。",
+    "max_model_price": 5,
+
+    "_require_dispatch_protocol": "Must this session have INVOKED the `dispatch-protocol` skill before it may dispatch anything? Default true. ⭐ That skill is what this plugin IS: it says how a wave is planned, laid out on disk and paced, and every mechanical part of it is what the gate enforces - so a session dispatching without it is being refused by rules it never read. ⚠ The refusal REPEATS until the skill is loaded, unlike guard_unattended_first which nags once. It is defensible because the fix is always available to the agent: invoking a skill is a tool call it can make, and the SessionStart line names the skill before the first dispatch. ⛔ Residual risk, stated rather than hidden: if the skill registry itself is broken, that session cannot dispatch at all. This key is the escape hatch and it belongs to YOU - the refusal deliberately does not tell the agent to edit config, because a rule that names its own off switch is a rule that gets switched off. ⭐ And it cannot fail silently either: from the third refusal in one session the message names the other possibility, that this harness is not reporting `Skill` calls to the hook. A skill counts as loaded under any spelling - `dispatch-protocol`, `dispatch-guard:dispatch-protocol`, `apps/web:dispatch-protocol`.",
+    "_require_dispatch_protocol_zh": "這個 session 必須「已經叫過」`dispatch-protocol` skill 才可以派工嗎？預設 true。⭐ 那支 skill 就是這個外掛「本身」：它講一波派工怎麼規劃、怎麼落到硬碟、怎麼配速，而它每一個機械性的部分都是 gate 在強制的 —— 所以一個沒載入它就派工的 session，是在被「它從來沒讀過的規則」拒絕。⚠ 這個拒絕會「重複」直到 skill 載入，跟只唸一次的 guard_unattended_first 不同。這樣做站得住腳，是因為修法永遠在 agent 手上：叫一支 skill 就是一次它做得到的工具呼叫，而 SessionStart 那一行會在第一次派工之前就指名它。⛔ 殘餘風險講清楚不藏起來：如果 skill 註冊本身壞了，那個 session 就完全不能派工。這個鍵就是逃生口，而它屬於「你」—— 拒絕訊息刻意不告訴 agent 去改設定，因為一條會講出自己關閉開關的規則就是一條會被關掉的規則。⭐ 而且它也不會安靜地壞掉：同一個 session 的第三次拒絕開始，訊息會指出另一種可能，也就是這個 harness 沒有把 `Skill` 呼叫報給 hook。⭐ 一支 skill 不管用哪一種寫法都算載入了：`dispatch-protocol`、`dispatch-guard:dispatch-protocol`、`apps/web:dispatch-protocol`。",
+    "require_dispatch_protocol": true,
+
+    "_require_unattended_work": "Must `unattended-work` be loaded TOO before dispatching? Default FALSE. ⭐ Deliberately off: a skill exists to give an agent a WAY OF WORKING, not to gate it, and this plugin's job is dispatch discipline rather than unattended operation. Somebody dispatching sub-tasks while watching the screen needs dispatch-protocol and has no use for the review rounds, the stall test or the exit bar. Set true when nobody is watching and you want the two to travel together. ⚠ announce_unattended_work=false wins over this: that switch means \"I do not want this skill\", and refusing every dispatch until it loaded would be the plugin overruling its own off switch. ⚠ While this is false, guard_unattended_first still asks for the skill ONCE per session - a nag rather than a gate.",
+    "_require_unattended_work_zh": "派工之前也一定要載入 `unattended-work` 嗎？預設「false」。⭐ 刻意關閉：skill 存在的目的是給 agent 一套「做事的方式」，不是用來設閘門，而這個外掛的職責是派工紀律，不是無人職守。有人盯著螢幕派子任務的時候，他需要的是 dispatch-protocol，而審查輪次、停滯測試、收尾門檻對他沒有用。想讓兩支綁在一起（例如沒人看著的時候）就設成 true。⚠ announce_unattended_work=false 會贏過這個設定：那個開關的意思是「我不要這支 skill」，而為它拒絕每一次派工等於外掛推翻自己的關閉開關。⚠ 這個設成 false 的時候，guard_unattended_first 仍然會每個 session「唸一次」要你載入那支 skill —— 那是提醒，不是閘門。",
+    "require_unattended_work": false,
+
+    "_guards": "-------- the silent-failure guards: commands where the wrong outcome and the right one look identical. Every one defaults to true, and every one has its own key on purpose - somebody will want the dispatch gate without the git gate. All of them fail OPEN: a guard that breaks is logged and skipped, never a blocked command.",
+    "_guards_zh": "-------- 擋「安靜失敗」的守衛：做錯跟做對在螢幕上長得一模一樣的那種指令。每一條預設都是 true，而且每一條都刻意有自己的鍵 —— 有人會想要派工閘門但不要 git 閘門。全部都是「壞掉就放行」：守衛自己出錯會被記在 log 裡然後跳過，絕不會變成一個被擋住的指令。",
+
+    "_guard_commit_branch": "Refuse a `git commit` when HEAD is on a branch this session did not select. The branch is recorded at SessionStart and re-recorded whenever this session itself runs checkout/switch/worktree add - so a branch you chose is always legitimate. It is a PER-COMMIT condition, not a per-session one: in a shared working tree another session can check out under you between two of your commits. Matched anywhere in a compound command, because the measured failure was `git rev-parse --abbrev-ref HEAD && git add -A && git commit …` - `&&` asks only whether the previous command SUCCEEDED, never whether its answer was ACCEPTABLE.",
+    "_guard_commit_branch_zh": "HEAD 在一個「這個 session 沒有選過」的分支上時，拒絕 `git commit`。分支在 SessionStart 記下來，而且這個 session 自己跑 checkout/switch/worktree add 的時候會重新記 —— 所以你自己選的分支永遠是合法的。⭐ 這是「每次 commit」的條件，不是「每個 session」的條件：共用同一個工作目錄的時候，另一個 session 可以在你兩次 commit 之間把分支切走。⛔ 複合指令裡的任何位置都會被比對到，因為真實發生的那次失敗是 `git rev-parse --abbrev-ref HEAD && git add -A && git commit …` —— `&&` 只問前一個指令有沒有「成功」，從來不問它的答案「能不能接受」。",
+    "guard_commit_branch": true,
+
+    "_guard_add_all": "Refuse `git add -A`, `git add .` and `git add --all`. In a shared working tree those stage whatever every other session has been editing - that is how two unrelated files entered someone else's commit. Naming the paths you changed costs one flag. `git add ./one.py` is a named path and is allowed.",
+    "_guard_add_all_zh": "拒絕 `git add -A`、`git add .`、`git add --all`。共用工作目錄的時候，這幾個會把「其他每一個 session 正在改的東西」一起加進去 —— 兩個不相關的檔案就是這樣進了別人的 commit。按名字寫出你改的路徑只多打一點字。⭐ `git add ./one.py` 是具名路徑，放行。",
+    "guard_add_all": true,
+
+    "_guard_commit_message_file": "Refuse `git commit -m` (and `-am`) and name `-F <path>` instead. A message on the command line loses parentheses, backticks and `::` to the shell, and the damage is only visible in `git log` afterwards - when it is already history. `--amend` and `-F` are allowed.",
+    "_guard_commit_message_file_zh": "拒絕 `git commit -m`（以及 `-am`），並且指名改用 `-F <路徑>`。訊息寫在命令列上，括號、反引號、`::` 會被 shell 吃掉，而損害只有事後在 `git log` 裡看得到 —— 那時候它已經是歷史了。⭐ `--amend` 和 `-F` 放行。",
+    "guard_commit_message_file": true,
+
+    "_guard_silenced_search": "Refuse a grep / rg / find / ls / git grep whose errors were thrown away: `2>/dev/null`, `2>$null`, `--no-messages`, or `-s` for grep. That flag is exactly what turns \"you searched the wrong place\" into \"there is nothing there\" - the two outputs are identical and only one of them is an answer. ⚠ `-s` is checked for grep ONLY: for ripgrep `-s` means --case-sensitive and silences nothing, and a guard that refuses correct commands is a guard you switch off.",
+    "_guard_silenced_search_zh": "把錯誤訊息丟掉的 grep / rg / find / ls / git grep 會被拒絕：`2>/dev/null`、`2>$null`、`--no-messages`、以及 grep 的 `-s`。⛔ 那個旗標正是把「你搜錯地方了」變成「那裡什麼都沒有」的東西 —— 兩種輸出一模一樣，而只有其中一種是答案。⚠ `-s` 只對 grep 檢查：ripgrep 的 `-s` 是 --case-sensitive，什麼都沒有靜音，而一條會拒絕正確指令的守衛就是一條你會關掉的守衛。",
+    "guard_silenced_search": true,
+
+    "_guard_relative_cd": "WARN (never refuse) on a chained command starting `cd <relative path>`. When the `cd` fails, every later command in the chain silently does not run and prints a clean-looking nothing. ⚠ It only warns because it cannot test the target: the shell's working directory persists between tool calls and the hook payload does not carry it, so the gate does not know what the path will resolve against. The warning reaches the agent, not the screen - `cd x && …` is ordinary, and a screen line on every routine correction teaches you to ignore the one channel a model cannot suppress.",
+    "_guard_relative_cd_zh": "以 `cd <相對路徑>` 開頭的串接指令會出「警告」，永遠不拒絕。`cd` 失敗的時候，後面每一個指令都安靜地不執行，然後印出一個看起來很乾淨的空結果。⚠ 只警告是因為它測不了那個目標：shell 的工作目錄在兩次工具呼叫之間會延續，而 hook payload 不帶那個值，所以 gate 不知道那個路徑會被解析到哪裡去。⭐ 警告只給 agent，不上螢幕 —— `cd x && …` 很日常，而每一次例行修正都跳一行螢幕訊息，只會訓練你忽略「模型唯一無法壓掉的那個管道」。",
+    "guard_relative_cd": true,
+
+    "_guard_unattended_first": "Refuse ONE dispatch when this session never invoked the `unattended-work` skill, then allow. Measured 2026-08-27: the SessionStart reminder naming that skill was ignored for an entire session and nothing noticed. ⚠ Once only - a skill that fails to load would otherwise deadlock the session at its first dispatch. ⛔ Silent when announce_unattended_work=false: refusing a dispatch for not loading a skill you opted out of would be the plugin overruling its own off switch.",
+    "_guard_unattended_first_zh": "這個 session 從來沒有叫過 `unattended-work` skill 的話，「拒絕一次」派工，然後就放行。2026-08-27 實測：SessionStart 那個指名這支 skill 的提醒，被整個 session 忽略，而且沒有任何東西注意到。⚠ 只拒絕一次 —— 否則一支載入失敗的 skill 會讓 session 在第一次派工就鎖死。⛔ announce_unattended_work=false 的時候完全安靜：為了「沒載入一支你已經選擇不要的 skill」而拒絕派工，等於外掛推翻自己的關閉開關。",
+    "guard_unattended_first": true,
+
+    "_guard_unpushed": "After a `git commit`, say so when the branch has unpushed commits OLDER than the one just made (`git rev-list --count @{u}..HEAD` >= 2). Advisory only - PostToolUse cannot refuse anything. ⚠ A branch with no upstream is a NORMAL state, not an error, and stays silent.",
+    "_guard_unpushed_zh": "`git commit` 之後，如果這個分支上還有「比剛剛那個更舊」的 commit 沒有推出去（`git rev-list --count @{u}..HEAD` >= 2），就講出來。只是提醒 —— PostToolUse 沒有辦法拒絕任何東西。⚠ 一個還沒有 upstream 的分支是「正常狀態」不是錯誤，那種情況它保持安靜。",
+    "guard_unpushed": true
+  },
+
+
+  "_idle_after_min": "`--watch` only. Minutes without any session firing a hook before the watcher STOPS asking the API. The VS Code task is bound to the folder being open, not to a session being alive, so without this it polls all night against an endpoint that allows about five calls per access token. It never stops REDRAWING - the line keeps updating and says there is no activity and how old the figure is, because silently showing a stale number as a current one is the confident wrong answer this plugin refuses everywhere else. A heartbeat resumes the normal cadence with ONE call, never a catch-up burst. 0 or negative switches the pause off. ⛔ --statusline is NOT gated this way: it is only ever invoked because a session is interacting.",
+  "_idle_after_min_zh": "只影響 `--watch`。超過這麼多分鐘沒有任何 session 觸發過 hook，watcher 就停止向 API 要數字。那個 VS Code 工作綁在「資料夾有沒有開著」，不是綁在「有沒有 session 活著」，所以少了這個設定它會整晚打一個大約每 token 只允許五次呼叫的端點。⭐ 它不會停止重畫：那一行照樣更新，並且說明現在沒有活動、以及手上這個數字多舊了 —— 安靜地把過期數字當成現在的數字，正是這個外掛到處都在拒絕的那種「有自信的錯答案」。⭐ 有心跳回來就立刻恢復正常節奏，而且只花一次呼叫，不會補打一串。設 0 或負數就關掉這個暫停。⛔ `--statusline` 不受此限：它會被呼叫，本來就是因為有 session 正在互動。",
+  "idle_after_min": 15,
+
+  "_color": "COMPATIBILITY ONLY. 'color' is accepted as a spelling alias for 'colour'. If both appear, 'colour' wins.",
+  "_color_zh": "「僅為相容」。'color' 被接受為 'colour' 的拼法別名。兩個都出現的話，'colour' 贏。",
+
+  "_guard": "COMPATIBILITY ONLY. The threshold keys above may instead be nested under a 'guard' object, which is where claude-pacer kept them. Top level is preferred; both are read, and the nested one wins.",
+  "_guard_zh": "「僅為相容」。上面那些門檻鍵也可以改成放在一個 'guard' 物件底下，那是 claude-pacer 放它們的地方。優先用最上層；兩邊都會被讀，而嵌套的那個會贏。"
+}
