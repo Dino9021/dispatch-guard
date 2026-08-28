@@ -31,8 +31,95 @@ from _debugpaths import fresh_scratch, repo_path, scratch_dir   # noqa: E402
 HERE = repo_path()            # ⭐ the repository under test, not this folder
 
 
+def case_no_version_in_wired_paths():
+    """⛔ NOTHING THIS PLUGIN WRITES OUTSIDE ITSELF MAY NAME THE PLUGIN DIRECTORY.
+
+    A marketplace install lives under `.../cache/dispatch-guard/dispatch-guard/<VERSION>/`.
+    Hooks are immune - hooks.json uses ${CLAUDE_PLUGIN_ROOT}, re-expanded every session - but
+    `statusLine.command` in settings.json and the `Claude usage watch` task in tasks.json hold
+    LITERAL paths, and so does every command the gate hands to the model. ⇒ The next
+    `claude plugin update` moves the directory and each of them points at a version that is
+    gone; worse, measured 2026-08-26, the old directory is LEFT BEHIND, so a stale path keeps
+    working and keeps running old code while everything reports healthy.
+
+    ⛔ AND IT ASSERTS THE POSITIVE PROPERTY, NOT THE ABSENCE OF A VERSION NUMBER. The first
+    version of this check searched the wired paths for `/<n>.<n>.<n>/` - and PASSED with the
+    bug put back, because in a development checkout the plugin lives at
+    `C:/WorkSpace/dispatch-guard`, which has no version in it either. The check was blind in
+    exactly the environment it runs in. ⇒ What is actually required is that every wired path
+    goes through the SHIM, which is true, checkable and mutation-killed everywhere.
+    """
+    import importlib
+    import time
+    import sys
+    sys.path.insert(0, HERE)
+    sys.path.insert(0, os.path.join(HERE, "hooks"))
+    inst = importlib.import_module("install")
+    gate = importlib.import_module("dispatch_gate")
+    resume = importlib.import_module("resume")
+
+    # ⛔ AND THIS CHECK MUST NOT TOUCH THE REAL HOME DIRECTORY. It calls install.py's builders
+    # to ask what they would produce, and for a while two of them WROTE the shim as a side
+    # effect - which repointed the live statusline at a development checkout in the middle of
+    # a test run. Same class as the cleaner that once uninstalled a working plugin, and the
+    # only reason it was found is that somebody read the file afterwards. So it is recorded
+    # before and asserted after.
+    import shim as _shim
+    real_state = os.path.join(os.path.expanduser("~"), ".claude", "dispatch-guard")
+    before_shim = _shim.recorded(real_state)
+
+    def norm(v):
+        return str(v).replace(chr(92), "/")
+
+    plugin_hooks = norm(os.path.join(HERE, "hooks"))
+    shims = (norm(inst.SHIM_SH), norm(inst.SHIM_CMD))
+
+    wired = {"statusLine.command": inst.COMMAND}
+    cmd, args = inst._watch_command(os.getcwd())
+    wired["the VS Code task command"] = cmd
+    for i, a in enumerate(args):
+        wired["the VS Code task arg %d" % i] = a
+    # ⛔ THE USER-LEVEL TASK IS A SEPARATE BUILDER and it was missed the first time. It is
+    # written ONCE and then read in every project on the machine, for as long as the editor
+    # is installed - the worst place on this list for a path that goes stale.
+    entry = inst.user_task_entry()
+    wired["the user-level task command"] = entry.get("command")
+    for i, a in enumerate(entry.get("args") or []):
+        wired["the user-level task arg %d" % i] = a
+    # ⛔ AND THE SCHEDULED RESUME, which is the worst case of all: registered with the OS NOW
+    # and fired HOURS later, across the window in which somebody runs `plugin update`, with
+    # nobody watching when it goes off. --dry-run returns the command without registering it.
+    sched, _ = resume.schedule(time.localtime(time.time() + 3600), True)
+    for i, part in enumerate(sched):
+        wired["the scheduled resume argv[%d]" % i] = part
+    for name in ("usage.py", "resume.py", "model_pricing.py"):
+        wired["the gate's `%s` command" % name] = gate.runnable(name)
+
+    named_shim = 0
+    for what, value in wired.items():
+        v = norm(value)
+        assert plugin_hooks not in v, (
+            "%s names the plugin directory, so it goes stale at the next update:%s  %s%s"
+            "  it must go through %s" % (what, chr(10), value, chr(10), shims[0]))
+        assert "plugins/cache" not in v, "%s points into the plugin cache: %s" % (what, value)
+        if any(sh in v for sh in shims):
+            named_shim += 1
+    # ⚠ Some entries are bare arguments (`usage.py`, `--watch`), so not every one names the
+    # shim - but if NONE do, the loop above is passing on strings that mention no path at all.
+    assert named_shim >= 3, (
+        "only %d wired value(s) name the shim - this check may be passing on nothing: %r"
+        % (named_shim, wired))
+    after_shim = _shim.recorded(real_state)
+    assert after_shim == before_shim, (
+        "asking install.py what it WOULD write changed the real state directory:%s"
+        "  was: %s%s  now: %s" % (chr(10), before_shim, chr(10), after_shim))
+    print("ok - every wired path goes through the shim, none names the plugin (%d checked, "
+          "real home untouched)" % len(wired))
+
+
 def main():
     fresh_scratch()
+    case_no_version_in_wired_paths()
     with scratch_dir("all-check-writes-nothing") as tmp:
         r = subprocess.run([sys.executable, os.path.join(HERE, "install.py"), "--all", "--check"],
                            cwd=tmp, capture_output=True, text=True,
@@ -179,11 +266,15 @@ def main():
             if k in block:
                 assert block[k] == v, "example dispatch.%s=%r but code says %r" % (
                     k, block[k], v)
-        # ⛔ keep_history MUST NOT BE IN THE EXAMPLE. It is still read for compatibility, and
-        # anyone copying the example by hand would otherwise pin "keep_history": false and
-        # silently cancel debug.token_usage_history's whole point of being on by default.
-        assert "keep_history" not in example, "the example would pin the legacy OFF switch"
-        assert (example.get("debug") or {}).get("token_usage_history") is True, example.get("debug")
+        # ⛔ NO RETIRED KEY MAY APPEAR IN THE EXAMPLE. Nothing reads them, so anyone copying
+        # the example by hand would pin a key that does nothing and then wonder why the
+        # setting they wrote has no effect.
+        for dead in ("keep_history", "token_usage_history", "limits_file", "model_ceiling",
+                     "require_skills"):
+            assert dead not in example, "the example still offers the retired key %r" % dead
+            assert dead not in (example.get("dispatch") or {}), \
+                "the example still offers the retired key dispatch.%r" % dead
+        assert (example.get("debug") or {}).get("token_usage") is True, example.get("debug")
 
         # ⛔ THE DRIFT CHECK, RUN THROUGH `install.py --status` ITSELF, because it is what
         # makes a hand-written config survivable and it fails SILENTLY: a comparison that
@@ -192,23 +283,29 @@ def main():
         # re-implementation, not the shipped code. Measured: breaking the real comparison
         # left the whole suite green.
         stale = {"soft_pct": _usage.DEFAULTS["soft_pct"] + 7,
-                 "debug": {"token_usage_history": False}}
+                 "debug": {"token_usage": False}}
         with open(inst3.CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(stale, f)
         out = _status_text(tmp)
         assert "NO LONGER MATCH THE DEFAULT" in out, out[:1500]
         assert "soft_pct = %d" % stale["soft_pct"] in out, out[:1500]
-        assert "debug.token_usage_history = false" in out, out[:1500]
+        assert "debug.token_usage = false" in out, out[:1500]
 
-        # ⛔ AND THE RENAMED KEY, which the comparison above CANNOT see: keep_history was
-        # deleted from the example, so a config carrying it matches nothing and used to be
-        # reported as "all still equal to the current default" - while silently keeping the
-        # history off. That is the one pin that cancels a default, so it is named specially.
+        # ⛔ AND EVERY RETIRED KEY, which the comparison above CANNOT see: they are gone from
+        # the example, so a config carrying one matches nothing and would be reported as "all
+        # still equal to the current default". ⚠ THAT MATTERS MORE NOW THAN IT USED TO. These
+        # keys are no longer read at ALL - no compatibility path - so the setting its owner
+        # wrote does nothing, silently, and this line is the only thing that ever says so.
+        for dead in ("keep_history", "token_usage_history", "limits_file"):
+            with open(inst3.CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump({dead: False}, f)
+            out = _status_text(tmp)
+            assert "%s = false" % dead in out, (dead, out[:1500])
+            assert "IGNORED" in out, (dead, out[:1500])
+        # ⛔ MUTATION CHECK: the assertion must fail on a config that carries no retired key.
         with open(inst3.CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump({"keep_history": False}, f)
-        out = _status_text(tmp)
-        assert "keep_history = false" in out, out[:1500]
-        assert "renamed" in out, out[:1500]
+            json.dump({"soft_pct": _usage.DEFAULTS["soft_pct"]}, f)
+        assert "IGNORED" not in _status_text(tmp), "every config reports IGNORED"
 
         # ⚠ ...and a config that matches the defaults must report NOTHING, or it is noise.
         with open(inst3.CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -218,22 +315,20 @@ def main():
         assert "all still equal to the current default" in out, out[:1500]
 
         # ⛔ THE 'log files' LINE MUST REPORT THE EFFECTIVE SWITCHES, not the raw JSON. A
-        # refuting pass caught it printing "keep_history and debug.API_response_usage are
-        # both off" on a machine whose history was ON: the raw file has no `keep_history`,
-        # the switch is debug.token_usage_history, and only usage.config() knows the
-        # defaults, the list alias and the legacy fallback. A status line that contradicts
-        # the running code sends a person hunting for a file that is being written.
+        # refuting pass caught an earlier version calling both switches off on a machine whose
+        # history was ON: an untouched config carries no switch at all, and only usage.config()
+        # knows the defaults and the list alias. A status line that contradicts the running
+        # code sends a person hunting for a file that is being written.
         with open(inst3.CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump({}, f)                       # empty: every switch at its default
         out = _status_text(tmp)
-        assert "debug.token_usage_history came on" in out, out[:2000]
-        assert "keep_history and debug.API_response_usage are both off" not in out, out[:2000]
+        assert "debug.token_usage came on" in out, out[:2000]
         # ...and switching it off must be reported as off, or the line is just a constant.
         with open(inst3.CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump({"debug": {"token_usage_history": False}}, f)
+            json.dump({"debug": {"token_usage": False}}, f)
         out = _status_text(tmp)
         assert "came on" not in out, out[:2000]
-        assert "debug.token_usage_history" in out and "off" in out, out[:2000]
+        assert "debug.token_usage" in out and "off" in out, out[:2000]
 
     print("ok - --check neither wrote nor removed anything, and said so")
 
@@ -245,7 +340,7 @@ def _status_text(tmp):
     re-implements the comparison it is checking passes while the real one is broken -
     measured on this very block, where breaking install.py's drift comparison left the whole
     suite green.
-    ⚠ status() makes no network request: the verdict it shells out for reads limits.json and
+    ⚠ status() makes no network request: the verdict it shells out for reads token_usage.json and
     never fetches.
     """
     import contextlib
@@ -277,6 +372,14 @@ def load_install_module(tmp=None):
         mod.SETTINGS = os.path.join(tmp, "settings.json")
         mod.STATE_DIR = os.path.join(tmp, "state")
         mod.CONFIG_PATH = os.path.join(tmp, "state", "config.json")
+        # ⛔ AND THE SHIM, which is a fifth name and was the next hole in exactly the way this
+        # docstring predicted. SHIM_SH, SHIM_CMD and COMMAND are all computed AT IMPORT from
+        # the real STATE_DIR, so patching STATE_DIR alone leaves write_shim() aimed at the
+        # machine's live launcher - measured, and it repointed a working statusline at a
+        # development checkout mid-run.
+        mod.SHIM_SH = os.path.join(mod.STATE_DIR, "run.sh").replace(chr(92), "/")
+        mod.SHIM_CMD = os.path.join(mod.STATE_DIR, "run.cmd").replace(chr(92), "/")
+        mod.COMMAND = 'bash "%s" usage.py --statusline' % mod.SHIM_SH
     return mod
 
 
@@ -286,12 +389,15 @@ def repoint():
     ⚠ In-process, with SETTINGS pointed at a temp file. A subprocess would read the real
     ~/.claude/settings.json, and a test that edits the machine it runs on is not a test.
     """
-    inst = load_install_module()
-    # ⚠ install.py calls this from __main__, which importing skips - and then its own ⚠
-    # characters raise UnicodeEncodeError on a cp950 console. Reuse its helper rather than
-    # reinventing the fix, so the test prints exactly what a real run prints.
-    inst._utf8_console()
     with scratch_dir("stale-statusline-repointed") as tmp:
+        # ⛔ WITH `tmp`, NOT WITHOUT IT. This used to load the module unpatched and then set
+        # SETTINGS by hand - which left STATE_DIR pointing at the real ~/.claude, so
+        # repoint_statusline() wrote the shim into the machine's live state directory.
+        inst = load_install_module(tmp)
+        # ⚠ install.py calls this from __main__, which importing skips - and then its own ⚠
+        # characters raise UnicodeEncodeError on a cp950 console. Reuse its helper rather than
+        # reinventing the fix, so the test prints exactly what a real run prints.
+        inst._utf8_console()
         inst.SETTINGS = os.path.join(tmp, "settings.json")
         stale = ('bash "/somewhere/dispatch-guard/0.0.1/hooks/run.sh" '
                  '"/somewhere/dispatch-guard/0.0.1/hooks/usage.py" --statusline')
@@ -392,6 +498,18 @@ def selfheal():
 
 
 if __name__ == "__main__":
+    # ⛔ THE NET ROUND EVERYTHING BELOW. Several places in this file have now been found
+    # writing into the real ~/.claude while "testing", each one patched individually after
+    # somebody noticed. This asserts the property directly instead: whatever these checks
+    # do, the machine's live launcher must read the same before and after.
+    sys.path.insert(0, os.path.join(HERE, "hooks"))
+    import shim as _shim
+    _real_state = os.path.join(os.path.expanduser("~"), ".claude", "dispatch-guard")
+    _shim_was = _shim.recorded(_real_state)
     main()
     repoint()
     selfheal()
+    assert _shim.recorded(_real_state) == _shim_was, (
+        "these checks changed the machine's live shim:%s  was: %s%s  now: %s"
+        % (chr(10), _shim_was, chr(10), _shim.recorded(_real_state)))
+    print("ok - nothing here touched the real state directory")

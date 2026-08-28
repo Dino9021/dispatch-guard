@@ -33,6 +33,55 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.32.0
+
+⛔ **從舊版更新請先跑 `Tools/clean-dispatch-guard.ps1` 再重裝。**
+這一版把每一個名字統一了，而且**不保留任何舊名相容**。
+
+- ⭐ **一個東西一個名字。** 起因是 owner 發現自己在 config 裡寫的鍵名和文件寫的不一樣，
+  於是那個開關一直沒有生效 —— 而**沒有任何東西會說**。
+
+  | 舊 | 新 |
+  |---|---|
+  | `debug.token_usage_history` | `debug.token_usage` |
+  | `limits.json` | `token_usage.json` |
+  | 設定鍵 `limits_file` | `token_usage_file` |
+  | `token_usage_history-<戳記>.jsonl` | `token_usage_history_<戳記>.jsonl` |
+  | `usage-response-<戳記>.jsonl` | `API_response_usage_<戳記>.jsonl` |
+  | `model_prices.spawn` | `model_pricing.spawn` |
+  | `dispatch-gate.log` | `dispatch_gate.log` |
+  | `dispatch-gate-error.log` | `dispatch_gate_error.log` |
+  | `resume-failed.json` | `resume_failed.json` |
+  | `asked-vscode-task` | `asked_vscode_task` |
+
+- ⭐ **規則寫下來了**：這個外掛自己的東西一律 snake_case，連字號只出現在時戳裡；
+  副檔名說明「格式」（`.json` 一份文件、`.jsonl` 一行一筆、`.log` 純文字）；
+  標記檔一律 `<主題>.<種類>`。⚠ 唯一的例外是 `API_response_usage_*`，
+  它跟設定開關 `debug.API_response_usage` 完全同名，那比規則一致更有用。
+- ⛔ **`.jsonl` 沒有改成 `.json`，這是刻意的。** 那兩個檔是一行一個 JSON，
+  改副檔名會讓 `json.load()` 直接爆掉、編輯器從第 2 行開始整份標紅。
+- ⛔ **舊名一律不再被讀。** `keep_history`、`token_usage_history`、`limits_file` 都不再有效；
+  舊檔名的 log 也不再被讀取或清理。⚠ 所以一份還寫著舊名字的 config 拿到的是**預設值**。
+- ⭐ **`install.py --status` 會把 config 裡每一個已廢棄的鍵點名並標成 `⛔ IGNORED`。**
+  一個「被忽略的設定」天生就是安靜的 —— 這份報告是它唯一會現身的地方，
+  所以它是這次拿掉相容性之後的補償控制。
+
+- ⛔ **執行路徑裡不再有版本號。** 外掛裝在
+  `~/.claude/plugins/cache/dispatch-guard/dispatch-guard/<版本>/`。hook 不受影響
+  （`hooks.json` 用 `${CLAUDE_PLUGIN_ROOT}`），⛔ 但狀態列指令、VS Code 工作、
+  以及 gate 給模型的每一個指令，存的都是寫死的絕對路徑。
+  `update` 會搬走目錄卻**留著舊的**，所以舊路徑照樣跑得動、跑的是舊程式，而且看起來一切正常。
+- ⭐ **改成指向一個永不改變的檔案**：`~/.claude/dispatch-guard/run.sh`（Windows 工作用 `run.cmd`），
+  它會轉發到目前這一份外掛。gate 在每個 session 開始時把它對準正在跑的那一份；
+  ⛔ 而且**它自己也會找** —— 存的路徑不在了就去找最新安裝的那一份。
+  那段「更新之後、下一個 session 之前」的空窗，正是舊的靜默失敗住的地方。
+- ⚠ **第一版的檢查是瞎的，這件事值得寫下來。** 它去搜尋 `/<數>.<數>.<數>/`，
+  結果**把 bug 放回去也照樣通過** —— 因為在開發用的 checkout 裡，外掛住在
+  `C:/WorkSpace/dispatch-guard`，那裡本來就沒有版本號。⇒ 改成斷言「正向性質」：
+  每一條對外路徑都必須走 shim。這個版本的突變測試會被殺掉。
+
+---
+
 ## 0.31.0
 
 - ⭐ **Model prices are read from Anthropic's published pricing page instead of being typed
@@ -75,6 +124,62 @@ GATE-ERROR NameError("name 'now' is not defined")
 - ⚠ **An unreadable table fails OPEN and is logged** (`MODEL-PRICE-TABLE-MISSING`). With no
   table every model reads as unrecognised and would be refused - and a cost guard that
   bricks the work is a cost guard people uninstall.
+
+---
+
+## 0.32.0
+
+⛔ **Updating from an older version: run `Tools/clean-dispatch-guard.ps1`, then reinstall.**
+This release unifies every name and keeps **no compatibility path** for the old ones.
+
+- ⭐ **One name per thing.** It started with the owner finding that the key they had written
+  in their config was not the key the code reads, so the switch had never done anything -
+  and **nothing anywhere said so**.
+
+  | old | new |
+  |---|---|
+  | `debug.token_usage_history` | `debug.token_usage` |
+  | `limits.json` | `token_usage.json` |
+  | config key `limits_file` | `token_usage_file` |
+  | `token_usage_history-<stamp>.jsonl` | `token_usage_history_<stamp>.jsonl` |
+  | `usage-response-<stamp>.jsonl` | `API_response_usage_<stamp>.jsonl` |
+  | `model_prices.spawn` | `model_pricing.spawn` |
+  | `dispatch-gate.log` | `dispatch_gate.log` |
+  | `dispatch-gate-error.log` | `dispatch_gate_error.log` |
+  | `resume-failed.json` | `resume_failed.json` |
+  | `asked-vscode-task` | `asked_vscode_task` |
+
+- ⭐ **The rule is written down now**: snake_case for everything this plugin owns, hyphens
+  only inside a timestamp; the extension states the FORMAT (`.json` one document, `.jsonl`
+  one value per line, `.log` text); marker files are `<subject>.<kind>`. ⚠ The single
+  exception is `API_response_usage_*`, which matches its config switch
+  `debug.API_response_usage` exactly - more useful than being consistent with the rule.
+- ⛔ **`.jsonl` was NOT changed to `.json`, deliberately.** Both files are one JSON value per
+  line; the other extension would make `json.load()` raise and mark the whole file as a
+  syntax error from line 2 in every editor.
+- ⛔ **No retired name is read any more.** `keep_history`, `token_usage_history` and
+  `limits_file` do nothing; logs under the older names are neither read nor pruned. ⚠ So a
+  config still carrying one gets the DEFAULT rather than the value somebody wrote.
+- ⭐ **`install.py --status` names every retired key it finds and marks it `⛔ IGNORED`.** An
+  ignored setting is silent by construction, and that report is the only place it ever shows
+  up - so it is the compensating control for dropping compatibility.
+
+- ⛔ **No execution path carries a version number any more.** The plugin installs to
+  `~/.claude/plugins/cache/dispatch-guard/dispatch-guard/<VERSION>/`. Hooks are immune
+  (`hooks.json` uses `${CLAUDE_PLUGIN_ROOT}`), ⛔ but the statusline command, the VS Code
+  task and every command the gate hands to the model all held a literal absolute path.
+  `update` moves the directory and **leaves the old one behind**, so a stale path keeps
+  working and keeps running old code while everything reports healthy.
+- ⭐ **They all point at one file that never changes** — `~/.claude/dispatch-guard/run.sh`
+  (`run.cmd` for the VS Code task) — which forwards into whichever copy is current. The gate
+  aims it at the running copy at every session start; ⛔ and **it also finds one itself** if
+  the recorded path is gone. That window, between an update and the next session, is exactly
+  where the silent failure used to live.
+- ⚠ **The first version of the check was blind, and that is worth recording.** It searched
+  the wired paths for `/<n>.<n>.<n>/` and **passed with the bug put back** — in a development
+  checkout the plugin lives at `C:/WorkSpace/dispatch-guard`, which has no version in it
+  either. ⇒ It asserts the positive property now: every wired path goes through the shim.
+  That version is mutation-killed.
 
 ---
 

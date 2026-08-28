@@ -53,7 +53,7 @@ def case(mod, name, codes, record=True):
             with open(os.path.join(sdir, "resume.json"), "w") as f:
                 json.dump({"task": "x"}, f)
         saved, mod.subprocess.run = mod.subprocess.run, fake_run
-        # ⛔ log_line() APPENDS TO `<cwd>/.claude/dispatch-gate.log`, so running this test
+        # ⛔ log_line() APPENDS TO `<cwd>/.claude/dispatch_gate.log`, so running this test
         # from the repository left RESUME lines - and a `.claude/` directory - in the working
         # tree on every run. It looked exactly like the plugin executing from the development
         # path, which is the one thing a person checking their install must be able to rule
@@ -74,12 +74,12 @@ def _tree_log():
     """The size of the repository's gate log, or None when it is absent.
 
     ⛔ THE QUESTION IS "DID I WRITE IT?", NOT "DOES IT EXIST?" - and the first version of this
-    check asked the wrong one. `.claude/dispatch-gate.log` is where the plugin legitimately
+    check asked the wrong one. `.claude/dispatch_gate.log` is where the plugin legitimately
     logs when a real session works in this repository, so asserting it is absent fails for a
     reason that has nothing to do with the test. Comparing before and after is the only form
     of the question that answers itself.
     """
-    p = os.path.join(HERE, ".claude", "dispatch-gate.log")
+    p = os.path.join(HERE, ".claude", "dispatch_gate.log")
     return os.path.getsize(p) if os.path.exists(p) else None
 
 
@@ -106,11 +106,11 @@ def main():
     assert rc == 1 and left, "a refused delete was reported as a cancellation"
 
     # ⛔ AND IT MUST LEAVE THE WORKING TREE ALONE. `log_line()` appends to
-    # `<cwd>/.claude/dispatch-gate.log`, and this test used to run with the repository as its
+    # `<cwd>/.claude/dispatch_gate.log`, and this test used to run with the repository as its
     # working directory - so every run left the plugin's own log there, which is
     # indistinguishable from the development copy being executed by a real session.
     assert _tree_log() == before, (
-        "the test changed %s/.claude/dispatch-gate.log (%r -> %r)"
+        "the test changed %s/.claude/dispatch_gate.log (%r -> %r)"
         % (HERE, before, _tree_log()))
     print("ok - not-there, deleted and refused are three different answers")
 

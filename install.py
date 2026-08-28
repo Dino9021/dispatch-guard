@@ -58,9 +58,28 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 SETTINGS = os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
 STATE_DIR = os.path.join(os.path.expanduser("~"), ".claude", "dispatch-guard")
-COMMAND = 'bash "%s" "%s" --statusline' % (
-    os.path.join(HERE, "hooks", "run.sh").replace("\\", "/"),
-    os.path.join(HERE, "hooks", "usage.py").replace("\\", "/"))
+# ⛔ NO VERSION NUMBER IN THIS COMMAND, which is the whole point of the shim. A marketplace
+# install puts the plugin under `.../cache/dispatch-guard/dispatch-guard/<VERSION>/`, and
+# settings.json holds a LITERAL path - so a command built from HERE stops working at the next
+# update, or keeps working against the copy `plugin update` left behind, which is worse.
+# STATE_DIR has no version in it and never moves. See hooks/shim.py.
+SHIM_SH = os.path.join(STATE_DIR, "run.sh").replace("\\", "/")
+SHIM_CMD = os.path.join(STATE_DIR, "run.cmd").replace("\\", "/")
+COMMAND = 'bash "%s" usage.py --statusline' % SHIM_SH
+
+
+def write_shim():
+    """Put the version-free launcher in the state directory. Returns (from, to) or None.
+
+    ⚠ Called before anything NAMES it. A statusline pointed at a shim that does not exist yet
+    renders nothing, and an empty statusline is exactly the silent failure this replaces.
+    """
+    try:
+        sys.path.insert(0, os.path.join(HERE, "hooks"))
+        import shim
+        return shim.write(STATE_DIR, HERE)
+    except Exception:
+        return None
 
 def load(path, fallback):
     try:
@@ -110,7 +129,7 @@ def statusline_is_ours(current):
     cmd = str(current.get("command", ""))
     # ⛔ BOTH, NOT EITHER. It used to be `"dispatch-guard" in cmd or ...`, so ANY statusline
     # whose command merely mentioned this plugin's folder - somebody's own script living
-    # under it, or one that read our limits.json - was declared ours and silently replaced,
+    # under it, or one that read our token_usage.json - was declared ours and silently replaced,
     # with no backup. Ownership now needs the two things only our own command has together.
     return "usage.py" in cmd and "--statusline" in cmd
 
@@ -123,10 +142,15 @@ def repoint_statusline():
     left needing a command after `claude plugin update`. The stale path still EXISTS - update
     leaves the old directory behind - so it runs, renders, and silently executes old code.
 
-    ⛔ It only ever rewrites a slot this plugin ALREADY owns, and only to the copy currently
-    running. A statusline belonging to something else is never touched; taking that slot is
-    a deliberate act and stays behind --take-statusline.
+    ⛔ It only ever rewrites a slot this plugin ALREADY owns, and only to the shim. A
+    statusline belonging to something else is never touched; taking that slot is a deliberate
+    act and stays behind --take-statusline.
+
+    ⭐ WHAT IT REPAIRS IS NOW A MIGRATION, NOT A DRIFT. The command names the shim, so an
+    update moves nothing and this returns None every session. What it still catches is a
+    statusline wired by an OLDER version, which holds a versioned path: rewritten once.
     """
+    write_shim()                          # ⛔ before the command that names it, never after
     if not readable(SETTINGS):
         return None                       # ⛔ see readable(): unreadable belongs to somebody
     settings = load(SETTINGS, {})
@@ -151,6 +175,7 @@ def adopt_statusline_if_empty():
     silently replacing somebody's statusline would delete work they chose to do, which is
     why taking it over stays a named, deliberate act behind --take-statusline.
     """
+    write_shim()                          # ⛔ before the command that names it, never after
     if not readable(SETTINGS):
         return None                       # ⛔ never write over a settings file we cannot read
     settings = load(SETTINGS, {})
@@ -477,18 +502,24 @@ def status():
                 drifted.append("%s = %s   (the default is now %s)"
                                % (k, json.dumps(have[k], ensure_ascii=False),
                                   json.dumps(want[k], ensure_ascii=False)))
-        # ⛔ A KEY THE EXAMPLE NO LONGER HAS IS INVISIBLE TO THE LOOP ABOVE, and one of them
-        # matters more than anything the loop can find. `keep_history` was renamed into
-        # debug.token_usage_history and removed from the example, but it is still READ - so
-        # a config carrying "keep_history": false silently keeps the history off while the
-        # comparison reports "all still equal to the current default". ⚠ Found by a refuting
-        # pass: the net built to make pinning safe had a hole exactly where the pinning
-        # cancels a default. Renamed keys go here as they appear.
-        RENAMED = {"keep_history": "debug.token_usage_history"}
+        # ⛔ A KEY THE EXAMPLE NO LONGER HAS IS INVISIBLE TO THE LOOP ABOVE, AND THIS IS NOW
+        # THE ONLY WAY ANYBODY FINDS OUT. Nothing reads a retired key any more - the owner
+        # asked for one name per thing and no compatibility path - so a config still carrying
+        # `"keep_history": false` gets the DEFAULT, which is ON, and the comparison above
+        # reports "all still equal to the current default" while the setting its owner wrote
+        # does nothing at all. ⚠ An ignored setting is silent by construction; naming it here
+        # is the compensating control. Retired keys go in this table as they appear.
+        RENAMED = {
+            "keep_history": "debug.token_usage",
+            "token_usage_history": "debug.token_usage",
+            "limits_file": "token_usage_file",
+            "model_ceiling": "max_model_price",
+            "require_skills": "require_dispatch_protocol / require_unattended_work",
+        }
         for old_key, new_key in RENAMED.items():
             if old_key in have:
-                drifted.append("%s = %s   (renamed - it still works, but %s is the key now"
-                               ", and the default is %s)"
+                drifted.append("%s = %s   ⛔ IGNORED - this key is not read any more. It is "
+                               "`%s` now, and the default is %s. Delete the old key."
                                % (old_key, json.dumps(have[old_key], ensure_ascii=False),
                                   new_key,
                                   json.dumps(want.get(new_key), ensure_ascii=False)))
@@ -551,7 +582,7 @@ def status():
     if wired_paths_health(load(SETTINGS, {})):
         ok = False
     cfg = load(os.path.join(STATE_DIR, "config.json"), {})
-    limits = cfg.get("limits_file") or os.path.join(STATE_DIR, "limits.json")
+    limits = cfg.get("token_usage_file") or os.path.join(STATE_DIR, "token_usage.json")
     print("usage data file     : %s" % limits)
     data = load(limits, None)
     if data:
@@ -565,11 +596,10 @@ def status():
     # ever name the default; this resolves `history_dir` and prints the result.
     # ⚠ When it does not exist, say WHICH switch is off rather than leaving a bare path.
     # ⛔ THE SWITCHES ARE READ THROUGH usage.config(), NOT OFF THE RAW JSON. A refuting pass
-    # caught this reporting "keep_history and debug.API_response_usage are both off" on a
-    # machine whose history was ON: the raw file has no `keep_history` any more, the switch
-    # lives at debug.token_usage_history, and only config() knows the defaults, the list
-    # alias and the legacy fallback. A status line that contradicts the running code is
-    # worse than no status line.
+    # caught an earlier version reporting both switches off on a machine whose history was
+    # ON: the raw file carries no switch at all when both are left at their defaults, and
+    # only config() knows the defaults and the list alias. A status line that contradicts the
+    # running code is worse than no status line.
     logs = cfg.get("history_dir") or os.path.join(STATE_DIR, "logs")
     logs = os.path.abspath(os.path.expanduser(logs))
     print("log files           : %s" % logs)
@@ -587,8 +617,7 @@ def status():
         print("                        paths above are not where your files are.")
     if os.path.isdir(logs):
         kept = [f for f in os.listdir(logs)
-                if f.startswith(("token_usage_history-", "limits-history-",
-                                 "usage-response-"))]
+                if f.startswith(("token_usage_history_", "API_response_usage_"))]
         total = 0
         for f in kept:
             try:
@@ -722,7 +751,7 @@ def status():
 
     resume_status()
 
-    logs = glob.glob(os.path.join(os.getcwd(), ".claude", "dispatch-gate.log"))
+    logs = glob.glob(os.path.join(os.getcwd(), ".claude", "dispatch_gate.log"))
     if logs:
         try:
             with open(logs[0], encoding="utf-8") as f:
@@ -743,33 +772,31 @@ def status():
 
 
 def _watch_command(repo):
-    """(command, args) for the task, expressed so it survives being committed.
+    """(command, args) for the task. ⛔ The shim, so no version number is ever committed.
 
-    ⚠ `.vscode/tasks.json` is often TRACKED - it is in this repository - so an absolute
-    path baked in here breaks for the next person who clones. When the plugin lives
-    inside the repository, address it through `${workspaceFolder}`; only fall back to an
-    absolute path when it genuinely lives elsewhere, and say so.
+    ⚠ `.vscode/tasks.json` is often TRACKED - it is in this repository - so whatever goes in
+    here is read by the next person who clones. It used to be a path under the plugin cache,
+    carrying this machine's home directory AND this machine's plugin version, and it went
+    stale at every update. It is the shim now: still an absolute path, still this machine's
+    home, but it never goes stale. ⚠ `${workspaceFolder}` cannot address a file outside the
+    workspace, so the relative form the old version preferred no longer applies.
 
-    ⛔ It goes through `run.sh` rather than naming an interpreter, because `python3` on
-    Windows is a Microsoft Store stub that resolves and then exits 49.
+    ⛔ On Windows it is run.cmd, NOT bash run.sh. Measured 2026-08-26: from PowerShell, `bash`
+    resolves to the WSL launcher stub in WindowsApps and fails with "no installed
+    distributions". Claude Code invokes its own bash and is fine; a VS Code task goes through
+    the user's default shell and is not. The command RESOLVING is what makes it invisible
+    until it runs.
+
+    ⛔ AND IT DOES NOT WRITE THE SHIM. A builder that has a side effect cannot be called to
+    ASK what it would produce - and this one is, by the checks and by "is the task already
+    correct?". Measured: write_shim() in here wrote into the real ~/.claude/dispatch-guard
+    during a test run and aimed the live statusline at a development checkout. The writers
+    call write_shim(); the builders only build.
+
+    ⚠ `repo` is no longer used. It is kept in the signature because the callers pass it and
+    the day this needs a workspace-relative form again, it will need it back.
     """
-    # ⛔ On Windows the launcher is run.cmd, NOT bash run.sh. Measured 2026-08-26: from
-    # PowerShell, `bash` resolves to the WSL launcher stub in WindowsApps and fails with
-    # "no installed distributions". Claude Code invokes its own bash and is fine; a VS
-    # Code task goes through the user's default shell and is not. The command resolving
-    # is exactly what makes this invisible until it runs.
-    win = os.name == "nt"
-    launcher = os.path.join(HERE, "hooks", "run.cmd" if win else "run.sh")
-    script = os.path.join(HERE, "hooks", "usage.py")
-    base = "${workspaceFolder}/"
-    try:
-        rel_l = os.path.relpath(launcher, repo).replace("\\", "/")
-        rel_s = os.path.relpath(script, repo).replace("\\", "/")
-        if not rel_l.startswith(".."):
-            return base + rel_l, [base + rel_s, "--watch"]
-    except ValueError:
-        pass                      # different drive; no relative path exists
-    return launcher.replace("\\", "/"), [script.replace("\\", "/"), "--watch"]
+    return (SHIM_CMD if os.name == "nt" else SHIM_SH), ["usage.py", "--watch"]
 
 
 def allow_automatic_tasks():
@@ -901,24 +928,35 @@ def user_task_entry():
     workspace of its own, so VS Code would resolve that variable against WHATEVER project is
     open and look for the plugin inside it - failing in every project, including the one
     where it was written.
+
+    ⛔ AND IT NAMES THE SHIM, like everything else written outside the plugin. This entry
+    used to hold a path under the plugin cache, so it carried the version - and a USER-level
+    task is the worst place for that, because it is written once and then read in every
+    project on the machine, for as long as the editor is installed.
+
+    ⛔ NO SIDE EFFECT. vscode_user_task_current() calls this to ASK what the entry should be;
+    a write_shim() in here therefore fired on every "is it current?" question, including from
+    the test suite against the real home directory. The writer calls write_shim().
     """
-    win = os.name == "nt"
-    launcher = os.path.join(HERE, "hooks", "run.cmd" if win else "run.sh")
-    script = os.path.join(HERE, "hooks", "usage.py")
     entry = dict(vscode_task_entry(os.path.expanduser("~")))
-    entry["command"] = launcher.replace("\\", "/")
-    entry["args"] = [script.replace("\\", "/"), "--watch"]
+    entry["command"] = SHIM_CMD if os.name == "nt" else SHIM_SH
+    entry["args"] = ["usage.py", "--watch"]
     return entry
 
 
 def vscode_user_task(remove=False, check_only=False):
     """Put the watcher task in VS Code's USER tasks file. Returns a list of what it did.
 
+    ⛔ THE SHIM IS WRITTEN HERE, before the task that names it - and here rather than in
+    user_task_entry(), because this is the function that actually writes something.
+
     ⛔ MERGES, and refuses a file it cannot read. This is the person's own editor
     configuration and may hold their own tasks - and VS Code allows comments in it, which
     json.load does not. See readable(): an unreadable file is left exactly as it is.
     """
     done = []
+    if not (remove or check_only):
+        write_shim()                      # ⛔ before the task that names it, never after
     for d in vscode_user_dirs():
         path = os.path.join(d, "tasks.json")
         if not readable(path):
@@ -1264,7 +1302,7 @@ def statusline_install(argv):
         print("                      %s" % current.get("command"))
         print("                      ⛔ USAGE BRAKING WILL NOT WORK until one of these is true:")
         print("                         (a) replace it with the command below, or")
-        print("                         (b) set limits_file in %s"
+        print("                         (b) set token_usage_file in %s"
               % os.path.join(STATE_DIR, "config.json"))
         print("                         %s" % COMMAND)
         return 0
@@ -1324,7 +1362,7 @@ def main():
             # question nobody ever answered has to survive, which is why the gate counts
             # misses instead of assuming the first message was seen.
             try:
-                with open(os.path.join(STATE_DIR, "asked-vscode-task"), "w",
+                with open(os.path.join(STATE_DIR, "asked_vscode_task"), "w",
                           encoding="utf-8") as f:
                     json.dump({"answered": True, "value": value}, f)
             except OSError:

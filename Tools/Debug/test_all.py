@@ -32,6 +32,9 @@ CHECKS = [
     # ⚠ Parses the COMMITTED fixture, never the network. A check that quietly needs the
     # internet passes for the wrong reason on the day the page changes shape.
     ("model pricing", [repo_path("hooks", "model_pricing.py"), "--selftest"]),
+    # ⚠ Runs the generated launcher for real, including its fallback. It says on its own
+    # output when the fallback could not be exercised, rather than skipping quietly.
+    ("shim", [repo_path("hooks", "shim.py"), "--selftest"]),
     ("usage",         [repo_path("hooks", "usage.py"), "--selftest"]),
     ("unattended",    [repo_path("hooks", "unattended.py"), "--selftest"]),
     ("install",       [os.path.join(DEBUG_DIR, "test_install.py")]),

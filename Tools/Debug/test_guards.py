@@ -102,7 +102,7 @@ def stamp_session(gate, sdir, sid="s1"):
 
 
 def gitlog(root):
-    p = os.path.join(root, ".claude", "dispatch-gate.log")
+    p = os.path.join(root, ".claude", "dispatch_gate.log")
     try:
         with open(p, encoding="utf-8") as f:
             return f.read()

@@ -6,7 +6,7 @@ failures paid for this rule, both of which looked like the plugin misbehaving ra
 test misbehaving:
 
   - `test_resume_cancel.py` called `do_cancel()` with the REPOSITORY as the working
-    directory, and `resume.log_line()` appends to `<cwd>/.claude/dispatch-gate.log`. Every
+    directory, and `resume.log_line()` appends to `<cwd>/.claude/dispatch_gate.log`. Every
     run left the plugin's own log, in the plugin's own location, in the working tree - which
     is indistinguishable from the development copy being executed by a real session.
   - `test_install.py` patched `SETTINGS` but not `STATE_DIR`, so an uninstall case wrote

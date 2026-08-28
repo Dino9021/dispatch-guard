@@ -206,7 +206,7 @@ def load(sdir=None, plugin_dir=PLUGIN_DIR):
     ⛔ TWO COPIES ON PURPOSE. `claude plugin update` replaces everything under the plugin
     directory, so a fetched table written there is destroyed on every update - and on some
     installs that directory is not writable at all. ⇒ The seed is committed and read-only in
-    practice; the live copy lives in the state directory beside limits.json.
+    practice; the live copy lives in the state directory beside token_usage.json.
 
     ⚠ NEWER IS DECIDED BY `fetched_at`, NOT BY MTIME. A plugin update rewrites the seed's
     mtime without changing a single price, which would make a stale seed look newest.

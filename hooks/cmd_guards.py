@@ -566,7 +566,7 @@ def skills_refusal(payload, ctx, cfg):
     stuck_screen = ("" if tries < 3 else
                     " ⛔ %d refusals in this session. If the agent says it DID load them, the "
                     "harness is not reporting `Skill` calls to the hook - look for a "
-                    "`SKILL-SEEN` line in .claude/dispatch-gate.log, and if there is none, set "
+                    "`SKILL-SEEN` line in .claude/dispatch_gate.log, and if there is none, set "
                     "`require_dispatch_protocol: false`." % tries)
     # ⚠ WHY EACH SKILL IS NEEDED, but only for the ones actually missing. Naming a skill the
     # session already loaded reads as the gate not knowing what it has, and an agent that

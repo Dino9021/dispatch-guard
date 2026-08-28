@@ -162,9 +162,9 @@ def write_config(sdir, blob):
 
 
 def dumped(sdir):
-    """Every usage-response-*.jsonl line under sdir/logs, parsed. [] when there is none."""
+    """Every API_response_usage_*.jsonl line under sdir/logs, parsed. [] when there is none."""
     rows = []
-    for path in sorted(glob.glob(os.path.join(sdir, "logs", "usage-response-*.jsonl"))):
+    for path in sorted(glob.glob(os.path.join(sdir, "logs", "API_response_usage_*.jsonl"))):
         with open(path, encoding="utf-8") as f:
             rows += [json.loads(line) for line in f if line.strip()]
     return rows
@@ -184,7 +184,7 @@ def assert_no_dump_yet(sdir):
     ⇒ Calling this first turns "a file EXISTS" into "a file APPEARED", which is the claim
     the case is actually making.
     """
-    stale = glob.glob(os.path.join(sdir, "logs", "usage-response-*.jsonl"))
+    stale = glob.glob(os.path.join(sdir, "logs", "API_response_usage_*.jsonl"))
     assert not stale, ("a dump file was present BEFORE the fetch, so this case could pass "
                        "with a dead writer: %r" % stale)
 
@@ -192,7 +192,7 @@ def assert_no_dump_yet(sdir):
 def raw(sdir):
     """The dump files' text, concatenated - for asserting what is NOT in them."""
     out = ""
-    for path in sorted(glob.glob(os.path.join(sdir, "logs", "usage-response-*.jsonl"))):
+    for path in sorted(glob.glob(os.path.join(sdir, "logs", "API_response_usage_*.jsonl"))):
         with open(path, encoding="utf-8") as f:
             out += f.read()
     return out
@@ -201,7 +201,7 @@ def raw(sdir):
 def case_off(mod):
     """Switch off: no file, and NO DIRECTORY EITHER. Necessary, and worthless on its own."""
     with scratch_dir("switch-off") as sdir:
-        write_config(sdir, {"keep_history": False})
+        write_config(sdir, {"debug": {"token_usage": False}})
         cfg = mod.config(sdir)
         # ⚠ THE SWITCH, NOT THE WHOLE BLOCK. cfg["debug"] always carries every known
         # switch with its own default now, so comparing the dict whole breaks the day
@@ -231,10 +231,10 @@ def case_on(mod):
         files = sorted(glob.glob(os.path.join(sdir, "logs", "*.jsonl")))
         assert len(files) == 1, "expected one file, got %r" % files
         name = os.path.basename(files[0])
-        assert name.startswith("usage-response-"), name
+        assert name.startswith("API_response_usage_"), name
         # ⛔ SEPARATE FROM THE HISTORY FILE. A response body appended into
         # the token-usage history file would break _projection()'s reader.
-        assert not glob.glob(os.path.join(sdir, "logs", "token_usage_history-*.jsonl")), (
+        assert not glob.glob(os.path.join(sdir, "logs", "token_usage_history_*.jsonl")), (
             "the dump landed in the history file")
 
         rows = dumped(sdir)

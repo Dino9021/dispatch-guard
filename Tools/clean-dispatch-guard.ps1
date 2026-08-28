@@ -151,7 +151,7 @@ Write-Host "dispatch-guard cleaner" -ForegroundColor White
 Write-Host "  it will look in : $claude" -ForegroundColor White
 Write-Host "                    ⚠ that folder is NOT deleted - only the items listed below" -ForegroundColor DarkGray
 Write-Host ""
-Write-Host "Also clean PROJECT files (.vscode/tasks.json entries, .claude/dispatch-gate.log," -ForegroundColor White
+Write-Host "Also clean PROJECT files (.vscode/tasks.json entries, .claude/dispatch_gate.log," -ForegroundColor White
 Write-Host "  .claude/dispatch-guard.json)? Type a folder to search, or press Enter to skip." -ForegroundColor White
 $projectRoot = (Read-Host "  project folder").Trim().Trim('"')
 if ($projectRoot -and -not (Test-Path -LiteralPath $projectRoot)) {
@@ -166,17 +166,22 @@ Write-Host "1. folders to delete" -ForegroundColor White
 Plan-Delete (Join-Path $claude 'plugins\cache\dispatch-guard')        'the installed copies, one folder per version'
 Plan-Delete (Join-Path $claude 'plugins\marketplaces\dispatch-guard') 'the marketplace git clone (the SOURCE, never runs)'
 Plan-Delete (Join-Path $claude 'dispatch-guard') @'
-usage history, config.json, session stamps, clock.spawn, fetch.claim, renders.log,
-           resume.json, asked-vscode-task, model_pricing.json + .status + model_prices.spawn.
-           ⛔ config.json is the one that matters: a version before 0.11.0 pinned every value
-           here, so new defaults never reach this machine
+token_usage.json, logs/ (token_usage_history_*.jsonl, API_response_usage_*.jsonl),
+           config.json, session stamps, clock.spawn, fetch.claim, fetch.log, watch.alive,
+           renders.log, resume.json, asked_vscode_task, model_pricing.json + .status +
+           model_pricing.spawn, and run.sh / run.cmd - the version-free launcher the
+           statusline and the VS Code task point at (both are rewritten on reinstall).
+           ⛔ config.json is the one that matters, and it matters MORE from 0.32.0: every
+           renamed key is now IGNORED rather than read, so a config written by an older
+           version silently gets defaults instead of the values somebody chose. Files under
+           the older log names are not read or pruned either - this is what removes them
 '@
 
 Write-Host ""
 Write-Host "2. files to delete" -ForegroundColor White
 $settings = Join-Path $claude 'settings.json'
 Plan-Delete "$settings.statusline-backup.json" 'only exists if --take-statusline was used'
-if ($env:TEMP) { Plan-Delete (Join-Path $env:TEMP 'dispatch-gate-error.log') 'the fallback log for hook errors' }
+if ($env:TEMP) { Plan-Delete (Join-Path $env:TEMP 'dispatch_gate_error.log') 'the fallback log for hook errors' }
 if (Test-Path -LiteralPath $claude) {
     Get-ChildItem -LiteralPath $claude -Filter '*.bak-dispatch-guard' -ErrorAction SilentlyContinue |
         ForEach-Object { Plan-Delete $_.FullName 'a backup this plugin made before editing' }
@@ -239,7 +244,7 @@ Write-Host "6. project level" -ForegroundColor White
 if (-not $projectRoot) {
     Note 'INFO' 'skipped - you pressed Enter' 'run again and give a folder to include project files'
 } else {
-    foreach ($f in Get-ChildItem -LiteralPath $projectRoot -Recurse -Depth 3 -Force -Filter 'dispatch-gate.log' -ErrorAction SilentlyContinue) {
+    foreach ($f in Get-ChildItem -LiteralPath $projectRoot -Recurse -Depth 3 -Force -Filter 'dispatch_gate.log' -ErrorAction SilentlyContinue) {
         Plan-Delete $f.FullName 'a log this plugin wrote'
     }
     foreach ($f in Get-ChildItem -LiteralPath $projectRoot -Recurse -Depth 3 -Force -Filter 'dispatch-guard.json' -ErrorAction SilentlyContinue) {

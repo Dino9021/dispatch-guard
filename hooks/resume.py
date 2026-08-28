@@ -61,7 +61,7 @@ RESUME_DEFAULTS = {
     "retry_window_min": 120,     # keep retrying for this long, then stop for good
     "retry_every_min": 20,       # how often to retry inside that window
 }
-FAILED_MARKER = "resume-failed.json"
+FAILED_MARKER = "resume_failed.json"
 # A session the gate touched within this many minutes counts as live, so the scheduled
 # route stands down and lets the session-wake route do the work.
 ALIVE_WITHIN_MIN = 30
@@ -70,7 +70,7 @@ ALIVE_WITHIN_MIN = 30
 def log_line(message):
     """Append to the gate log in the current repository, and to a fallback."""
     line = "%s RESUME %s%s" % (time.strftime("%Y-%m-%d %H:%M:%S"), message, "\n")
-    for path in (os.path.join(os.getcwd(), ".claude", "dispatch-gate.log"),):
+    for path in (os.path.join(os.getcwd(), ".claude", "dispatch_gate.log"),):
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "a", encoding="utf-8") as f:
@@ -186,7 +186,7 @@ def origin_session_note(sdir, state):
 
 def reset_time(sdir, cfg):
     """When the current window turns over, as epoch seconds, or None."""
-    data = usage.read_json(cfg["limits_file"], {}) or {}
+    data = usage.read_json(cfg["token_usage_file"], {}) or {}
     five = data.get("five_hour") or {}
     r = five.get("resets_at")
     return r if isinstance(r, (int, float)) else None
@@ -310,10 +310,25 @@ def handoff_warnings(path):
 
 
 def schedule(when, dry_run):
-    """Register a ONE-SHOT task at `when` (a struct_time). Returns the command run."""
+    """Register a ONE-SHOT task at `when` (a struct_time). Returns the command run.
+
+    ⛔ THE COMMAND LINE GOES THROUGH THE SHIM, and of everything this plugin writes, this is
+    the one where a versioned path hurts most. The task is registered with the OS NOW and
+    fires HOURS later - across exactly the window in which somebody runs `claude plugin
+    update`. A path into the plugin cache would then point at a version that is gone, the
+    scheduler would run it, nothing would happen, and the whole point of arming a resume is
+    that nobody is watching when it fires. ⇒ See hooks/shim.py.
+
+    ⚠ The shim is WRITTEN here rather than assumed - arming is the one moment this code knows
+    a command must still work at an unattended future time. ⛔ But AFTER the dry_run return,
+    never before it: a caller asking what WOULD be registered must not change anything on
+    disk. Measured the hard way elsewhere in this change - a builder with a side effect wrote
+    into the real state directory from a test run.
+    """
+    import shim
     me = os.path.abspath(__file__)
-    launcher = os.path.join(os.path.dirname(me), "run.sh")
-    inner = 'bash "%s" "%s" --run' % (launcher.replace("\\", "/"), me.replace("\\", "/"))
+    sdir = usage.state_dir()
+    inner = shim.command(sdir, "resume.py", "--run")
     if os.name == "nt":
         cmd = ["schtasks", "/Create", "/TN", TASK_NAME, "/SC", "ONCE",
                "/ST", time.strftime("%H:%M", when), "/SD", time.strftime("%m/%d/%Y", when),
@@ -323,6 +338,7 @@ def schedule(when, dry_run):
         cmd = ["at", time.strftime("%H:%M %Y-%m-%d", when)]
     if dry_run:
         return cmd, None
+    shim.write(sdir, os.path.dirname(os.path.dirname(me)))
     try:
         if os.name == "nt":
             r = subprocess.run(cmd, capture_output=True, timeout=60)
@@ -702,7 +718,7 @@ def do_status(sdir, cfg):
     print("  actually reset, re-arms it. When the window above runs out it stops for good")
     print("  and leaves a marker the NEXT Claude session reads out loud, so a resume that")
     print("  gave up at 03:40 does not stay silent. RESUME lines in")
-    print("  .claude/dispatch-gate.log say which happened.")
+    print("  .claude/dispatch_gate.log say which happened.")
     return 0
 
 

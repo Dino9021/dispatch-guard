@@ -111,7 +111,7 @@ DEFAULTS = {
 
 
 def state_dir(argv=None):
-    """Where limits.json and the logs/ folder live.
+    """Where token_usage.json and the logs/ folder live.
 
     `--dir` wins, then $CLAUDE_DISPATCH_DIR, then **~/.claude/dispatch-guard/**.
 
@@ -144,20 +144,20 @@ def read_json(path, fallback=None):
 
 # ⭐ How long a file in history_dir survives, in days. 0 keeps everything for ever.
 # ⚠ Thirty days of the debug dump is about 40 MB at the measured 1.2-1.4 MB a day, and
-# thirty days of token_usage_history is well under 30 MB. Both are small enough to keep and
+# thirty days of token_usage is well under 30 MB. Both are small enough to keep and
 # enough to be worth bounding, which is why the default deletes rather than hoards.
 HISTORY_KEEP_DAYS_DEFAULT = 30
 
 # ⭐ EVERY DEBUG SWITCH AND ITS DEFAULT, in one place, because "what switches exist?" was
 # otherwise answerable only by reading config.example.json.
-# ⛔ The two defaults differ on purpose. token_usage_history writes two percentages a row -
+# ⛔ The two defaults differ on purpose. token_usage writes two percentages a row -
 # 82 KB a day, MEASURED (132 bytes a row, about 640 readings, and only when a number
 # actually moved) - and it is what makes the burn PROJECTION work at all, so it is
 # ON. API_response_usage writes whole response bodies at 1.2-1.4 MB a day to answer a
 # question and then be switched off again, so it is OFF.
 DEBUG_DEFAULTS = {
     "API_response_usage": False,
-    "token_usage_history": True,
+    "token_usage": True,
 }
 
 
@@ -250,13 +250,13 @@ def config(sdir):
             "number will intermittently read -- and the brake will not fire.%s"
             % (cfg["fetch_seconds"] + cfg["fetch_seconds_jitter"], cfg["stale_min"],
                chr(10)))
-    # An explicit limits_file lets this skill read an EXISTING claude-pacer install
+    # An explicit token_usage_file lets this skill read an EXISTING claude-pacer install
     # instead of collecting its own, so a machine that already has one is not broken
     # by installing this.
-    cfg["limits_file"] = (disk.get("limits_file")
-                          or os.path.join(sdir, "limits.json"))
+    cfg["token_usage_file"] = (disk.get("token_usage_file")
+                          or os.path.join(sdir, "token_usage.json"))
     cfg["colour"] = disk.get("colour", disk.get("color", True))
-    # ⭐ ON by default, and it did not use to be. token_usage_history-*.jsonl records how
+    # ⭐ ON by default, and it did not use to be. token_usage_history_*.jsonl records how
     # much was used and when - two percentages a row, nothing else. It is on because burn
     # PROJECTION needs two samples of the same window, so with it off the "projected to
     # exceed before the reset" half of PACE has never fired for anybody who did not go and
@@ -265,7 +265,7 @@ def config(sdir):
     # history_keep_days removes whole files after 30 days. Kept for ever, it was a record of
     # a person's usage that nobody had asked for; kept for a month, it is what makes the
     # projection work.
-    # ⛔ THE SWITCH IS `debug.token_usage_history` NOW, and it is set further down, once the
+    # ⛔ THE SWITCH IS `debug.token_usage` NOW, and it is set further down, once the
     # debug block has been parsed. See the assignment there - putting it here would mean
     # parsing that block twice, and the second copy is the one that drifts.
     cfg["history_dir"] = disk.get("history_dir")     # None -> <state dir>/logs
@@ -280,7 +280,7 @@ def config(sdir):
                                      HISTORY_KEEP_DAYS_DEFAULT)
     # ⛔ OFF by default, and it is meant to be switched back off. With
     # "debug": {"API_response_usage": true} every successful fetch appends the WHOLE
-    # response body to <history_dir>/usage-response-<stamp>.jsonl, rotated rather than
+    # response body to <history_dir>/API_response_usage_<stamp>.jsonl, rotated rather than
     # trimmed. ⚠ COST, MEASURED: a whole line is 2006 bytes (the body alone 1887), and
     # fetch_seconds 120 with fetch_seconds_jitter 30 gives a MEAN interval of 135 s - about
     # 640 lines a day, where 720 would be the no-jitter ceiling. So AT MOST ABOUT
@@ -326,17 +326,13 @@ def config(sdir):
     for key, value in d.items():
         cfg["debug"][key] = _truthy(value, DEBUG_DEFAULTS.get(key, False))
 
-    # ⭐ THE HISTORY SWITCH, read from the block above so the list alias, the coercion and
-    # the warning all apply to it exactly once.
-    # ⛔ `keep_history` IS STILL READ. It is no longer documented, but an existing
-    # "keep_history": false must keep the history off: that is what its owner meant when
-    # they wrote it, and a rename must never quietly switch a setting back on. It applies
-    # only when debug.token_usage_history is ABSENT - an explicit new key wins.
-    cfg["keep_history"] = cfg["debug"]["token_usage_history"]
-    if "token_usage_history" not in d and disk.get("keep_history") is not None:
-        cfg["keep_history"] = _truthy(disk.get("keep_history"),
-                                      DEBUG_DEFAULTS["token_usage_history"])
-        cfg["debug"]["token_usage_history"] = cfg["keep_history"]
+    # ⛔ `keep_history` IS NO LONGER READ AT ALL, and neither is anything else this switch has
+    # been called. There is ONE name now - `debug.token_usage` - and cfg["debug"] is the only
+    # place it lives; there is no second copy at the top level to drift from it.
+    # ⚠ A config still carrying `"keep_history": false` therefore gets the DEFAULT, which is
+    # ON. That is the owner's decision, taken deliberately: carrying a rename forward for ever
+    # is how a settings file ends up with three names for one switch and nobody able to say
+    # which one wins. `install.py --status` names every unrecognised key it finds.
     cfg["show_context"] = bool(disk.get("show_context", True))
     cfg["show_model"] = bool(disk.get("show_model", True))
     cfg["width"] = disk.get("width")        # None -> detect
@@ -538,7 +534,7 @@ def _whole_percent(data, name):
 
 
 def _api_window(win, whole=None):
-    """One API window -> the {used_percentage, resets_at} shape limits.json stores.
+    """One API window -> the {used_percentage, resets_at} shape token_usage.json stores.
 
     ⛔ THE SCALE IS ASSERTED, NOT ASSUMED, and a value that cannot be told apart is
     REJECTED. This endpoint returns WHOLE PERCENT - measured 2026-08-26 15:21,
@@ -656,7 +652,7 @@ def fetch(cfg=None, sdir=None):
 
 
 def _write_record(sdir, cfg, record, prev):
-    """Atomically replace limits.json, and append history only when a number moved.
+    """Atomically replace token_usage.json, and append history only when a number moved.
 
     ⭐ ts IS ALWAYS STAMPED on a successful fetch, even when the numbers are identical -
     and that is the OPPOSITE of what the statusline path had to do. There, an unchanged
@@ -665,17 +661,17 @@ def _write_record(sdir, cfg, record, prev):
     file is honestly the age of the number, and stale_min means what it says again.
     """
     os.makedirs(sdir, exist_ok=True)
-    tmp = cfg["limits_file"] + ".tmp"
+    tmp = cfg["token_usage_file"] + ".tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(record, f)
-        os.replace(tmp, cfg["limits_file"])      # atomic; never a half-written file
+        os.replace(tmp, cfg["token_usage_file"])      # atomic; never a half-written file
     except OSError:
         return
     moved = not (isinstance(prev, dict)
                  and prev.get("five_hour") == record.get("five_hour")
                  and prev.get("seven_day") == record.get("seven_day"))
-    if moved and cfg.get("keep_history"):
+    if moved and cfg["debug"]["token_usage"]:
         # ⚠ model and session are no longer recorded, and that is accepted rather than
         # overlooked: they came off the statusline payload, which this path does not see.
         # Checked before accepting it - _projection() reads only `pct`, `at`/`ts` and
@@ -690,14 +686,14 @@ def _claim_attempt(sdir, due):
     """True if THIS process may spend one of the five calls. Written BEFORE the request.
 
     ⛔ WITHOUT THIS THE FLOOR PROTECTS NOTHING. fetch_seconds is enforced against the age
-    of limits.json, and several processes share that one file: two sessions' statuslines,
+    of token_usage.json, and several processes share that one file: two sessions' statuslines,
     or a statusline and a `--watch`, crossing the interval boundary together all see the
     same stale timestamp and all fetch. At about five calls per token that is not a
     rounding error - it is most of the budget spent on one boundary. Several sessions open
     at once is the normal state on a working machine, not an edge case.
 
     ⭐ It doubles as the ONLY BACKOFF THERE IS, and that is the load-bearing half. Reaching
-    this function means limits.json is NOT fresh, so any recent attempt recorded here must
+    this function means token_usage.json is NOT fresh, so any recent attempt recorded here must
     have FAILED. Refusing for `due` after a failure is therefore exactly the 429 backoff: a
     claim is not released on failure, deliberately, because releasing it would let the next
     caller retry at once and a persistent 429 is not something retrying cures.
@@ -729,7 +725,7 @@ def _claim_attempt(sdir, due):
 
 
 def ensure_fresh(sdir, cfg):
-    """Refresh limits.json when the stored number is older than fetch_seconds.
+    """Refresh token_usage.json when the stored number is older than fetch_seconds.
 
     Returns None when nothing needed doing or the fetch succeeded, else the reason string.
 
@@ -740,13 +736,13 @@ def ensure_fresh(sdir, cfg):
     --statusline, which Claude Code re-runs, and --watch.
 
     ⭐ THAT GAP IS CLOSED, and not by making verdict() fetch. dispatch_gate's
-    keep_clock_running() FORKS this refresh, detached, when limits.json goes stale, on a
+    keep_clock_running() FORKS this refresh, detached, when token_usage.json goes stale, on a
     hook event it was running anyway. The dispatch never waits on the network - the number
     lands for a later call to read - so the extension gets a working brake with no
     statusline, no watcher and nothing per-project. ⚠ Those two are now DISPLAY: they are
     how a person sees the line, not how the brake stays alive.
 
-    ⚠ Freshness is judged from limits.json, which SEVERAL PROCESSES SHARE - so the age
+    ⚠ Freshness is judged from token_usage.json, which SEVERAL PROCESSES SHARE - so the age
     check alone does not bound the call count. _claim_attempt() does, and it is also the
     only backoff after a failure. Read its docstring before changing anything here.
 
@@ -755,12 +751,12 @@ def ensure_fresh(sdir, cfg):
 
     ⭐ RETURNS (record, reason) - the record IN MEMORY, so a caller never re-reads the file
     this function just read or wrote. Within one process the number is passed by value;
-    limits.json exists for the CROSS-PROCESS hop only, which is the one that cannot be
+    token_usage.json exists for the CROSS-PROCESS hop only, which is the one that cannot be
     memory: the dispatch gate is a fresh process on every tool call and shares nothing with
     a long-running --watch.
     """
     due = _interval(cfg)                         # fetch_seconds + up to 30 s of jitter
-    prev = read_json(cfg["limits_file"], None)
+    prev = read_json(cfg["token_usage_file"], None)
     if isinstance(prev, dict) and isinstance(prev.get("ts"), (int, float)):
         if (time.time() * 1000 - prev["ts"]) / 1000.0 < due:
             return prev, None                    # still fresh; spend no call
@@ -822,13 +818,15 @@ def _age_note(record, cfg):
 
 
 def _runnable(*args):
-    """A command a model can actually RUN. A bare `usage.py --fetch-now` executes nowhere:
-    the hook scripts are not executable and have no shebang association on either platform.
+    """A command a model can actually RUN, with NO VERSION NUMBER IN IT.
+
+    ⚠ A bare `usage.py --fetch-now` executes nowhere: the hook scripts are not executable and
+    have no shebang association on either platform. ⛔ And a path built from this file's own
+    location carries the plugin version, which stops being true at the next update - so it
+    names the shim in the state directory instead. See hooks/shim.py.
     """
-    here = os.path.dirname(os.path.abspath(__file__))
-    return 'bash "%s" "%s" %s' % (os.path.join(here, "run.sh").replace("\\", "/"),
-                                  os.path.join(here, "usage.py").replace("\\", "/"),
-                                  " ".join(args))
+    import shim
+    return shim.command(state_dir(), "usage.py", *args)
 
 
 def collect(sdir, cfg):
@@ -879,23 +877,13 @@ def collect(sdir, cfg):
     return 0
 
 
-HISTORY_PREFIX = "token_usage_history-"
-
-# ⛔ WHAT THE FILES USED TO BE CALLED, and it is not decoration. `limits` named the internal
-# variable, never the thing being recorded, so the files were renamed to say what they hold.
-# ⚠ ANYONE WHO ALREADY HAS limits-history-*.jsonl KEEPS IT. Those files are still READ by
-# _projection(), so an existing burn history keeps working, and still DELETED by
-# prune_logs(), so they expire instead of living for ever in a folder nothing manages any
-# more. Only the new prefix is ever written.
-# ⛔ Nothing renames a file on disk. Rewriting a record to satisfy a naming change is the
-# one thing worth less than the record itself.
-LEGACY_HISTORY_PREFIX = "limits-history-"
+HISTORY_PREFIX = "token_usage_history_"
 
 # ⭐ The debug response dump's prefix - same directory, same rotation, different file.
 # ⛔ DELIBERATELY NOT the history file. History holds two percentages per row and is PARSED
 # by _projection(); this holds whole response bodies for questions nobody has asked yet. One
 # reader would choke on the other's lines, so they never share a file.
-DEBUG_RESPONSE_PREFIX = "usage-response-"
+DEBUG_RESPONSE_PREFIX = "API_response_usage_"
 
 
 def history_dir(sdir, cfg):
@@ -916,7 +904,7 @@ def history_dir(sdir, cfg):
 
 
 def history_path(sdir, cfg, now=None, prefix=HISTORY_PREFIX):
-    """Today's history file: token_usage_history-<YYYYMMDD-HHMMSS>.jsonl
+    """Today's history file: token_usage_history_<YYYYMMDD-HHMMSS>.jsonl
 
     The stamp is when the FILE was started, in the same YYYYMMDD-HHMMSS form the task
     folders use, so one convention covers both. A new file begins at each local midnight:
@@ -954,16 +942,14 @@ def history_path(sdir, cfg, now=None, prefix=HISTORY_PREFIX):
 def _history_stamp(path):
     """The YYYYMMDD-HHMMSS part of a history file name, whichever prefix it carries.
 
-    ⛔ THE PREFIX IS STRIPPED BY NAME, NOT BY SPLITTING ON A HYPHEN. `limits-history-` has a
-    hyphen inside it, so `split("-", 1)` leaves "history-20260828-..." and sorts the legacy
-    files under H instead of by date - which puts them after every new file no matter how
-    old they are, and _projection() reads the last two. Found by reading the sort key rather
-    than by a failing test, because with only new-prefix files present it looks correct.
+    ⛔ THE PREFIX IS STRIPPED BY NAME, NOT BY SPLITTING ON A SEPARATOR. The prefix carries the
+    same separator the stamp does, so `split("_", 1)` would leave "usage_history_20260828-..."
+    and sort by the word instead of by the date - an order with nothing to do with when the
+    files were written, while _projection() reads the last two.
     """
     name = os.path.basename(path)
-    for pref in (HISTORY_PREFIX, LEGACY_HISTORY_PREFIX):
-        if name.startswith(pref):
-            return name[len(pref):]
+    if name.startswith(HISTORY_PREFIX):
+        return name[len(HISTORY_PREFIX):]
     return name
 
 
@@ -998,10 +984,10 @@ def prune_logs(sdir, cfg, now=None):
     cutoff = (time.time() if now is None else now) - days * 86400
     d = history_dir(sdir, cfg)
     removed = 0
-    # ⛔ THE LEGACY PREFIX IS IN THIS LIST ON PURPOSE. Files written before the rename must
-    # still expire; leaving them out would strand them in a folder nothing manages any more,
-    # growing for ever while the setting that was supposed to bound them says 30 days.
-    for pref in (HISTORY_PREFIX, LEGACY_HISTORY_PREFIX, DEBUG_RESPONSE_PREFIX):
+    # ⛔ ONLY THE TWO PREFIXES THIS PLUGIN WRITES. Never a sweep by extension: `history_dir`
+    # is configurable and the docs suggest pointing it at a synced folder, where a blanket
+    # *.jsonl delete would take somebody else's data with it.
+    for pref in (HISTORY_PREFIX, DEBUG_RESPONSE_PREFIX):
         for path in glob.glob(os.path.join(d, pref + "*.jsonl")):
             try:
                 if os.path.getmtime(path) < cutoff:
@@ -1135,7 +1121,7 @@ def _account_ids():
 def _dump_response(sdir, cfg, data):
     """debug.API_response_usage: keep the WHOLE response body, and never break a fetch.
 
-    One JSON array per line, appended to <history_dir>/usage-response-<YYYYMMDD-HHMMSS>.jsonl:
+    One JSON array per line, appended to <history_dir>/API_response_usage_<YYYYMMDD-HHMMSS>.jsonl:
 
         [organizationUuid, accountUuid, "2026-08-27T09:45:00+00:00", {...the response...}]
 
@@ -1431,7 +1417,7 @@ def verdict(sdir, cfg, now=None, data=None):
     """GO / PACE / STOP / NO-DATA, with the reasoning that makes each one correct.
 
     ⛔ This is the ONLY sanctioned way to interpret the numbers. Three things are got
-    wrong when an agent reads limits.json directly, and all three are handled here:
+    wrong when an agent reads token_usage.json directly, and all three are handled here:
     reset arithmetic, seven-day false alarms, and burn projection.
     """
     now = now if now is not None else time.time()
@@ -1442,10 +1428,10 @@ def verdict(sdir, cfg, now=None, data=None):
     # one. dispatch_gate.py deliberately does not pass it.
     # ⚠ An EMPTY dict falls through to the file, not to NO-DATA. `{}` is a dict, so an
     # isinstance test alone would accept it as "the caller supplied a record" and answer
-    # NO-DATA while a perfectly good limits.json sat on disk - a brake reading unknown
+    # NO-DATA while a perfectly good token_usage.json sat on disk - a brake reading unknown
     # because of a bookkeeping slip. A caller with nothing to offer must be indistinguish-
     # able from one that offered nothing.
-    data = data if (isinstance(data, dict) and data) else read_json(cfg["limits_file"])
+    data = data if (isinstance(data, dict) and data) else read_json(cfg["token_usage_file"])
     if not data or not isinstance(data.get("five_hour"), dict):
         return {"verdict": "NO-DATA", "exit": 3,
                 "text": "NO-DATA: no five_hour block. Nothing has fetched YET - the "
@@ -1546,14 +1532,12 @@ def _projection(sdir, cfg, pct, resets, now):
     silently absent projection read as "nothing projected".
     """
     # Read the last two files: a 5h window can straddle midnight, and therefore two.
-    # ⛔ BOTH PREFIXES, so a history written before the rename keeps working. The rows are
-    # identical - only the file name changed - and sorting by name puts a day's
-    # token_usage_history file after the same day's limits-history one, so a machine that
-    # updated mid-day reads its own morning.
+    # ⛔ ONE PREFIX, AND NO PATH FOR THE NAMES THIS FILE USED TO HAVE. A projection quietly
+    # assembled from files two renames old is worth less than one that says it has no data
+    # yet, and there is now exactly one name to look for.
     rows = []
     hdir = history_dir(sdir, cfg)
-    paths = (glob.glob(os.path.join(hdir, HISTORY_PREFIX + "*.jsonl"))
-             + glob.glob(os.path.join(hdir, LEGACY_HISTORY_PREFIX + "*.jsonl")))
+    paths = glob.glob(os.path.join(hdir, HISTORY_PREFIX + "*.jsonl"))
     for path in sorted(paths, key=_history_stamp)[-2:]:
         try:
             with open(path, encoding="utf-8") as f:
@@ -1716,7 +1700,7 @@ def watch(sdir, cfg, argv):
             if may_fetch:
                 data, reason = ensure_fresh(sdir, cfg)  # in memory; no re-read
             else:
-                data, reason = read_json(cfg["limits_file"]), None
+                data, reason = read_json(cfg["token_usage_file"]), None
             data = data if isinstance(data, dict) else {}
             age = None
             if data.get("ts"):
@@ -1925,7 +1909,7 @@ def selftest():
     cfg = config(tmp)
     good = {"ts": int(time.time() * 1000) - 3600_000,
             "five_hour": {"used_percentage": 6, "resets_at": 1787742000}}
-    with open(cfg["limits_file"], "w", encoding="utf-8") as f:
+    with open(cfg["token_usage_file"], "w", encoding="utf-8") as f:
         json.dump(good, f)
     calls = []
     saved = fetch
@@ -1939,7 +1923,7 @@ def selftest():
         # so a path that returns None makes them render -- with good data on disk.
         assert rec, "ensure_fresh returned no record on the failure path"
         assert rec == good, "the old record must survive a failed fetch, in memory too"
-        assert read_json(cfg["limits_file"]) == good, "a 429 must not touch the cache"
+        assert read_json(cfg["token_usage_file"]) == good, "a 429 must not touch the cache"
         # ⛔ The claim is NOT released on failure, so the next caller must not retry. This
         # is the only backoff there is, and without it a persistent 429 becomes a loop
         # that spends the whole five-call budget. It is also what stops several sessions'
@@ -1958,7 +1942,7 @@ def selftest():
         # branch passed them: every tick would have rendered -- with good data on disk.
         fresh = {"ts": int(time.time() * 1000),
                  "five_hour": {"used_percentage": 11, "resets_at": 1787742000}}
-        with open(cfg["limits_file"], "w", encoding="utf-8") as f:
+        with open(cfg["token_usage_file"], "w", encoding="utf-8") as f:
             json.dump(fresh, f)
         del calls[:]                       # count only what THIS path does
         # ⚠ THE CLAIM IS CLEARED FIRST, deliberately. Leaving it would let the claim check
@@ -1990,13 +1974,12 @@ def selftest():
     logs = os.path.join(tmp2, "logs")
     os.makedirs(logs)
     now2 = time.time()
-    planted = {"token_usage_history-20200101-000000.jsonl": 60,   # ours, old
-               "limits-history-20200101-000000.jsonl": 60,     # ours, old, LEGACY name
-               "usage-response-20200101-000000.jsonl": 60,     # ours, old
-               "token_usage_history-20990101-000000.jsonl": 1, # ours, fresh
-               "limits-history-20990101-000000.jsonl": 1,      # ours, fresh, LEGACY
-               "not-ours.jsonl": 400,                          # NOT ours, old
-               "notes.txt": 400}                               # NOT ours, old
+    planted = {"token_usage_history_20200101-000000.jsonl": 60,   # ours, old
+               "API_response_usage_20200101-000000.jsonl": 60,     # ours, old
+               "token_usage_history_20990101-000000.jsonl": 1,     # ours, fresh
+               "limits-history-20200101-000000.jsonl": 400,        # RETIRED name, ancient
+               "not-ours.jsonl": 400,                              # NOT ours, old
+               "notes.txt": 400}                                   # NOT ours, old
 
     def replant():
         for fname, age in planted.items():
@@ -2007,20 +1990,22 @@ def selftest():
 
     replant()
     cfg2 = {"history_dir": logs, "history_keep_days": 30}
-    # ⚠ THREE: both history prefixes and the response dump, each with one old file.
-    assert prune_logs(tmp2, cfg2, now2) == 3, "expected exactly the three old OURS"
+    # ⚠ TWO: the history file and the response dump, one old file each.
+    assert prune_logs(tmp2, cfg2, now2) == 2, "expected exactly the two old OURS"
     left = set(os.listdir(logs))
     # ⛔ THE SAFETY ARGUMENT: history_dir is configurable and the docs suggest pointing it
     # at a synced folder, so anything without one of this plugin's two prefixes must
     # survive no matter how old it is. A blanket *.jsonl sweep would delete a stranger's
     # data, and nothing would ever report it.
     assert "not-ours.jsonl" in left and "notes.txt" in left, left
-    assert "token_usage_history-20990101-000000.jsonl" in left, left
-    assert "token_usage_history-20200101-000000.jsonl" not in left, left
-    # ⛔ THE LEGACY NAME EXPIRES TOO. Leaving it out of prune_logs() would strand every
-    # file written before the rename in a folder nothing manages any more.
-    assert "limits-history-20990101-000000.jsonl" in left, left
-    assert "limits-history-20200101-000000.jsonl" not in left, left
+    assert "token_usage_history_20990101-000000.jsonl" in left, left
+    assert "token_usage_history_20200101-000000.jsonl" not in left, left
+    # ⛔ A NAME THIS PLUGIN NO LONGER WRITES IS NOT TOUCHED, however old it is. There is one
+    # set of names now and prune_logs() knows only that set - so a file from a retired naming
+    # scheme is a stranger's file as far as this function is concerned, and strangers' files
+    # are never deleted. ⚠ Anyone updating is expected to run Tools/clean-dispatch-guard.ps1,
+    # which removes the whole state directory including these.
+    assert "limits-history-20200101-000000.jsonl" in left, left
 
     # 0 and every unreadable value keep everything - checked through prune_logs itself,
     # not only through _days(), because this function is reached with a cfg that never
@@ -2037,13 +2022,13 @@ def selftest():
     # read it. Pinned here because the two readings are easy to confuse and one of them
     # deletes.
     replant()
-    assert prune_logs(tmp2, {"history_dir": logs, "history_keep_days": None}, now2) == 3
+    assert prune_logs(tmp2, {"history_dir": logs, "history_keep_days": None}, now2) == 2
 
     # ⭐ And the trigger: history_path() prunes ONLY when it mints a new day's name.
     replant()
     minted = history_path(tmp2, cfg2, now2)
     assert not os.path.exists(minted), "history_path must not create the file"
-    assert len(os.listdir(logs)) == len(planted) - 3, "minting a new name must prune"
+    assert len(os.listdir(logs)) == len(planted) - 2, "minting a new name must prune"
     replant()
     with open(minted, "w", encoding="utf-8") as f:
         f.write("x" + chr(10))
@@ -2051,45 +2036,48 @@ def selftest():
     assert same == minted, (same, minted)
     assert len(os.listdir(logs)) == len(planted) + 1, "an existing day's file must NOT prune"
 
-    # ⛔ THE LEGACY HISTORY IS STILL READ. A rename that silently drops the old files takes
-    # a person's burn history with it, and _projection() answering None looks exactly like
-    # "not enough samples yet" - there is no error to notice. Measured: dropping the legacy
-    # glob left the whole suite green, so this exists because a mutant survived without it.
-    tmp3 = tempfile.mkdtemp(prefix="dg-legacy-")
+    # ⛔ THERE IS EXACTLY ONE FILE NAME NOW, and this checks that the reader and the writer
+    # agree on it. They are built from the same constant, so the risk is not that they differ
+    # - it is that BOTH are wrong and _projection() answers None, which looks exactly like
+    # "not enough samples yet". There is no error to notice, which is why it is asserted.
+    tmp3 = tempfile.mkdtemp(prefix="dg-history-")
     logs3 = os.path.join(tmp3, "logs")
     os.makedirs(logs3)
     resets3 = int(time.time()) + 3600
     rows3 = [{"at": stamp(time.time() - 1800), "pct": 10, "resets_at": stamp(resets3)},
              {"at": stamp(time.time() - 60), "pct": 40, "resets_at": stamp(resets3)}]
-    legacy_file = os.path.join(logs3, LEGACY_HISTORY_PREFIX + "20200101-000000.jsonl")
-    with open(legacy_file, "w", encoding="utf-8") as f:
+    cfg3 = {"history_dir": logs3, "debug": {"token_usage": True}}
+    written = history_path(tmp3, cfg3)
+    assert os.path.basename(written).startswith("token_usage_history_"), written
+    with open(written, "w", encoding="utf-8") as f:
         for row in rows3:
             f.write(json.dumps(row) + chr(10))
-    cfg3 = {"history_dir": logs3, "keep_history": True}
     proj = _projection(tmp3, cfg3, 40, resets3, time.time())
     assert proj is not None and proj > 40, (
-        "a history under the OLD file name was not read: %r" % (proj,))
-    # ⚠ And the same rows under the NEW name must still work, or the read is only legacy.
-    os.rename(legacy_file, os.path.join(logs3, HISTORY_PREFIX + "20200101-000000.jsonl"))
-    assert _projection(tmp3, cfg3, 40, resets3, time.time()) == proj, "new name not read"
+        "the writer's own file name was not read back: %r (%s)" % (proj, written))
+    # ⛔ AND A NAME THIS PLUGIN NO LONGER USES IS NOT READ. The owner asked for one name with
+    # no compatibility path; a projection quietly assembled from files two renames old is
+    # worth less than one that says it has no data yet. Mutation-checked: put the rows under
+    # a retired name and the projection must go away.
+    os.rename(written, os.path.join(logs3, "limits-history-20200101-000000.jsonl"))
+    assert _projection(tmp3, cfg3, 40, resets3, time.time()) is None, \
+        "a retired file name is still being read"
 
-    # ⛔ `keep_history: false` MUST STILL TURN THE HISTORY OFF. The switch was renamed into
-    # the debug block and its default flipped to ON, so a person who had deliberately
-    # switched it OFF would have it switched back on by an update - silently, since nothing
-    # reports a setting that stopped being read. Another mutant that survived without this.
-    tmp4 = tempfile.mkdtemp(prefix="dg-legacykey-")
+    # ⛔ ONE SWITCH, ONE NAME, AND EVERY OLD NAME IGNORED. `keep_history` was what this used
+    # to be called; it is not read any more, so a config still carrying it gets the DEFAULT.
+    # ⚠ That is the owner's decision and it is asserted rather than assumed, because the
+    # opposite - a name that quietly still works - is how a settings file ends up with three
+    # spellings of one switch and nobody able to say which wins.
+    tmp4 = tempfile.mkdtemp(prefix="dg-switch-")
     for blob, want, why in (
-            ({}, True, "absent -> ON, the new default"),
-            ({"keep_history": False}, False, "legacy OFF must survive the rename"),
-            ({"keep_history": True}, True, "legacy ON"),
-            ({"debug": {"token_usage_history": False}}, False, "new key OFF"),
-            ({"keep_history": False, "debug": {"token_usage_history": True}}, True,
-             "an explicit new key beats the legacy one"),
-            ({"keep_history": True, "debug": {"token_usage_history": False}}, False,
-             "and beats it the other way too")):
+            ({}, True, "absent -> ON, the default"),
+            ({"debug": {"token_usage": False}}, False, "the one name, OFF"),
+            ({"debug": {"token_usage": True}}, True, "the one name, ON"),
+            ({"keep_history": False}, True, "a retired name must be IGNORED, not obeyed"),
+            ({"token_usage_history": False}, True, "and so must the other retired name")):
         with open(os.path.join(tmp4, "config.json"), "w", encoding="utf-8") as f:
             json.dump(blob, f)
-        assert config(tmp4)["keep_history"] is want, "%s: %r" % (why, blob)
+        assert config(tmp4)["debug"]["token_usage"] is want, "%s: %r" % (why, blob)
 
     print("selftest OK")
     return 0

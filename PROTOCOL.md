@@ -74,7 +74,7 @@ same.
 
 The brake sits on the dispatch because a refused tool call is not advice a model can weigh
 away. The gate never blocks because the gate itself broke: every failure path exits 0 and
-logs to `.claude/dispatch-gate.log` (fallback `%TEMP%/dispatch-gate-error.log`).
+logs to `.claude/dispatch_gate.log` (fallback `%TEMP%/dispatch_gate_error.log`).
 
 ## 4. NOT enforced — the honest gaps
 

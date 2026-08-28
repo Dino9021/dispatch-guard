@@ -63,6 +63,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cmd_guards  # noqa: E402  - the silent-failure guards; see its docstring
 import model_pricing  # noqa: E402  - the published price table; see its docstring
+import shim  # noqa: E402  - the version-free launcher; see its docstring
 import usage  # noqa: E402  - same folder, stdlib-only, no install step
 
 # Candidate markers for "this is the repository root", tried in order.
@@ -369,7 +370,7 @@ def state_path(sdir, session_id, suffix):
 def log(root, message):
     """⛔ Errors go here too. A compensating control nobody reads is not one."""
     try:
-        path = os.path.join(root, ".claude", "dispatch-gate.log")
+        path = os.path.join(root, ".claude", "dispatch_gate.log")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         # ⛔ A bare newline here, NEVER os.linesep. Text mode already translates it
         # to the platform's ending on Windows, so adding os.linesep on top produces a
@@ -412,7 +413,7 @@ def clock_due(sdir, every, now):
     exactly when it fails most - an expired token, or the 429 the fetch floor exists to
     avoid.
 
-    ⚠ Two clocks, not one. `limits.json` says when the DATA went stale; the mark says when
+    ⚠ Two clocks, not one. `token_usage.json` says when the DATA went stale; the mark says when
     a child was last STARTED. Only the second one moves when a fetch fails, so only the
     second one can stop a failing fetch from being retried forever.
     """
@@ -422,7 +423,7 @@ def clock_due(sdir, every, now):
         except OSError:
             return None
 
-    data = age("limits.json")
+    data = age("token_usage.json")
     if data is not None and data < every:
         return False
     started = age(CLOCK_MARK)
@@ -432,7 +433,7 @@ def clock_due(sdir, every, now):
 
 
 def keep_clock_running(sdir):
-    """Start a DETACHED refresh when limits.json has gone stale, and never wait for it.
+    """Start a DETACHED refresh when token_usage.json has gone stale, and never wait for it.
 
     ⭐ THIS IS WHAT MAKES THE BRAKE WORK WITH NO STATUSLINE. The numbers only ever moved
     when something re-ran usage.py on a timer: the statusline, which Claude Code renders,
@@ -442,13 +443,13 @@ def keep_clock_running(sdir):
 
     ⛔ IT IS NOT THE SYNCHRONOUS FETCH ensure_fresh() REFUSES TO DO, and the difference is
     the whole design. A blocking HTTP call here would stall every dispatch that crossed the
-    interval boundary. This forks and returns; the number lands in limits.json for a LATER
+    interval boundary. This forks and returns; the number lands in token_usage.json for a LATER
     call to read. A dispatch is never made to wait on the network.
 
     ⭐ Why the gate is the right place: dispatch happens inside a session, this hook already
     runs on every tool call of every session, so the sessions that need a fresh number are
     exactly the ones already executing this code. Nothing new has to be installed, and
-    nothing is per-project - `limits.json` is per-ACCOUNT, like the usage it records.
+    nothing is per-project - `token_usage.json` is per-ACCOUNT, like the usage it records.
 
     ⚠ The child re-checks freshness itself and usually does nothing. That is deliberate:
     this function decides whether to FORK, usage.py decides whether to FETCH, and neither
@@ -468,7 +469,7 @@ def keep_clock_running(sdir):
     # escaped into main() BEFORE the event branches, the top-level handler exited 0 with no
     # output, and a hook that prints nothing is a hook that APPROVED the call. The gate did
     # not brake, did not refuse a background dispatch, and did not check for a plan, in
-    # every session where limits.json was stale. A clock is a convenience; it must never be
+    # every session where token_usage.json was stale. A clock is a convenience; it must never be
     # able to switch enforcement off, so nothing it can raise leaves this function.
     except Exception:
         return False
@@ -498,7 +499,7 @@ def keep_clock_running(sdir):
 # the DATA was taken; this mark says when a child was last STARTED. A page that 404s or a
 # proxy that eats the request leaves the data old for ever, so without the second clock a
 # failing fetch would fork one process per session start until somebody noticed.
-PRICE_MARK = "model_prices.spawn"
+PRICE_MARK = "model_pricing.spawn"
 PRICE_RETRY = 900
 
 
@@ -573,18 +574,22 @@ def keep_prices_fresh(sdir, cfg, now=None):
     return True
 
 
-def runnable(script, root=False):
-    """A command the model can actually RUN, not a bare path to a .py file.
+def runnable(script):
+    """A command the model can actually RUN, with NO VERSION NUMBER IN IT.
 
     ⛔ The messages used to hand over `.../usage.py --verdict`. The hook scripts are not
     executable and carry no shebang association on either platform, so the one command the
-    gate names as the repair for a blind brake did not run when it was pasted. Everything
-    goes through run.sh, which is also how the interpreter is found - see the comment at the
-    top of that file for why naming `python` directly is wrong on both platforms.
+    gate named as the repair for a blind brake did not run when it was pasted. Everything
+    goes through a launcher, which is also how the interpreter is found - see hooks/run.sh
+    for why naming `python` directly is wrong on both platforms.
+
+    ⛔ AND IT NAMES THE SHIM, NOT THIS DIRECTORY. `HERE` is inside
+    `.../cache/dispatch-guard/dispatch-guard/<VERSION>/`, so a command built from it stops
+    working - or worse, keeps working against an OLD copy - the next time the plugin
+    updates. A model that pastes such a command into a script or a task carries the version
+    with it. See hooks/shim.py.
     """
-    base = os.path.dirname(HERE) if root else HERE
-    return 'bash "%s" "%s"' % (os.path.join(HERE, "run.sh").replace("\\", "/"),
-                               os.path.join(base, script).replace("\\", "/"))
+    return shim.command(usage.state_dir(), script)
 
 
 def _git_tracked(root, rel):
@@ -1405,7 +1410,7 @@ def failed_resume_note(sdir):
     "the work turned out not to be needed" all look identical the next morning. The
     marker is consumed here so it is announced exactly once.
     """
-    path = os.path.join(sdir, "resume-failed.json")
+    path = os.path.join(sdir, "resume_failed.json")
     data = usage.read_json(path, None)
     if not data:
         return ""
@@ -1602,6 +1607,13 @@ def on_session_start(payload, root, sdir, cfg):
     # ⭐ SAY IT UP FRONT. A rule an agent only meets as a refusal costs a wasted turn every
     # session, and this one refuses EVERY dispatch rather than nagging once - so stating it in
     # the opening line is the difference between one Skill call and a confused retry loop.
+    # ⛔ THE VERSION-FREE LAUNCHER, WRITTEN BEFORE ANYTHING NAMES IT. Everything outside the
+    # plugin - the statusline, the VS Code watcher task, every command in the text below -
+    # points at this one path, and this is what keeps it aimed at the copy that is running.
+    # ⚠ Cheap: it reads one line out of one file and returns when the path already matches.
+    moved = shim.write(sdir, os.path.dirname(HERE))
+    if moved and moved[0]:
+        log(root, "SHIM-REPOINTED %s -> %s" % moved)
     # ⛔ FORKED, NEVER AWAITED. See keep_prices_fresh(): this session keeps the table it has.
     if keep_prices_fresh(sdir, cfg):
         log(root, "MODEL-PRICE-REFRESH-FORKED")
@@ -2031,8 +2043,8 @@ def selftest():
         clock = tempfile.mkdtemp()
         now = time.time()
         assert clock_due(clock, 120, now), "empty state dir must be due"
-        for name, back, due in (("limits.json", 10, False),   # data still fresh
-                                ("limits.json", 300, True),   # data stale, nothing started
+        for name, back, due in (("token_usage.json", 10, False),   # data still fresh
+                                ("token_usage.json", 300, True),   # data stale, nothing started
                                 (CLOCK_MARK, 10, False),      # a child was just started
                                 (CLOCK_MARK, 300, True)):     # that child never landed data
             f = os.path.join(clock, name)
@@ -2152,6 +2164,14 @@ def selftest():
         vsdir = tempfile.mkdtemp()
         _saved_dirs, _install.vscode_user_dirs = _install.vscode_user_dirs, lambda: [vsdir]
         _saved_grant, _install.allow_automatic_tasks = _install.allow_automatic_tasks, lambda: None
+        # ⛔ AND write_shim(), WHICH WRITES INTO THE REAL ~/.claude/dispatch-guard. It is not
+        # parameterised by a state directory - install.py owns exactly one - so the only
+        # isolation available is to switch it off. Measured: without this line, running this
+        # selftest from a development checkout repointed the LIVE statusline at the checkout.
+        # The same defect the comment above describes, one function further along.
+        _saved_shim, _install.write_shim = _install.write_shim, lambda: None
+        _real_state = os.path.join(os.path.expanduser("~"), ".claude", "dispatch-guard")
+        _shim_before = shim.recorded(_real_state)
         try:
             up = os.path.join(vsdir, "tasks.json")
             assert not _install.vscode_user_task_current(), "an empty dir cannot be current"
@@ -2180,8 +2200,14 @@ def selftest():
             import json as _json
             with open(up, encoding="utf-8") as fh:
                 book = _json.load(fh)
-            book["tasks"][0]["command"] = book["tasks"][0]["command"].replace(
-                "/hooks/", "/OLDVERSION/hooks/")
+            # ⚠ THE SHAPE OF THIS FIXTURE CHANGED WITH THE SHIM, and the old one stopped
+            # meaning anything. It used to insert /OLDVERSION/ into a path containing
+            # "/hooks/" - but the command names the shim now, which has no "/hooks/" in it,
+            # so the replace matched nothing and the entry read as current. ⇒ It plants what
+            # an OLDER VERSION would have written: a literal path into the plugin cache.
+            book["tasks"][0]["command"] = (
+                "C:/Users/x/.claude/plugins/cache/dispatch-guard/dispatch-guard/0.0.1"
+                "/hooks/OLDVERSION_run.cmd")
             with open(up, "w", encoding="utf-8") as fh:
                 _json.dump(book, fh)
             assert not _install.vscode_user_task_current(), "a stale path read as current"
@@ -2216,6 +2242,11 @@ def selftest():
         finally:
             _install.vscode_user_dirs = _saved_dirs
             _install.allow_automatic_tasks = _saved_grant
+            _install.write_shim = _saved_shim
+        # ⛔ PROVE IT. A patch that stops working is silent, and what it prevents here is a
+        # selftest reaching out of its sandbox into the machine's live configuration.
+        assert shim.recorded(_real_state) == _shim_before, \
+            "the selftest changed the real state directory's shim"
         shutil.rmtree(vsdir, ignore_errors=True)
     finally:
         shutil.rmtree(root, ignore_errors=True)
@@ -2342,7 +2373,7 @@ if __name__ == "__main__":
         except Exception:
             pass
         try:
-            with open(os.path.join(tempfile.gettempdir(), "dispatch-gate-error.log"),
+            with open(os.path.join(tempfile.gettempdir(), "dispatch_gate_error.log"),
                       "a", encoding="utf-8") as f:
                 f.write("%s %r%s" % (time.strftime("%Y-%m-%d %H:%M:%S"), exc, "\n"))
         except Exception:

@@ -223,13 +223,27 @@ sh "$p/hooks/run.sh" "$p/install.py" --all
 ⚠ 但如果那個檔案在安裝時讀不到（例如帶了 VS Code 不介意、JSON 解析器介意的東西），
 它會拒絕改寫並告訴你 —— 那時候就會看到上面那個通知。
 
-### ⭐ `claude plugin update` 之後路徑會自己修好
+### ⭐ 0.32.0 起：路徑裡根本不再有版本號
 
-那個工作裡存的是**絕對路徑**，而 cache 路徑帶著版本號。⛔ `update` 會搬走目錄卻**留著舊的**，
-所以舊路徑照樣跑得動、跑的是舊程式。
+外掛裝在 `~/.claude/plugins/cache/dispatch-guard/dispatch-guard/**<版本>**/`。
+hook 不受影響（`hooks.json` 用 `${CLAUDE_PLUGIN_ROOT}`，每個 session 重新展開），
+⛔ 但**狀態列指令、VS Code 工作、以及 gate 給模型的每一個指令**存的都是**寫死的絕對路徑**。
+`update` 會搬走目錄卻**留著舊的**，所以舊路徑照樣跑得動、跑的是舊程式 —— ⚠ 而且一切看起來都正常。
 
-⇒ **不用重跑任何東西。** gate 在下一個 session 開始時比對「存著的」和「正在跑的」，
-不一樣就改寫，並在開場那一行說它做了。⚠ 這一項實測過：把儲存的路徑改成一個假的舊版本，
+⇒ 所以外掛外面的東西**一律不再寫版本化路徑**，全部改成指向這一個永不改變的檔案：
+
+```
+~/.claude/dispatch-guard/run.sh      （Windows 的工作用 run.cmd）
+```
+
+⭐ 它會轉發到「目前這一份」外掛。兩件事讓它保持正確：
+gate 在每個 session 開始時，發現裡面存的路徑不是正在跑的那一份就改寫；
+⛔ 而且**它自己也會找**——萬一存的路徑不在了（更新之後、下一個 session 之前那段空窗），
+它會去找最新安裝的那一份。那段空窗正是舊的靜默失敗住的地方。
+
+⚠ 舊版本接上去的狀態列還是帶著版本化路徑；`repoint_statusline()` 會把它改成 shim，一次就好。
+
+⇒ **不用重跑任何東西。** ⚠ 這一項實測過：把儲存的路徑改成一個假的舊版本，
 下一次就被改回來。
 
 ⭐ 細節和實測數字在下面〈在 VS Code 擴充套件裡〉那一節。
@@ -423,7 +437,7 @@ plugin enabled      : True
 install path        : ...\plugins\cache\dispatch-guard\dispatch-guard\<version>
 SessionStart hook   : RAN - 2 session(s) stamped, newest 3 min ago
 statusline refresh  : every 60s
-usage data file     : ...\.claude\dispatch-guard\limits.json
+usage data file     : ...\.claude\dispatch-guard\token_usage.json
                       last written 1 min ago
 usage verdict       : GO - 5h at 43%, 168 min left (resets 14:00)
 resume armed        : no (nothing pending, which is the normal state)
@@ -456,7 +470,7 @@ OVERALL             : everything is live
 手動跑得起來，就表示工作本身沒問題，只有自動觸發沒動作。
 
 ⭐ **那個 watcher 是「你的」時鐘，不是煞車的。** 狀態列那一半在擴充套件裡永遠不會顯示。
-它還是值得裝 —— 只要你也用 CLI，兩邊共用同一個 `limits.json`（那是**每個帳號**一份的，
+它還是值得裝 —— 只要你也用 CLI，兩邊共用同一個 `token_usage.json`（那是**每個帳號**一份的，
 不是每個專案一份）。
 
 ---
@@ -616,10 +630,10 @@ claude plugin install dispatch-guard@dispatch-guard --config announce_unattended
 
 | 段 | 來源 | 範圍 | `--statusline` | `--watch` |
 |---|---|---|---|---|
-| `5h` / `7d` | `limits.json`（API 撈的） | ⭐ 每個**帳號** | ✅ | ✅ |
+| `5h` / `7d` | `token_usage.json`（API 撈的） | ⭐ 每個**帳號** | ✅ | ✅ |
 | `Ctx` | payload 的 `context_window` | ⚠ 每個 **session** | ✅ | ⛔ |
 | 模型 · effort | payload 的 `model` / `effort` | 每個 session | ✅ | ⛔ |
-| 判定字 | 由 `limits.json` 算出 | 每個帳號 | ⛔（開場那一行報過） | ✅ |
+| 判定字 | 由 `token_usage.json` 算出 | 每個帳號 | ⛔（開場那一行報過） | ✅ |
 
 ⭐ **這一條界線解釋了其他每件事：** 為什麼 Ctx 是每個 session、
 為什麼 5h/7d 是每個帳號（所以一台機器跑一個 watcher 就夠），
@@ -785,7 +799,7 @@ Nothing was dispatched. The agent has been told to save the current step and arm
 | | |
 |---|---|
 | **哪個事件** | `UserPromptSubmit` —— ⭐ **你送出訊息的那一刻**。不是背景計時器 |
-| **依據什麼** | `limits.json` 裡的百分比，由 `verdict()` 換算成 GO / PACE / STOP |
+| **依據什麼** | `token_usage.json` 裡的百分比，由 `verdict()` 換算成 GO / PACE / STOP |
 | **會重複嗎** | ⛔ **不會。** 每個 session、每個等級只送一次 |
 
 ⭐ **不重複的做法是把「已經送過哪一級」寫到硬碟上**：
@@ -820,7 +834,7 @@ Nothing was dispatched. The agent has been told to save the current step and arm
 ⚠ 只寫你要改的那幾個。⛔ 寫進去的值會被**釘住**，以後版本改了預設值也到不了你這裡 ——
 `install.py --status` 的 `pinned settings` 那一行會告訴你自己釘了什麼。
 
-⚠ 也可以查 `.claude/dispatch-gate.log`，`USAGE(PACE) pct=90` 和 `DENY(usage-stop pct=95)`
+⚠ 也可以查 `.claude/dispatch_gate.log`，`USAGE(PACE) pct=90` 和 `DENY(usage-stop pct=95)`
 都留在那裡 —— ⛔ 但那證明的是 **gate 說了什麼**，不是 agent 做了什麼。
 
 ---
@@ -943,7 +957,7 @@ gate 在 `SessionStart` 和 `UserPromptSubmit` 檢查：如果有一個**還沒�
 ### ⚠ 等待期間換了帳號會發生什麼事
 
 ⭐ **煞車會自己好，不用做任何事。** `usage.py` 每一次都重讀憑證檔，
-所以下一次撈資料就是新帳號的數字，`limits.json` 被覆寫，gate 立刻不再拒絕 — 有額度就是 GO。
+所以下一次撈資料就是新帳號的數字，`token_usage.json` 被覆寫，gate 立刻不再拒絕 — 有額度就是 GO。
 
 ⭐ **而且活著的 session 直接繼續就好。** 換帳號是人的動作，所以人就在鍵盤前，
 不需要等任何鬧鐘。
@@ -1015,14 +1029,14 @@ reset     : ⛔ STALE - armed for 22:18 but the stored reset is now 00:18,
 ⭐ **設 0 就永久保留** —— 那是這個鍵存在之前的行為。
 ⚠ **`null` 不是「永久」** —— `null` 的意思是「用預設值」，跟 `history_dir` 的 `null` 一樣，所以它跟
 不寫這個鍵一樣會在 30 天時刪。要永久保留只有 `0`。
-⛔ **只刪整個檔案，而且只刪這個外掛自己的檔案** —— `token_usage_history-*.jsonl`（含舊名 `limits-history-*.jsonl`）和
-`usage-response-*.jsonl`。單一檔案永遠不會被砍掉前半段，因為那會留下一份「看起來完整、其實不是」的
+⛔ **只刪整個檔案，而且只刪這個外掛自己的檔案** —— `token_usage_history_*.jsonl` 和
+`API_response_usage_*.jsonl`。單一檔案永遠不會被砍掉前半段，因為那會留下一份「看起來完整、其實不是」的
 紀錄。`history_dir` 可以指到放著別人檔案的資料夾，所以全面清掃是不做的。
 ⚠ 讀不成正數的值（一個詞、空字串、`true`、負數）一律當成「全部保留」，不會退回 30 天然後開始刪。
 清理最多每個 process 一天一次，就在新的一天要開檔案的那一刻。
 
 **保留每一次 API 回應**（`debug.API_response_usage`，預設關閉）。打開之後，usage 端點每一次的
-回應都會**完整**存進 `history_dir`，檔名 `usage-response-<YYYYMMDD-HHMMSS>.jsonl`，一行一筆，
+回應都會**完整**存進 `history_dir`，檔名 `API_response_usage_<YYYYMMDD-HHMMSS>.jsonl`，一行一筆，
 每個本地日一個檔：
 
 ```json
@@ -1049,10 +1063,13 @@ session 也可能同時有兩個寫入者。要保證一行都不漏，這個檔
 ⭐ 陣列寫法也接受：`"debug": ["API_response_usage"]` 等同 `{"API_response_usage": true}`。
 ⚠ `"debug": true` 不會打開任何開關 —— 它會關掉全部，並在 stderr 說明原因。
 
-**Token 用量歷史**（`debug.token_usage_history`，⭐ **預設開啟**）會寫到 `history_dir` —
+**Token 用量歷史**（`debug.token_usage`，⭐ **預設開啟**）會寫到 `history_dir` —
 預設是 **`~/.claude/dispatch-guard/logs/`**（狀態目錄下的 `logs/` 資料夾）— 檔名是
-`token_usage_history-<YYYYMMDD-HHMMSS>.jsonl`，每個本地日一個檔，**單一檔案永遠不會被裁切**：
-⚠ 它以前叫 `keep_history` 而且預設關閉。舊的 `keep_history` 仍然會被讀，`keep_history: false` 一樣會把它關掉；舊檔名的檔案也照樣被讀取和清理，不會變成孤兒。
+`token_usage_history_<YYYYMMDD-HHMMSS>.jsonl`，每個本地日一個檔，**單一檔案永遠不會被裁切**：
+⛔ **只有一個名字，沒有別的。** 這個開關曾經叫 `keep_history`、也曾經叫 `token_usage_history`；
+兩個都**不再被讀**，舊檔名的檔案也不再被讀取或清理。⚠ 所以一份還寫著舊名字的 config 拿到的是
+**預設值**，不是他寫的那個值 —— `install.py --status` 會把每一個已廢棄的鍵點名出來，
+那是**被忽略的設定**唯一會現身的地方。⭐ 從舊版更新的人請跑 `Tools/clean-dispatch-guard.ps1` 再重裝。
 ⭐ **為什麼改成預設開**：燃燒率推估需要同一個視窗的兩個樣本，所以在此之前，PACE 裡「照這個速度到重置前會用完」那一半，對沒有手動開啟的人從來沒有運作過。**實測：一行 132 位元組、一天大約 640 次讀數，所以大約一天 82 KB**，`history_keep_days` 保留的 30 天合計 2.4 MB —— 而且那是上限，因為只有數字真的動了才會寫一行。
 
 ```json
@@ -1086,9 +1103,9 @@ session 也可能同時有兩個寫入者。要保證一行都不漏，這個檔
 
 ```
 usage.py --watch        ← 長期活著
-      ↓ 寫 limits.json
+      ↓ 寫 token_usage.json
 dispatch_gate.py        ← 每次工具呼叫都是新行程，跟上面沒有共用記憶體
-      ↓ 讀 limits.json
+      ↓ 讀 token_usage.json
 ```
 
 ⚠ **而且讀者不只一個**：好幾個 watcher、狀態列、每次派工的 gate，
@@ -1102,7 +1119,7 @@ dispatch_gate.py        ← 每次工具呼叫都是新行程，跟上面沒有�
 |---|---|---|
 | 耗時 | 6.5 ms | **2.3 ms** |
 | 開檔案 | 5 次 | **3 次** |
-| └ `limits.json` | 3 次 | **1 次** |
+| └ `token_usage.json` | 3 次 | **1 次** |
 
 剩下兩次是真的每次都要的：歷史檔（算燃燒速率）、憑證檔（查 token 到期）。
 
@@ -1112,10 +1129,10 @@ dispatch_gate.py        ← 每次工具呼叫都是新行程，跟上面沒有�
 
 ### `fetch.claim` — 兩個工作，第二個更重要
 
-1. **防止同時重複打 API。** 好幾個行程共用 `limits.json`，
+1. **防止同時重複打 API。** 好幾個行程共用 `token_usage.json`，
    兩個 watcher 同時撞到「該刷新了」的邊界會**兩個都去打**，
    五次額度裡一口氣花掉兩次。這個檔案在**發出請求之前**先蓋章，晚到的看到就放棄。
-2. ⭐ **它是唯一的退避機制。** 走到這個檢查，代表 `limits.json` 不新鮮 —
+2. ⭐ **它是唯一的退避機制。** 走到這個檢查，代表 `token_usage.json` 不新鮮 —
    也就是最近那次嘗試**失敗了**。所以失敗後**故意不清掉**它，
    讓後面一個間隔內沒人重試。拿到 429 一直重打只會更慘。
 
@@ -1211,7 +1228,7 @@ dispatch_gate.py        ← 每次工具呼叫都是新行程，跟上面沒有�
   ⇒ 已核准的並行是**一批 N 個**跑完再下一批，不是滑動視窗。
 - ⛔ **它壞掉時是「放行」。** 一個因為自己當掉就拒絕所有東西的守門員，比它要守的規則更糟。
   ⚠ 代價是：**沒有出現拒絕，不等於它有在跑。**
-  請看 `<repo>/.claude/dispatch-gate.log` —
+  請看 `<repo>/.claude/dispatch_gate.log` —
   整份都是 `ADVISORY(no-session-stamp)` 表示它**什麼都沒在管**，
   而這跟「大家都乖乖守規矩」的紀錄長得一模一樣。
 - ⚠ **只用擴充套件，煞車照樣有數據。**
@@ -1263,7 +1280,7 @@ dispatch_gate.py        ← 每次工具呼叫都是新行程，跟上面沒有�
   ⇒ 沒有可用的公布數字，所以這裡不編一個出來。
 - ⛔ **指令守衛讀的是一個字串，不是一個真正解析過的 shell。** 引號裡的運算子、
   heredoc 內文裡出現的 `git commit` 字樣，都可能誤判。⭐ 誤判會在
-  `.claude/dispatch-gate.log` 裡留下它拒絕了哪一行，而且每一條守衛都可以單獨關掉。
+  `.claude/dispatch_gate.log` 裡留下它拒絕了哪一行，而且每一條守衛都可以單獨關掉。
 - ⚠ **`git commit -a` / `-am` 也會把所有已追蹤的修改掃進去，但 add-all 那條守衛看不到。**
   `-am` 會被 `-m` 那條擋下；單獨的 `-a` 完全沒擋。
 - ⚠ **分支守衛比的是「payload 的 cwd 解析出來的那一個 checkout」。**
@@ -1750,7 +1767,7 @@ plugin enabled      : True
 install path        : ...\plugins\cache\dispatch-guard\dispatch-guard\<version>
 SessionStart hook   : RAN - 2 session(s) stamped, newest 3 min ago
 statusline refresh  : every 60s
-usage data file     : ...\.claude\dispatch-guard\limits.json
+usage data file     : ...\.claude\dispatch-guard\token_usage.json
                       last written 1 min ago
 usage verdict       : GO - 5h at 43%, 168 min left (resets 14:00)
 resume armed        : no (nothing pending, which is the normal state)
@@ -1787,7 +1804,7 @@ the task is fine and only the automatic trigger is not.
 
 ⭐ **That watcher is YOUR clock, not the brake's.** The statusline half never shows in the
 extension. It is still worth installing if you also use the CLI: both halves share one
-`limits.json`, which is per-ACCOUNT, not per-project.
+`token_usage.json`, which is per-ACCOUNT, not per-project.
 
 ---
 
@@ -1953,10 +1970,10 @@ interacting, so a test there would suppress the refresh precisely when it is due
 
 | Segment | Source | Scope | `--statusline` | `--watch` |
 |---|---|---|---|---|
-| `5h` / `7d` | `limits.json`, fetched from the API | ⭐ per **account** | ✅ | ✅ |
+| `5h` / `7d` | `token_usage.json`, fetched from the API | ⭐ per **account** | ✅ | ✅ |
 | `Ctx` | the payload's `context_window` | ⚠ per **session** | ✅ | ⛔ |
 | model · effort | the payload's `model` / `effort` | per session | ✅ | ⛔ |
-| verdict word | computed from `limits.json` | per account | ⛔ (the opening line has it) | ✅ |
+| verdict word | computed from `token_usage.json` | per account | ⛔ (the opening line has it) | ✅ |
 
 ⭐ **That one boundary explains the rest:** why Ctx is per-session, why 5h and 7d are
 per-account — which is why one watcher per machine serves every project — and why the
@@ -2134,7 +2151,7 @@ merely decide against it.
 | | |
 |---|---|
 | **Which event** | `UserPromptSubmit` — ⭐ **the moment you send a message**. Not a background timer |
-| **Driven by** | the percentage in `limits.json`, turned into GO / PACE / STOP by `verdict()` |
+| **Driven by** | the percentage in `token_usage.json`, turned into GO / PACE / STOP by `verdict()` |
 | **Does it repeat** | ⛔ **No.** Once per level, per session |
 
 ⭐ **What stops the repeat is a file**: `~/.claude/dispatch-guard/state/<session-id>.warned`
@@ -2171,7 +2188,7 @@ that is `PreToolUse`, judged on every dispatch, and refused every time.
 version's new default never reaches you — the `pinned settings` line in `install.py --status`
 tells you which ones you hold.
 
-⚠ `.claude/dispatch-gate.log` also records `USAGE(PACE) pct=90` and
+⚠ `.claude/dispatch_gate.log` also records `USAGE(PACE) pct=90` and
 `DENY(usage-stop pct=95)` — ⛔ but that proves what the GATE said, not what the agent did.
 
 ---
@@ -2306,7 +2323,7 @@ cancel that fails silently leaves an alarm that will redo the work.
 ### ⚠ What happens if the account changes during the wait
 
 ⭐ **The brake heals itself, with nothing to do.** `usage.py` re-reads the credentials file
-on every call, so the next fetch is the new account's numbers, `limits.json` is overwritten,
+on every call, so the next fetch is the new account's numbers, `token_usage.json` is overwritten,
 and the gate stops refusing — there is allowance, so the verdict is GO.
 
 ⭐ **And a live session simply carries on.** Switching accounts is a human action, so a human
@@ -2388,8 +2405,8 @@ than that is deleted whole.
 ⭐ **Use `0` to keep everything for ever** — that is what this plugin did before the key existed.
 ⚠ **`null` is NOT for ever.** `null` means "use the default", exactly as it does for
 `history_dir`, so it deletes at 30 days just like leaving the key out. Only `0` keeps everything.
-⛔ **Whole files only, and only this plugin's own** — `token_usage_history-*.jsonl` (and `limits-history-*.jsonl`, the name it used to have) and
-`usage-response-*.jsonl`. A single file is never trimmed, because a half-trimmed record looks
+⛔ **Whole files only, and only this plugin's own** — `token_usage_history_*.jsonl` and
+`API_response_usage_*.jsonl`. A single file is never trimmed, because a half-trimmed record looks
 complete and is not; and `history_dir` can be pointed at a folder holding somebody else's files,
 so there is no blanket sweep.
 ⚠ Any value that cannot be read as a positive number — a word, an empty string, `true`, a
@@ -2398,7 +2415,7 @@ runs at most once a day per process, at the moment a new day's file is started.
 
 **Keep every API response** (`debug.API_response_usage`, off by default). With it on, every
 response from the usage endpoint is stored **complete** under `history_dir` as
-`usage-response-<YYYYMMDD-HHMMSS>.jsonl`, one array per line, one file per local day:
+`API_response_usage_<YYYYMMDD-HHMMSS>.jsonl`, one array per line, one file per local day:
 
 ```json
 ["<organizationUuid>", "<accountUuid>", "2026-08-27T09:45:00+00:00", { "…the whole body…": true }]
@@ -2433,14 +2450,17 @@ gap-free sequence.
 ⭐ A list is an alias: `"debug": ["API_response_usage"]` means `{"API_response_usage": true}`.
 ⚠ `"debug": true` switches nothing on — it switches everything off and says why on stderr.
 
-**Token usage history** (`debug.token_usage_history`, ⭐ **on by default**) is written to
+**Token usage history** (`debug.token_usage`, ⭐ **on by default**) is written to
 `history_dir` — by default
 **`~/.claude/dispatch-guard/logs/`**, the `logs/` folder under the state directory — as
-`token_usage_history-<YYYYMMDD-HHMMSS>.jsonl`, one file per local day, and **no single file
+`token_usage_history_<YYYYMMDD-HHMMSS>.jsonl`, one file per local day, and **no single file
 is ever trimmed**:
-⚠ It used to be called `keep_history` and used to be off. An existing `keep_history` is still
-read and `keep_history: false` still turns it off; files under the old name are still read and
-still pruned, so nothing is orphaned.
+⛔ **There is one name and no other.** This switch has been called `keep_history` and
+`token_usage_history` before now; neither is read any more, and files under the old names are
+neither read nor pruned. ⚠ So a config still carrying one gets the DEFAULT rather than the
+value somebody wrote — `install.py --status` names every retired key it finds, and that report
+is the only place an ignored setting ever shows up. ⭐ Updating from an older version: run
+`Tools/clean-dispatch-guard.ps1`, then reinstall.
 ⭐ **Why it is on now**: the burn projection needs two samples of the same window, so the
 "projected to run out before the reset" half of PACE had never fired for anyone who did not go
 and switch it on. **Measured: 132 bytes a row, about 640 readings a day, so roughly 82 KB a
@@ -2479,9 +2499,9 @@ Code spawns a fresh `dispatch_gate.py` on **every tool call**, and it dies milli
 
 ```
 usage.py --watch        <- long-lived
-      | writes limits.json
+      | writes token_usage.json
 dispatch_gate.py        <- a new process per tool call, sharing no memory with the above
-      | reads limits.json
+      | reads token_usage.json
 ```
 
 And there is more than one reader: several watchers, the status line, and the gate on every dispatch
@@ -2497,7 +2517,7 @@ wrote. Measured per watch tick:
 |---|---|---|
 | wall clock | 6.5 ms | **2.3 ms** |
 | file opens | 5 | **3** |
-| `limits.json` among them | 3x | **1x** |
+| `token_usage.json` among them | 3x | **1x** |
 
 The two that remain are genuinely needed each tick: the history file for burn projection, and the
 credentials file for the token-expiry warning.
@@ -2509,11 +2529,11 @@ deliberately does not pass it.
 
 ### `fetch.claim` - two jobs, and the second one matters more
 
-1. **It stops simultaneous duplicate requests.** Several processes share `limits.json`, so two
+1. **It stops simultaneous duplicate requests.** Several processes share `token_usage.json`, so two
    watchers crossing the refresh boundary together would **both** fetch - two of about five calls
    per token, spent on one boundary. The claim is stamped **before** the request; whoever arrives
    second sees it and stands down.
-2. **It is the only backoff there is.** Reaching that check means `limits.json` is *not* fresh, so
+2. **It is the only backoff there is.** Reaching that check means `token_usage.json` is *not* fresh, so
    any recent attempt recorded there must have **failed**. The claim is therefore **deliberately not
    cleared on failure**, which is what stops the next caller retrying for a whole interval. A
    persistent 429 is not something retrying cures.
@@ -2614,7 +2634,7 @@ Read this before trusting it. Every item is a way it can look like it is working
   finishes. ⇒ An approved concurrency runs as **batches of N**, not a rolling window.
 - ⛔ **It fails OPEN.** A gate that refused everything because it crashed would be worse than the
   rule it enforces. ⚠ The price: **an absent denial is not proof it ran.** Read
-  `<repo>/.claude/dispatch-gate.log` — a log full of `ADVISORY(no-session-stamp)` means it is
+  `<repo>/.claude/dispatch_gate.log` — a log full of `ADVISORY(no-session-stamp)` means it is
   enforcing **nothing**, and looks identical to a log in which nobody broke the rules.
 - ⚠ **The extension alone still leaves the brake with data.** It invokes no statusline, but
   the gate forks its own refresh, so `hard_pct` has a number to compare against. ⚠ The first verdict of a fresh install can still
@@ -2672,7 +2692,7 @@ Read this before trusting it. Every item is a way it can look like it is working
   ⇒ There is no published number to use, so this gate invents none.
 - ⛔ **The command guards read a shell STRING, not a parsed shell.** An operator inside
   quotes, or the words `git commit` inside a heredoc body, can produce a false positive.
-  ⭐ Every refusal names the command it refused in `.claude/dispatch-gate.log`, and every
+  ⭐ Every refusal names the command it refused in `.claude/dispatch_gate.log`, and every
   guard has its own off switch.
 - ⚠ **`git commit -a` / `-am` also stages everything tracked, and the add-all guard does not
   see it.** `-am` is caught by the `-m` guard; a bare `-a` is not caught at all.
