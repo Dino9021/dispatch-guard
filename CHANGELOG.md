@@ -33,6 +33,30 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.39.1
+
+- ⛔ **OAuth 倒數那一行不再顯示。** 擁有者的指示:「OAuth 那行不要顯示」。
+  它原本在 token 壽命剩下十分鐘時開始警告,而那個警告**會自己好** —— 哪一個 Claude
+  用戶端在跑,就會在到期前大約五分鐘換掉 token。所以常態是:一行出現、被讀到、
+  什麼都不用做、然後自己消失。一則學會被忽略的訊息,會連旁邊那些訊息的可信度一起賠掉。
+- ⭐ **「已過期」那一句留著。** token 死了就不再撈資料,整條線的數字全變成 `--`,
+  而那一句是螢幕上唯一說明原因的東西。把它也拿掉,只會剩下一條什麼都不解釋的空長條。
+- ⭐ **檢查用突變殺過。** 把倒數放回去 → `a live token warned: the countdown is back`。
+  ⚠ 它用「剩 60 秒的**活** token」去測,那在舊警告的每一個門檻之內,所以倒數不管
+  從哪條路回來都會被抓到,不會靠一個剛好的門檻矇混過去。
+- ⭐ **watcher 現在先講「不用 reload 的那條路」。** F1 → `Tasks: Run Task` →
+  `Claude usage watch`,在你人已經在的那個視窗直接開起來。
+  ⚠ 自動啟動仍然要等資料夾開啟,而且**外面的程式做不到**:VS Code 1.135.0 的 CLI
+  沒有任何選項可以叫一個「已經在跑的視窗」執行工作(實測整份 `code --help`)。
+  ⇒ 這個缺口一台機器只會遇到一次 —— 使用者層級的 `tasks.json` 寫過一次之後,
+  以後每一次開啟資料夾都自己來。
+- ⛔ **`/dispatch-guard:status` 不再被回報成「Shell command failed」。** `--status` 只要
+  有東西沒活著就回傳 1,而一個 `!` 指令回傳非零,harness 就會印出失敗、並把整份報告
+  丟到 stderr —— 一份完全照設計運作的報告,在人正要靠它除錯的那一刻,看起來像壞掉的
+  指令。⚠ 現在後面接一個 `echo`:真正的退出碼原封不動印出來,什麼都沒有被消音。
+
+---
+
 ## 0.39.0
 
 - ⭐ **計量條改看最近 30 分鐘，而不是整個 5 小時視窗。** 新參數 **`burn_window_min`**（預設 30）
@@ -997,6 +1021,34 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.39.1
+
+- ⛔ **The OAuth countdown line is gone.** The owner's instruction: *"OAuth 那行不要顯示"*.
+  It warned for the last ten minutes of the token's life, and that warning **fixes itself** —
+  whichever Claude client is running rotates the token about five minutes before it expires.
+  So the ordinary case was a line that appeared, was read, needed nothing, and vanished on its
+  own. A note people learn to ignore costs the notes beside it their credibility.
+- ⭐ **EXPIRED stays.** A dead token stops the fetch, so every figure on the line reads `--`,
+  and that sentence is the only thing on screen that says why. Removing it as well would leave
+  an empty bar explaining nothing.
+- ⭐ **The check is mutation-killed.** Put the countdown back → `a live token warned: the
+  countdown is back`. ⚠ It tests a **live** token with 60 seconds left, which is inside every
+  threshold the old warning used, so a countdown returning by any route fails here rather than
+  passing on a lucky threshold.
+- ⭐ **The watcher names the no-reload route first.** F1 → `Tasks: Run Task` →
+  `Claude usage watch` opens it in the window you are already in. ⚠ The automatic start still
+  needs a folder open, and **no outside program can trigger it**: the VS Code 1.135.0 CLI has
+  no option that runs a task in a window already running (measured against the whole of
+  `code --help`). ⇒ The gap is once per MACHINE — after the user-level `tasks.json` is
+  written, every later folder open starts it by itself.
+- ⛔ **`/dispatch-guard:status` is no longer reported as "Shell command failed".** `--status`
+  exits 1 whenever anything is not live, and a `!` command that exits non-zero makes the
+  harness print a failure and route the whole report to stderr — a report working exactly as
+  designed, reading as a broken command, at the one moment somebody is using it to debug.
+  ⚠ An `echo` now follows it: the real exit code is printed and nothing is silenced.
 
 ---
 

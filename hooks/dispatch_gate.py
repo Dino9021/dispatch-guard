@@ -678,11 +678,20 @@ def maybe_install_vscode_task(root, cfg, sdir=None):
             lines = install.vscode_user_task()
             note = (" ⭐ The `Claude usage watch` task was added to VS Code's USER tasks, so "
                     "EVERY project gets the usage line from now on - there is no per-project "
-                    "file and nothing was written into this repository. ⚠ It starts on the "
-                    "next FOLDER OPEN. Details: %s" % "; ".join(lines))
+                    "file and nothing was written into this repository. ⚠ It starts by itself "
+                    "on the next FOLDER OPEN; to start it in THIS window instead, the person "
+                    "runs `Tasks: Run Task` from the command palette. Details: %s"
+                    % "; ".join(lines))
+            # ⛔ THE NO-RELOAD ROUTE COMES FIRST, and it is the whole of what a person can act
+            # on right now. This used to offer only "reopen the folder", which reads as "shut
+            # what you are doing" - and nothing outside VS Code can start the task for them:
+            # the 1.135.0 CLI has no option that runs a task in a window already running, so
+            # the palette is the only door. Measured 2026-08-27, the same day the user-level
+            # task was chosen: it appears in Run Task and starts there.
             seen = ("added the `Claude usage watch` task to VS Code's user tasks - it covers "
-                    "every project. ⚠ Reopen the folder (or run `Developer: Reload Window`) "
-                    "for the usage terminal to start.")
+                    "every project. ⭐ To start it NOW without reloading: press F1, run "
+                    "`Tasks: Run Task`, pick `Claude usage watch`. Otherwise it starts by "
+                    "itself the next time this folder opens.")
         else:
             note = seen = None
         # ⚠ A per-project file from an earlier version would now open a SECOND identical
@@ -2391,7 +2400,10 @@ def selftest():
             # ⛔ AND A LINE FOR THE PERSON, not only for the model. With no usage left there
             # is no model turn at all, and installing on an empty budget is the case that
             # has to work - so a note that only reaches the model does not exist.
-            assert seen and "Reopen the folder" in seen, seen
+            # ⛔ AND IT NAMES THE ROUTE THAT NEEDS NO RELOAD. "Reopen the folder" was the only
+            # instruction here, and it asks somebody to shut down what they are doing for a
+            # terminal the command palette starts in place.
+            assert seen and "Tasks: Run Task" in seen, seen
             assert _install.vscode_user_task_current(), "what it wrote does not read back"
             with open(up, encoding="utf-8") as fh:
                 written = fh.read()

@@ -446,9 +446,6 @@ def _interval(cfg):
     return cfg["fetch_seconds"] + random.uniform(0, max(0, jitter))
 
 
-TOKEN_WARN_SECONDS = 600         # warn a person this long before the token dies
-
-
 def _token_and_expiry():
     """(token, expiry epoch seconds or None). READ ONLY - never written, never refreshed.
 
@@ -495,29 +492,31 @@ def _token_and_expiry():
 
 
 def token_note():
-    """A warning for a PERSON while the token still works, or None. Makes no request.
+    """Says the token is DEAD, or None. Makes no request.
 
-    ⭐ THIS IS THE POINT: a 401 tells you the token is already dead, which is too late to
-    act on and costs one of the five calls to discover. The expiry is sitting in the
-    credentials file, so it can be read for free and BEFORE the fact.
+    ⛔ THE COUNTDOWN IS GONE - the owner's instruction, 2026-08-29: "OAuth 那行不要顯示".
+    It used to warn for the last ten minutes of the token's life, and that warning FIXES
+    ITSELF: whichever Claude client is running rotates the token about five minutes before
+    it expires, so the ordinary case was a line that appeared on the bar, was read, needed
+    nothing, and vanished on its own. A note people learn to ignore costs the notes beside
+    it their credibility.
 
-    ⚠ A warning that fixes itself is the expected case, not a bug. Whichever Claude client
-    is running rotates the token roughly five minutes before it expires, so a warning that
-    appears inside this window normally vanishes on its own. ⭐ One that PERSISTS is the
-    real signal: nothing is running that will refresh it.
+    ⭐ WHAT SURVIVES IS THE ONE THAT DOES NOT HEAL. An expired token stops the fetch, so
+    every figure on the line reads `--`, and this sentence is the only thing on screen that
+    says why. Removing it too would leave an empty bar explaining nothing.
+
+    ⚠ It still costs no request. A 401 also reports an expired token, but it reports it too
+    late to act on and spends one of the five calls the endpoint allows to do it; the expiry
+    is sitting in the credentials file and is free to read.
     """
     _, expires = _token_and_expiry()
     if expires is None:
         return None
-    left = expires - time.time()
-    if left <= 0:
+    if expires - time.time() <= 0:
+        # ⚠ SHORT ON PURPOSE. This is appended inside a status line, and a sentence here is
+        # what pushed that line past the terminal width - which wrapped it, which stranded a
+        # row that `\r` could never reach.
         return "OAuth token EXPIRED - open a session"
-    if left <= TOKEN_WARN_SECONDS:
-        # ⚠ SHORT ON PURPOSE. This is appended inside a status line, and at 68 characters it
-        # was most of what pushed that line past the terminal width - which wrapped it, which
-        # stranded a row that `\r` could never reach. `install.py --status` and the README
-        # carry the long form; a bar is not the place for a sentence.
-        return "OAuth token expires in %dm - open a session" % max(1, round(left / 60.0))
     return None
 
 
@@ -2480,8 +2479,12 @@ def selftest():
     try:
         globals()["read_json"] = _fake(8 * 3600)
         assert token_note() is None, "a healthy token must not warn"
-        globals()["read_json"] = _fake(TOKEN_WARN_SECONDS - 60)
-        assert "expires in" in (token_note() or ""), "no warning inside the window"
+        # ⛔ NOT ONE MINUTE BEFORE IT DIES EITHER - the owner removed the countdown, and a
+        # LIVE token must put nothing on the bar however little life it has left. ⚠ Sixty
+        # seconds is inside every window the old warning used, so a countdown put back by
+        # any route fails here rather than passing on a lucky threshold.
+        globals()["read_json"] = _fake(60)
+        assert token_note() is None, "a live token warned: the countdown is back"
         globals()["read_json"] = _fake(-60)
         assert "EXPIRED" in (token_note() or ""), "an expired token must say so"
         # ⛔ AND IT MUST NOT SPEND A CALL TO FIND THAT OUT. ⚠ Checked by counting requests,
