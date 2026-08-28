@@ -990,6 +990,18 @@ reset     : ⛔ STALE - armed for 22:18 but the stored reset is now 00:18,
 想換掉整個狀態目錄，用 `--dir <路徑>` 或環境變數 `$CLAUDE_DISPATCH_DIR`。
 專案也可以自己帶一份 `<repo>/.claude/dispatch-guard.json`，它對 `dispatch.*` 那組設定有最終決定權。
 
+⭐ **不確定檔案在哪，就跑 `python install.py --status`，看 `log files` 那一行** —— 它會印出解析後的絕對路徑、資料夾建了沒、裡面幾個檔案多大、保留幾天，並且在 `$CLAUDE_DISPATCH_DIR` 把 hooks 移到別處時警告你（`install.py` 不認那個變數，hooks 認）。
+
+**保留幾天**（`history_keep_days`，預設 **30**）。`history_dir` 裡超過這個天數的檔案會被整個刪掉。
+⭐ **設 0 就永久保留** —— 那是這個鍵存在之前的行為。
+⚠ **`null` 不是「永久」** —— `null` 的意思是「用預設值」，跟 `history_dir` 的 `null` 一樣，所以它跟
+不寫這個鍵一樣會在 30 天時刪。要永久保留只有 `0`。
+⛔ **只刪整個檔案，而且只刪這個外掛自己的檔案** —— `limits-history-*.jsonl` 和
+`usage-response-*.jsonl`。單一檔案永遠不會被砍掉前半段，因為那會留下一份「看起來完整、其實不是」的
+紀錄。`history_dir` 可以指到放著別人檔案的資料夾，所以全面清掃是不做的。
+⚠ 讀不成正數的值（一個詞、空字串、`true`、負數）一律當成「全部保留」，不會退回 30 天然後開始刪。
+清理最多每個 process 一天一次，就在新的一天要開檔案的那一刻。
+
 **保留每一次 API 回應**（`debug.API_response_usage`，預設關閉）。打開之後，usage 端點每一次的
 回應都會**完整**存進 `history_dir`，檔名 `usage-response-<YYYYMMDD-HHMMSS>.jsonl`，一行一筆，
 每個本地日一個檔：
@@ -1019,8 +1031,8 @@ session 也可能同時有兩個寫入者。要保證一行都不漏，這個檔
 ⚠ `"debug": true` 不會打開任何開關 —— 它會關掉全部，並在 stderr 說明原因。
 
 **用量歷史紀錄**（`keep_history`，預設關閉）會寫到 `history_dir` —
-預設是狀態目錄旁邊的 `logs/` 資料夾 — 檔名是
-`limits-history-<YYYYMMDD-HHMMSS>.jsonl`，每個本地日一個檔，永遠不會被裁切：
+預設是 **`~/.claude/dispatch-guard/logs/`**（狀態目錄下的 `logs/` 資料夾）— 檔名是
+`limits-history-<YYYYMMDD-HHMMSS>.jsonl`，每個本地日一個檔，**單一檔案永遠不會被裁切**：
 
 ```json
 {"at": "2026-08-26 13:29:31", "pct": 74.0, "resets_at": "2026-08-26 14:09:31",
@@ -2340,6 +2352,21 @@ that day kept the old one: the update landed, the default moved, nothing happene
 Override the whole state directory with `--dir <path>` or `$CLAUDE_DISPATCH_DIR`. A project may
 also carry `<repo>/.claude/dispatch-guard.json`, which wins for the `dispatch.*` keys.
 
+⭐ **Not sure where the files are? Run `python install.py --status` and read the `log files` line** — it prints the resolved absolute path, whether the folder exists yet, how many files and how large, the retention setting in force, and a warning if `$CLAUDE_DISPATCH_DIR` has moved the hooks somewhere that script does not look (the hooks read that variable; `install.py` does not).
+
+**How long they are kept** (`history_keep_days`, default **30**). A file in `history_dir` older
+than that is deleted whole.
+⭐ **Use `0` to keep everything for ever** — that is what this plugin did before the key existed.
+⚠ **`null` is NOT for ever.** `null` means "use the default", exactly as it does for
+`history_dir`, so it deletes at 30 days just like leaving the key out. Only `0` keeps everything.
+⛔ **Whole files only, and only this plugin's own** — `limits-history-*.jsonl` and
+`usage-response-*.jsonl`. A single file is never trimmed, because a half-trimmed record looks
+complete and is not; and `history_dir` can be pointed at a folder holding somebody else's files,
+so there is no blanket sweep.
+⚠ Any value that cannot be read as a positive number — a word, an empty string, `true`, a
+negative — means **keep everything**, never "fall back to 30 and start deleting". The pruning
+runs at most once a day per process, at the moment a new day's file is started.
+
 **Keep every API response** (`debug.API_response_usage`, off by default). With it on, every
 response from the usage endpoint is stored **complete** under `history_dir` as
 `usage-response-<YYYYMMDD-HHMMSS>.jsonl`, one array per line, one file per local day:
@@ -2377,9 +2404,10 @@ gap-free sequence.
 ⭐ A list is an alias: `"debug": ["API_response_usage"]` means `{"API_response_usage": true}`.
 ⚠ `"debug": true` switches nothing on — it switches everything off and says why on stderr.
 
-**Usage history** (`keep_history`, off by default) is written to `history_dir` — by default a
-`logs/` folder beside the state — as `limits-history-<YYYYMMDD-HHMMSS>.jsonl`, one file per local
-day, never trimmed:
+**Usage history** (`keep_history`, off by default) is written to `history_dir` — by default
+**`~/.claude/dispatch-guard/logs/`**, the `logs/` folder under the state directory — as
+`limits-history-<YYYYMMDD-HHMMSS>.jsonl`, one file per local day, and **no single file is ever
+trimmed**:
 
 ```json
 {"at": "2026-08-26 13:29:31", "pct": 74.0, "resets_at": "2026-08-26 14:09:31",

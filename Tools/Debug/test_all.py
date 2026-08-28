@@ -87,9 +87,23 @@ def main():
             ok = False
         print("%-16s %s" % (name, "PASS" if ok else "FAIL"))
         if not ok:
-            failed.append((name, r))
-    for name, r in failed:
+            failed.append((name, argv, r))
+    for name, argv, r in failed:
         print("\n---- %s ----\n%s%s" % (name, r.stdout[-2000:], r.stderr[-2000:]))
+        # ⭐ POINT AT WHAT IT WROTE. Every file a check produces is kept after the run, on
+        # purpose - that is the whole reason the scratch directory lives in the repository
+        # instead of the system temp directory. ⛔ But nothing said so, so the kept files were
+        # only ever useful to somebody who already knew they existed, which is the person who
+        # wrote them. A record nobody is told about is a record nobody reads.
+        # ⚠ The directory is named after the SCRIPT, not after the label in CHECKS -
+        # _debugpaths._owner() derives it from __main__. Guessing from the label gives
+        # "cmd_guards" for a directory called "test_guards", a path that does not exist.
+        stem = os.path.splitext(os.path.basename(argv[0]))[0]
+        for cand in (os.path.join(DEBUG_DIR, "scratch", stem),
+                     os.path.join(DEBUG_DIR, "scratch")):
+            if os.path.isdir(cand):
+                print("what it wrote is still here: %s" % cand)
+                break
     print("\n%d/%d passed" % (len(CHECKS) - len(failed), len(CHECKS)))
     return 1 if failed else 0
 

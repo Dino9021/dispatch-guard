@@ -111,7 +111,17 @@ DEFAULTS = {
 
 
 def state_dir(argv=None):
-    """Where limits.json lives. --dir wins, then $CLAUDE_DISPATCH_DIR, then ~/.claude/."""
+    """Where limits.json and the logs/ folder live.
+
+    `--dir` wins, then $CLAUDE_DISPATCH_DIR, then **~/.claude/dispatch-guard/**.
+
+    ⛔ THAT LAST PATH USED TO BE WRITTEN HERE AS "~/.claude/", WHICH IS NOT WHERE ANYTHING
+    GOES. It is the one sentence somebody reads when they are trying to find their files,
+    so being one directory out made it worse than saying nothing.
+    ⚠ install.py does NOT read $CLAUDE_DISPATCH_DIR - it hard-codes the default - so with
+    that variable set, `install.py --status` reports paths the hooks are not using. It says
+    so on its own 'log files' line rather than leaving the reader to find out.
+    """
     argv = argv if argv is not None else sys.argv[1:]
     if "--dir" in argv:
         i = argv.index("--dir")
@@ -130,6 +140,37 @@ def read_json(path, fallback=None):
             return json.load(f)
     except Exception:
         return fallback
+
+
+# ⭐ How long a file in history_dir survives, in days. 0 keeps everything for ever.
+# ⚠ Thirty days of the debug dump is about 40 MB at the measured 1.2-1.4 MB a day, and
+# thirty days of limits-history is well under 30 MB. Both are small enough to keep and large
+# enough to be worth bounding, which is why the default deletes rather than hoards.
+HISTORY_KEEP_DAYS_DEFAULT = 30
+
+
+def _days(value, default):
+    """A retention setting -> a number of days. ⛔ ANYTHING UNUSABLE KEEPS FILES FOR EVER.
+
+    ⚠ THE DEFAULT DIRECTION MATTERS MORE HERE THAN ANYWHERE ELSE IN THIS FILE, because this
+    is the one setting that DELETES. Every other bad value in config.json costs a wrong
+    number on a line; a bad value here could cost a record that cannot be recovered. So a
+    string, a null, a negative, a bool - anything this cannot read as a positive number -
+    means KEEP EVERYTHING, never "fall back to 30 days and start deleting".
+    ⭐ A hand-written "30" still works: the digits are read, because refusing them would be
+    surprising in the other direction.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):          # True is not 1 day, and False is not 0
+        return 0
+    try:
+        days = float(value)
+    except (TypeError, ValueError):
+        return 0
+    if days != days or days in (float("inf"), float("-inf")) or days <= 0:
+        return 0
+    return days
 
 
 def _truthy(value, default=False):
@@ -210,6 +251,15 @@ def config(sdir):
     # soft and hard thresholds are unaffected.
     cfg["keep_history"] = bool(disk.get("keep_history", False))
     cfg["history_dir"] = disk.get("history_dir")     # None -> <state dir>/logs
+    # ⛔ HOW LONG THE FILES IN history_dir SURVIVE, and it is the only setting here that
+    # DELETES something. 0 - or any value that is not a positive number - keeps them for
+    # ever, which is what this plugin did before the key existed.
+    # ⚠ WHOLE FILES, BY AGE, AND NOTHING ELSE. See prune_logs(): a day's file is kept
+    # entire or removed entire, so a record is never left half there. And only files
+    # carrying one of this plugin's own two prefixes are touched, because history_dir can
+    # be pointed at a folder that holds somebody else's files too.
+    cfg["history_keep_days"] = _days(disk.get("history_keep_days"),
+                                     HISTORY_KEEP_DAYS_DEFAULT)
     # ⛔ OFF by default, and it is meant to be switched back off. With
     # "debug": {"API_response_usage": true} every successful fetch appends the WHOLE
     # response body to <history_dir>/usage-response-<stamp>.jsonl, rotated rather than
@@ -803,10 +853,15 @@ DEBUG_RESPONSE_PREFIX = "usage-response-"
 def history_dir(sdir, cfg):
     """Where usage records live. Configurable; defaults to <state dir>/logs.
 
-    ⭐ A directory of its own, because these files accumulate one per day forever - mixed
-    in with config.json and the state folder they would bury the two files a person
-    actually edits. Set `history_dir` in config.json to put them somewhere else entirely,
-    such as a synced folder or a drive with room.
+    ⭐ A directory of its own, because these files accumulate one per day - mixed in with
+    config.json and the state folder they would bury the two files a person actually edits.
+    Set `history_dir` in config.json to put them somewhere else entirely, such as a synced
+    folder or a drive with room.
+
+    ⚠ NO LONGER "FOREVER": `history_keep_days` removes whole files older than 30 days by
+    default, and 0 restores the old keep-everything behaviour. ⛔ If you point this at a
+    folder holding anything else, note that prune_logs() only ever deletes files carrying
+    this plugin's own two prefixes - but check that before pointing it at a shared drive.
     """
     d = cfg.get("history_dir") or os.path.join(sdir, "logs")
     return os.path.abspath(os.path.expanduser(d))
@@ -823,10 +878,16 @@ def history_path(sdir, cfg, now=None, prefix=HISTORY_PREFIX):
     ⚠ Local midnight, not UTC. These are a person's usage records and they get read
     against a person's day.
 
-    ⛔ Files are NOT trimmed or deleted. Daily rotation already bounds each one - roughly
-    1,400 samples a day at a sixty-second refresh, well under a megabyte - and the point
-    of keeping history at all is being able to look back. Dropping the early part of a
-    day to satisfy a line count would quietly destroy the record it exists to keep.
+    ⛔ A FILE IS NEVER TRIMMED. Dropping the early part of a day to satisfy a line count
+    would quietly destroy the record it exists to keep, so a day's file is kept entire.
+    ⚠ WHOLE FILES ARE DELETED BY AGE, THOUGH - see history_keep_days and prune_logs(). The
+    two are not the same decision: trimming leaves a record that LOOKS complete and is not,
+    while removing a whole day leaves nothing to misread.
+
+    ⛔ AND THIS FUNCTION IS WHERE THAT DELETING HAPPENS, which is the one surprising thing
+    about it: minting a new day's name is the only moment that occurs at most once a day
+    per process, and it is exactly the moment every older file became a day older. Pruning
+    on every append would stat the whole directory 640 times a day to remove nothing.
 
     ⭐ `prefix` is the ONLY thing the debug response dump (DEBUG_RESPONSE_PREFIX) changes
     about any of this, so this file has ONE rotation rule rather than two that can drift.
@@ -837,8 +898,51 @@ def history_path(sdir, cfg, now=None, prefix=HISTORY_PREFIX):
     existing = sorted(glob.glob(os.path.join(d, prefix + today + "-*.jsonl")))
     if existing:
         return existing[-1]
+    prune_logs(sdir, cfg, now)
     return os.path.join(d, prefix
                         + time.strftime("%Y%m%d-%H%M%S", time.localtime(now)) + ".jsonl")
+
+
+def prune_logs(sdir, cfg, now=None):
+    """Remove whole log files older than history_keep_days. Returns how many went.
+
+    ⛔ ONLY THIS PLUGIN'S OWN FILES, matched on the two prefixes it writes. `history_dir`
+    is configurable and the docs suggest pointing it at a synced folder or another drive,
+    so a blanket sweep of *.jsonl there could delete somebody else's data. The prefixes are
+    the whole safety argument for this function.
+
+    ⛔ 0 KEEPS EVERYTHING, and so does any value _days() cannot read. A retention setting
+    that guesses is a retention setting that deletes something nobody meant to lose.
+
+    ⚠ AGE IS MTIME, not the stamp in the name. The name records when the file was STARTED;
+    mtime records when it was last written, which is what a person means by "old". They
+    differ by up to a day, and mtime is the later of the two - so this errs towards keeping.
+
+    ⚠ Every failure is swallowed. A file that cannot be removed - open elsewhere, read-only,
+    on a disconnected drive - must cost nothing: this runs inside the path that is about to
+    write a usage record, and losing that record to a housekeeping error would be a bad
+    trade.
+    """
+    # ⛔ COERCED HERE TOO, not only in config(). This function DELETES, so it must not
+    # depend on somebody else having sanitised its input first: `cfg` reaches it through
+    # history_path() from two writers, one of which passes `cfg or {}`, and a project-level
+    # config or a hand-built dict can carry a raw string. Found by a check that passed
+    # "abc" straight in and got a TypeError out of `days <= 0`.
+    days = _days(cfg.get("history_keep_days"), HISTORY_KEEP_DAYS_DEFAULT)
+    if days <= 0:
+        return 0
+    cutoff = (time.time() if now is None else now) - days * 86400
+    d = history_dir(sdir, cfg)
+    removed = 0
+    for pref in (HISTORY_PREFIX, DEBUG_RESPONSE_PREFIX):
+        for path in glob.glob(os.path.join(d, pref + "*.jsonl")):
+            try:
+                if os.path.getmtime(path) < cutoff:
+                    os.remove(path)
+                    removed += 1
+            except OSError:
+                pass
+    return removed
 
 
 TIME_FMT = "%Y-%m-%d %H:%M:%S"
@@ -1797,6 +1901,75 @@ def selftest():
         assert not calls, "the fresh path made a request"
     finally:
         globals()["fetch"] = saved
+
+    # ⛔ RETENTION - the only setting in this file that DELETES, so it is checked hardest.
+    # Two properties, and the second one is the safety argument for the whole feature.
+    assert _days(None, HISTORY_KEEP_DAYS_DEFAULT) == HISTORY_KEEP_DAYS_DEFAULT
+    assert _days(30, 30) == 30 and _days("30", 30) == 30      # a hand-typed "30" still works
+    # ⛔ EVERY UNUSABLE VALUE MEANS KEEP FOR EVER, never "fall back to 30 and start
+    # deleting". A wrong number elsewhere in this file costs a wrong reading on a line; a
+    # wrong number here costs a record nobody can get back.
+    for bad in (0, -1, True, False, "abc", "", [], {}, float("nan"), float("inf")):
+        assert _days(bad, 30) == 0, bad
+
+    tmp2 = tempfile.mkdtemp(prefix="dg-prune-")
+    logs = os.path.join(tmp2, "logs")
+    os.makedirs(logs)
+    now2 = time.time()
+    planted = {"limits-history-20200101-000000.jsonl": 60,     # ours, old
+               "usage-response-20200101-000000.jsonl": 60,     # ours, old
+               "limits-history-20990101-000000.jsonl": 1,      # ours, fresh
+               "not-ours.jsonl": 400,                          # NOT ours, old
+               "notes.txt": 400}                               # NOT ours, old
+
+    def replant():
+        for fname, age in planted.items():
+            p = os.path.join(logs, fname)
+            with open(p, "w", encoding="utf-8") as f:
+                f.write("x" + chr(10))
+            os.utime(p, (now2 - age * 86400, now2 - age * 86400))
+
+    replant()
+    cfg2 = {"history_dir": logs, "history_keep_days": 30}
+    assert prune_logs(tmp2, cfg2, now2) == 2, "expected exactly the two old OURS"
+    left = set(os.listdir(logs))
+    # ⛔ THE SAFETY ARGUMENT: history_dir is configurable and the docs suggest pointing it
+    # at a synced folder, so anything without one of this plugin's two prefixes must
+    # survive no matter how old it is. A blanket *.jsonl sweep would delete a stranger's
+    # data, and nothing would ever report it.
+    assert "not-ours.jsonl" in left and "notes.txt" in left, left
+    assert "limits-history-20990101-000000.jsonl" in left, left
+    assert "limits-history-20200101-000000.jsonl" not in left, left
+
+    # 0 and every unreadable value keep everything - checked through prune_logs itself,
+    # not only through _days(), because this function is reached with a cfg that never
+    # passed through config().
+    for keep in (0, "abc", True, -5, [], ""):
+        replant()
+        c = {"history_dir": logs, "history_keep_days": keep}
+        assert prune_logs(tmp2, c, now2) == 0, keep
+        assert len(os.listdir(logs)) == len(planted), keep
+
+    # ⚠ AN EXPLICIT null IS *NOT* "FOR EVER" - it means "use the default", the same as
+    # history_dir: null and the same as leaving the key out. ⛔ 0 is the value that keeps
+    # everything, and config.example.json says so where somebody editing the file will
+    # read it. Pinned here because the two readings are easy to confuse and one of them
+    # deletes.
+    replant()
+    assert prune_logs(tmp2, {"history_dir": logs, "history_keep_days": None}, now2) == 2
+
+    # ⭐ And the trigger: history_path() prunes ONLY when it mints a new day's name.
+    replant()
+    minted = history_path(tmp2, cfg2, now2)
+    assert not os.path.exists(minted), "history_path must not create the file"
+    assert len(os.listdir(logs)) == 3, "minting a new name must prune"
+    replant()
+    with open(minted, "w", encoding="utf-8") as f:
+        f.write("x" + chr(10))
+    same = history_path(tmp2, cfg2, now2)
+    assert same == minted, (same, minted)
+    assert len(os.listdir(logs)) == len(planted) + 1, "an existing day's file must NOT prune"
+
     print("selftest OK")
     return 0
 

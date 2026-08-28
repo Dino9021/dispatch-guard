@@ -531,6 +531,57 @@ def status():
         flag = "  ⚠ STALE - a frozen percentage reads LOW, so the brake holds off"                if age > 15 else ""
         print("                      last written %.0f min ago%s" % (age, flag))
 
+    # ⛔ WHERE THE LOG FILES ACTUALLY ARE, printed rather than described. config.json calls
+    # this "a logs/ folder under the state directory", which is true and gives a person
+    # nothing they can paste into a file manager. A sentence in the documentation can only
+    # ever name the default; this resolves `history_dir` and prints the result.
+    # ⚠ It usually does not exist, and that is not a fault: both switches that write here
+    # are off by default. "Not created yet, and here is which switch is off" is the honest
+    # answer to "where are my files?" - a path with no explanation is not.
+    logs = cfg.get("history_dir") or os.path.join(STATE_DIR, "logs")
+    logs = os.path.abspath(os.path.expanduser(logs))
+    print("log files           : %s" % logs)
+    # ⛔ AND THE ONE CASE WHERE THIS WHOLE BLOCK IS LOOKING IN THE WRONG PLACE. STATE_DIR is
+    # a constant here, but usage.py's state_dir() reads $CLAUDE_DISPATCH_DIR first - so with
+    # that variable set, the hooks write somewhere this script never looks, and every path
+    # printed above it is the wrong one too. ⚠ NOT introduced by this line and NOT fixed by
+    # it: making install.py follow the variable would move where it installs things, which
+    # is a different decision. Saying so is the part that cannot wait.
+    env_dir = os.environ.get("CLAUDE_DISPATCH_DIR")
+    if env_dir and os.path.abspath(os.path.expanduser(env_dir)) != os.path.abspath(STATE_DIR):
+        print("                      ⚠ $CLAUDE_DISPATCH_DIR is set to %s"
+              % os.path.abspath(os.path.expanduser(env_dir)))
+        print("                        The HOOKS use that; this script does not, so the")
+        print("                        paths above are not where your files are.")
+    if os.path.isdir(logs):
+        kept = [f for f in os.listdir(logs)
+                if f.startswith(("limits-history-", "usage-response-"))]
+        total = 0
+        for f in kept:
+            try:
+                total += os.path.getsize(os.path.join(logs, f))
+            except OSError:
+                pass
+        days = cfg.get("history_keep_days", 30)
+        forever = (not isinstance(days, (int, float)) or isinstance(days, bool)
+                   or days <= 0)
+        print("                      %d file%s, %.1f MB, kept %s"
+              % (len(kept), "" if len(kept) == 1 else "s", total / 1048576.0,
+                 "FOR EVER (history_keep_days is %r)" % (days,) if forever
+                 else "%g days (history_keep_days)" % days))
+    else:
+        on = []
+        if cfg.get("keep_history"):
+            on.append("keep_history")
+        dbg = cfg.get("debug") or {}
+        if isinstance(dbg, list):
+            dbg = {k: True for k in dbg}
+        if isinstance(dbg, dict) and dbg.get("API_response_usage"):
+            on.append("debug.API_response_usage")
+        print("                      not created yet - %s"
+              % ("nothing written since %s was switched on" % " and ".join(on) if on
+                 else "keep_history and debug.API_response_usage are both off"))
+
     try:
         r = subprocess.run([sys.executable, os.path.join(HERE, "hooks", "usage.py"),
                             "--verdict"], capture_output=True, timeout=30,
