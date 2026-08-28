@@ -3,7 +3,7 @@
 
     python Tools/Debug/test_all.py
 
-⛔ WHY A RUNNER FOR SIX COMMANDS. Because six commands run by hand is five chances to
+⛔ WHY A RUNNER FOR SEVEN COMMANDS. Because seven commands run by hand is six chances to
 forget one, and this project has already paid for that: the gate's own selftest exercised
 the clock's DECISION function and never called the clock, so a NameError that disabled the
 entire gate shipped through five releases with every check green. The lesson was not "write
@@ -34,6 +34,7 @@ CHECKS = [
     ("install",       [os.path.join(DEBUG_DIR, "test_install.py")]),
     ("resume cancel", [os.path.join(DEBUG_DIR, "test_resume_cancel.py")]),
     ("cmd guards",    [os.path.join(DEBUG_DIR, "test_guards.py")]),
+    ("usage debug dump", [os.path.join(DEBUG_DIR, "test_usage_debug_dump.py")]),
 ]
 
 # ⚠ Per check, not for the whole run. The slowest of these takes seconds; anything near this

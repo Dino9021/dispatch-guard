@@ -94,6 +94,36 @@ skill 是模型看了描述之後**自己決定**要不要用；文件是模型*
 所以 `install.py` 存在的唯一理由就是這個。
 ⭐ **而那段腳本自己去查安裝路徑，所以你永遠不必知道 `install.py` 被裝到哪裡去了。**
 
+### 0.（用 VS Code 的人先做這一步，整個安裝會順很多）
+
+⭐ **一台機器做一次，涵蓋所有專案。** 先把它設好，安裝過程就不會被一個「你來不及按」的
+通知打斷 —— 那個通知會自己淡掉，而錯過它的後果是：工作寫好了、`Run Task` 也看得到，
+但開資料夾時**永遠不會自動跑**，⛔ 而且不會有任何錯誤訊息。
+
+| 做法 | 怎麼做 |
+|---|---|
+| ⭐ 指令面板 | `Ctrl+Shift+P` → **`Tasks: Manage Automatic Tasks`** → 選 **`Allow Automatic Tasks`** |
+| 改設定檔 | `Ctrl+Shift+P` → `Preferences: Open User Settings (JSON)`，加入 `"task.allowAutomaticTasks": "on"` |
+
+```jsonc
+// %APPDATA%\Code\User\settings.json
+// macOS: ~/Library/Application Support/Code/User/settings.json
+// Linux: ~/.config/Code/User/settings.json
+{
+  "task.allowAutomaticTasks": "on"
+}
+```
+
+⚠ **VS Code 的預設值是 `"off"`**，所以在你或安裝腳本改掉它之前，自動工作一律不跑。
+那個鍵只接受 `"on"` 和 `"off"`。
+⚠ **這是「使用者層級」的設定**，不是每個專案一份 —— 一次就涵蓋所有專案。
+⚠ 它也不是這個外掛專用的：你其他專案的自動工作也會跟著被允許。
+⛔ **而且工作在「不受信任的工作區」裡不會跑**，不管這個設定是什麼 ——
+那是 VS Code 自己的說明原文。要一起按「信任這個資料夾」。
+
+⭐ **不做也可以。** 第 2 步的腳本本來就會幫你設成 `on`；先手動做只是讓你連通知都看不到。
+沒設好的話，重開 VS Code 時會看到那個通知 —— 見下面「⚠ 安裝後重開 VS Code，它會問你一次」。
+
 ### 1. 外掛本體 — hook 和 skill
 
 ```bash
@@ -173,7 +203,7 @@ sh "$p/hooks/run.sh" "$p/install.py" --all
 | 方法 | 怎麼做 |
 |---|---|
 | 找回通知 | 狀態列右下角的**鈴鐺圖示**，或 `Notifications: Show Notifications` |
-| 直接執行那個決定 | `Ctrl+Shift+P` → `Tasks: Allow Automatic Tasks` |
+| 直接執行那個決定 | `Ctrl+Shift+P` → `Tasks: Manage Automatic Tasks` → 選 `Allow Automatic Tasks` |
 | 看它寫到哪裡 | `%APPDATA%\Code\User\settings.json` 的 `"task.allowAutomaticTasks": "on"` |
 
 ⭐ **安裝腳本本來就會把那個值設成 `on`**，所以多數情況下你連通知都不會看到。
@@ -405,6 +435,7 @@ OVERALL             : everything is live
 4. 在專案目錄裡跑第 2 步那段腳本。已經在 Claude 裡的話，`/dispatch-guard:install` 是同一件事。
 5. ⚠ **重新開啟資料夾。** 工作是 `runOn: folderOpen`，所以現在不會起來。
 6. ⚠ VS Code 會問 **Allow Automatic Tasks**。**要按同意。**
+   ⭐ 先做過第 0 步的話，這一步不會出現 —— 那就是它存在的理由。
 7. 一個叫 `Claude usage watch` 的專用終端機會出現，裡面就是那一行用量。
 
 ⛔ **第 6 步沒同意，看起來跟「工作寫壞了」一模一樣** —— 兩種情況都是什麼都沒出現、也沒有錯誤訊息。
@@ -959,6 +990,34 @@ reset     : ⛔ STALE - armed for 22:18 but the stored reset is now 00:18,
 想換掉整個狀態目錄，用 `--dir <路徑>` 或環境變數 `$CLAUDE_DISPATCH_DIR`。
 專案也可以自己帶一份 `<repo>/.claude/dispatch-guard.json`，它對 `dispatch.*` 那組設定有最終決定權。
 
+**保留每一次 API 回應**（`debug.API_response_usage`，預設關閉）。打開之後，usage 端點每一次的
+回應都會**完整**存進 `history_dir`，檔名 `usage-response-<YYYYMMDD-HHMMSS>.jsonl`，一行一筆，
+每個本地日一個檔：
+
+```json
+["<organizationUuid>", "<accountUuid>", "2026-08-27T09:45:00+00:00", { "…整個回應…": true }]
+```
+
+⭐ **它存在的理由是「現在用不到的欄位，就是以後那個問題要的欄位」。** 目前的解析只取兩個百分比，
+其餘全部丟掉；`nimbus_quill` 和 `seven_day_opus` 看起來毫無價值，直到它們變成證據。
+
+⚠ **最多約每天 1.2–1.4 MB。** 實測：一行 2006 位元組（回應本體 1887）；`fetch_seconds` 為 120、
+`fetch_seconds_jitter` 為 30 時平均間隔 135 秒，一天約 640 次，而 720 次是完全沒有 jitter 的上限。
+持續工作一整天才會到這個量，閒置時 `idle_after_min` 會讓 watcher 停止要數字。這是診斷開關 —— 問完
+你要問的問題就關回 `false`。
+⛔ **位置 1 是 `null` 代表這一列無法歸屬到任何座位**，做統計時必須**排除**，不能當一般資料平均進去。
+⚠ 條件不只一兩種，所以記規則而不是清單：**座位確認不了就寫 null** —— `~/.claude.json` 讀不到、裡面
+沒有 `oauthAccount` 或 `accountUuid`、它的組織 ID 和憑證檔不一致（換帳號之後兩個檔案不同步），或
+token 來自 `$ANTHROPIC_TOKEN`。位置 0 是 `null` 則代表憑證檔裡沒有 `organizationUuid`，而那時候位置
+1 也一定是 null：沒有東西可以拿來對照。
+⚠ `organizationUuid` 認的是**組織**，不是座位。同一個組織裡的多個座位共用同一個值。
+⚠ **並行寫入會掉行。** 實測：四個 process 同時 append，240 行裡掉了 14 到 26 行（約 6–11%）；兩個
+process 同時寫也會掉。沒有例外、沒有損壞、沒有任何跡象。`keep_history` 是同樣的機制。
+⛔ 「只開一個 session 就不會掉」是錯的 —— `dispatch_gate.py` 自己會另外跑 `usage.py`，所以一個
+session 也可能同時有兩個寫入者。要保證一行都不漏，這個檔案格式目前做不到。
+⭐ 陣列寫法也接受：`"debug": ["API_response_usage"]` 等同 `{"API_response_usage": true}`。
+⚠ `"debug": true` 不會打開任何開關 —— 它會關掉全部，並在 stderr 說明原因。
+
 **用量歷史紀錄**（`keep_history`，預設關閉）會寫到 `history_dir` —
 預設是狀態目錄旁邊的 `logs/` 資料夾 — 檔名是
 `limits-history-<YYYYMMDD-HHMMSS>.jsonl`，每個本地日一個檔，永遠不會被裁切：
@@ -1319,6 +1378,38 @@ not a key a plugin manifest can set, and `.vscode/tasks.json` is per-project. Th
 reason `install.py` exists — ⭐ **and the script looks its own install path up, so you never have
 to know where `install.py` went.**
 
+### 0. If you use VS Code, do this first — the rest goes much smoother
+
+⭐ **Once per machine, covering every project.** Setting it up front means the install is never
+interrupted by a notification you have to catch: it fades on its own, and missing it leaves the
+task written and visible under `Run Task` but **never starting when you open a folder** — ⛔ with
+no error message anywhere.
+
+| route | how |
+|---|---|
+| ⭐ command palette | `Ctrl+Shift+P` → **`Tasks: Manage Automatic Tasks`** → pick **`Allow Automatic Tasks`** |
+| edit the setting | `Ctrl+Shift+P` → `Preferences: Open User Settings (JSON)`, then add `"task.allowAutomaticTasks": "on"` |
+
+```jsonc
+// %APPDATA%\Code\User\settings.json
+// macOS: ~/Library/Application Support/Code/User/settings.json
+// Linux: ~/.config/Code/User/settings.json
+{
+  "task.allowAutomaticTasks": "on"
+}
+```
+
+⚠ **VS Code ships with `"off"`**, so no automatic task runs until you or the install script
+changes it. The key takes `"on"` and `"off"` and nothing else.
+⚠ **It is a USER-level setting**, not one per project — once covers everything.
+⚠ It is not specific to this plugin either: other projects' automatic tasks become allowed too.
+⛔ **And tasks do not run in an untrusted workspace** whatever this is set to — that is VS Code's
+own wording. Trust the folder as well.
+
+⭐ **Skipping it is fine.** Step 2's script sets it to `on` anyway; doing it first only means you
+never see the notification. Leave it and you will meet the prompt on the next VS Code restart —
+see "⚠ Reopen VS Code after installing and it asks you once", below.
+
 ### 1. The plugin — hooks and the skill
 
 ```bash
@@ -1402,7 +1493,7 @@ Run Task lists it, but it NEVER starts on folder open — and nothing says why.
 | Route | How |
 |---|---|
 | get the notification back | the **bell icon** at the bottom right, or `Notifications: Show Notifications` |
-| make the decision directly | `Ctrl+Shift+P` → `Tasks: Allow Automatic Tasks` |
+| make the decision directly | `Ctrl+Shift+P` → `Tasks: Manage Automatic Tasks` → pick `Allow Automatic Tasks` |
 | see where it is stored | `"task.allowAutomaticTasks": "on"` in `%APPDATA%\Code\User\settings.json` |
 
 ⭐ **The installer sets that value to `on` itself**, so most of the time the notification never
@@ -1654,6 +1745,7 @@ Optional, for numbers on your screen:
    `/dispatch-guard:install` is the same thing.
 5. ⚠ **Reopen the folder.** The task is `runOn: folderOpen`, so nothing starts now.
 6. ⚠ VS Code asks **Allow Automatic Tasks**. **Say yes.**
+   ⭐ Do step 0 first and this never appears — which is the whole point of it.
 7. A dedicated terminal named `Claude usage watch` appears, carrying the usage line.
 
 ⛔ **Declining step 6 looks exactly like a broken task** — both give you nothing on screen and
@@ -2247,6 +2339,43 @@ that day kept the old one: the update landed, the default moved, nothing happene
 
 Override the whole state directory with `--dir <path>` or `$CLAUDE_DISPATCH_DIR`. A project may
 also carry `<repo>/.claude/dispatch-guard.json`, which wins for the `dispatch.*` keys.
+
+**Keep every API response** (`debug.API_response_usage`, off by default). With it on, every
+response from the usage endpoint is stored **complete** under `history_dir` as
+`usage-response-<YYYYMMDD-HHMMSS>.jsonl`, one array per line, one file per local day:
+
+```json
+["<organizationUuid>", "<accountUuid>", "2026-08-27T09:45:00+00:00", { "…the whole body…": true }]
+```
+
+⭐ **It exists because the field nobody values today is the one a later question needs.** The
+parser keeps two percentages and discards the rest; `nimbus_quill` and `seven_day_opus` looked
+worthless right up to the moment they became evidence.
+
+⚠ **At most about 1.2–1.4 MB a day.** Measured: 2006 bytes per line (the body alone is 1887);
+with `fetch_seconds: 120` and `fetch_seconds_jitter: 30` the mean interval is 135 s, so about
+640 fetches a day — 720 is the no-jitter ceiling. Reaching that needs a full day of continuous
+work; while nothing is happening, `idle_after_min` stops the watcher asking. It is a
+diagnostic — switch it back to `false` once it has answered your question.
+⛔ **A `null` in position 1 means the row cannot be attributed to a seat**, and statistics must
+**exclude** those rows rather than average them in.
+⚠ There is more than one route to it, so learn the rule rather than a list: **if the seat cannot
+be confirmed, it is written `null`** — `~/.claude.json` unreadable, no `oauthAccount` or
+`accountUuid` in it, its organisation disagreeing with the credentials file (they are written at
+different moments and diverge after an account switch), or the token coming from
+`$ANTHROPIC_TOKEN`. A `null` in position 0 means the credentials file carries no
+`organizationUuid` — and then position 1 is null too, because there is nothing to confirm it
+against.
+⚠ `organizationUuid` identifies the **organisation**, not the seat. Several seats in one
+organisation share it.
+⚠ **Concurrent writers lose lines.** Measured: four processes appending at once dropped 14 and
+26 lines out of 240 (roughly 6–11%); two processes lose lines as well. No exception, no
+corruption, no sign anywhere. `keep_history` works the same way.
+⛔ "Run one session and nothing is lost" is **wrong** — `dispatch_gate.py` runs `usage.py` of
+its own accord, so one session can still have two writers. This file format cannot promise a
+gap-free sequence.
+⭐ A list is an alias: `"debug": ["API_response_usage"]` means `{"API_response_usage": true}`.
+⚠ `"debug": true` switches nothing on — it switches everything off and says why on stderr.
 
 **Usage history** (`keep_history`, off by default) is written to `history_dir` — by default a
 `logs/` folder beside the state — as `limits-history-<YYYYMMDD-HHMMSS>.jsonl`, one file per local

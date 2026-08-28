@@ -132,6 +132,37 @@ def read_json(path, fallback=None):
         return fallback
 
 
+def _truthy(value, default=False):
+    """A config value -> bool. ⛔ A STRING IS READ FOR ITS MEANING, NOT ITS LENGTH.
+
+    ⚠ `bool("false")` is True, and so is `bool("0")` and `bool("no")`. JSON writes a real
+    boolean, but config.json gets hand-edited, and somebody typing the word for OFF must not
+    switch something ON. Measured by a refuting pass: `"API_response_usage": "false"` turned
+    the dump on.
+
+    ⛔ AN UNRECOGNISED STRING RETURNS `default`, NOT True. A first version returned True for
+    anything it did not recognise, which switches a diagnostic ON for a typo - the same
+    "reads as off, behaves as on" failure the function exists to remove.
+
+    ⭐ THIS IS DELIBERATELY A SECOND COPY of `cmd_guards._truthy`, and the semantics are kept
+    identical on purpose - including the `default` for an unrecognised value. It is not
+    imported because the dependency runs the other way: dispatch_gate.py and resume.py both
+    `import usage`, while usage.py imports nothing from its siblings, and cmd_guards is
+    itself a dispatch_gate dependency. Reaching sideways from here would invert that and
+    risk a cycle. ⚠ If you change one, change both.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ("false", "0", "no", "off", ""):
+        return False
+    if text in ("true", "1", "yes", "on"):
+        return True
+    return default
+
+
 def config(sdir):
     """DEFAULTS overlaid with config.json, if one exists. Unknown keys are ignored."""
     cfg = dict(DEFAULTS)
@@ -179,6 +210,45 @@ def config(sdir):
     # soft and hard thresholds are unaffected.
     cfg["keep_history"] = bool(disk.get("keep_history", False))
     cfg["history_dir"] = disk.get("history_dir")     # None -> <state dir>/logs
+    # ⛔ OFF by default, and it is meant to be switched back off. With
+    # "debug": {"API_response_usage": true} every successful fetch appends the WHOLE
+    # response body to <history_dir>/usage-response-<stamp>.jsonl, rotated rather than
+    # trimmed. ⚠ COST, MEASURED: a whole line is 2006 bytes (the body alone 1887), and
+    # fetch_seconds 120 with fetch_seconds_jitter 30 gives a MEAN interval of 135 s - about
+    # 640 lines a day, where 720 would be the no-jitter ceiling. So AT MOST ABOUT
+    # 1.2-1.4 MB A DAY, and only across a full day of continuous work: while nothing is
+    # happening, idle_after_min stops the watcher asking at all.
+    # ⛔ AN EARLIER VERSION OF THIS COMMENT SAID "2.9 KB a response, about 2 MB a day" AND
+    # WAS WRONG BY ROUGHLY 60%. 2.9 KB was the size of a capture FILE - a wrapper around a
+    # response - and 720 ignored the jitter. It exists to answer a question from disk
+    # instead of by spending another API call, not to run forever.
+    # ⭐ A NAMED BLOCK rather than a flat key, so the next debug switch needs no new schema.
+    # ⚠ A LIST IS AN ALIAS for the same thing: "debug": ["API_response_usage"] means
+    # {"API_response_usage": true}, because that is how the setting was described.
+    # ⚠ Position 1 of a dumped row is the per-seat accountUuid and CAN BE null. A null
+    # there does not mean "the same account as the row above" - it means the row could not
+    # be attributed to a seat at all, so a reader computing statistics must EXCLUDE it
+    # rather than average it in. See _account_ids().
+    d = disk.get("debug") or {}
+    if isinstance(d, list):
+        d = {k: True for k in d}
+    elif not isinstance(d, dict):
+        # ⛔ WARNED, NOT SILENTLY DROPPED. `"debug": true` reads as "switch debugging on"
+        # and used to mean the exact opposite - every switch off, with nothing anywhere
+        # saying so. A person who wrote that would wait all day for a file that never
+        # arrives, and the config would look right the whole time.
+        sys.stderr.write('usage.py: debug=%r is not an object or a list, so NO debug '
+                         'switch is on. Use {"API_response_usage": true}.%s'
+                         % (d, chr(10)))
+        d = {}
+    # ⚠ VALUES ARE COERCED, and the string is the reason. JSON `false` arrives as a bool,
+    # but a hand-edited config carries "false", "0" and "no" - every one of them TRUTHY in
+    # Python, so the switch would come ON for somebody who wrote the word for off.
+    # ⛔ default=False, SPELLED OUT. An unrecognised value leaves the switch off: a typo must
+    # not enable a diagnostic that writes on every fetch. ⚠ Every value in this block is
+    # coerced to a bool, so a future switch needing a STRING (a level, a path) cannot live
+    # here as-is - it needs its own key, or this line needs to learn about it.
+    cfg["debug"] = {k: _truthy(v, False) for k, v in d.items()}
     cfg["show_context"] = bool(disk.get("show_context", True))
     cfg["show_model"] = bool(disk.get("show_model", True))
     cfg["width"] = disk.get("width")        # None -> detect
@@ -428,12 +498,18 @@ def _api_window(win, whole=None):
     return out
 
 
-def fetch(cfg=None):
+def fetch(cfg=None, sdir=None):
     """One HTTP GET. Returns a record dict on success, or a STRING naming why not.
 
     ⚠ It returns a reason instead of raising, because every failure here must end as
     "no number" - in a statusline, in a watcher, and in a hook. A crash in any of those
     is worse than a dash, and a wrong number is worse than both.
+
+    ⚠ `sdir` is used ONLY by the debug response dump below, which does nothing unless
+    debug.API_response_usage is on. None disables it, so a caller that has no state
+    directory (the selftest) simply gets the old behaviour. ⛔ It cannot be replaced by
+    state_dir(): the state directory is a parameter everywhere else in this file, and the
+    selftest drives ensure_fresh() against a temp directory state_dir() would never name.
     """
     token, expires = _token_and_expiry()
     if not token:
@@ -467,6 +543,16 @@ def fetch(cfg=None):
         return "unparseable response"
     if not isinstance(data, dict):
         return "unexpected response shape"
+    # ⛔ THE DEBUG DUMP GOES HERE, AND THE POSITION IS THE WHOLE POINT - not style.
+    # `if not five: return` a few lines below fires when a response's five_hour cannot be
+    # used, and that is PRECISELY the shape a diagnostic exists to capture. Any later
+    # position silently drops the most interesting responses. ⚠ Measured 2026-08-27: a
+    # real response came back with five_hour.resets_at null beside utilization 0.0, an
+    # unanticipated shape which happened to pass the check below. The next surprise may
+    # not, and a diagnostic that only keeps the responses the parser already understood is
+    # worth nothing.
+    if sdir and ((cfg or {}).get("debug") or {}).get("API_response_usage"):
+        _dump_response(sdir, cfg or {}, data)
     five = _api_window(data.get("five_hour"), _whole_percent(data, "five_hour"))
     if not five:
         # ⚠ A THIRD STATE, distinct from "no data" and from "stale data": the response
@@ -592,7 +678,7 @@ def ensure_fresh(sdir, cfg):
             return prev, None                    # still fresh; spend no call
     if not _claim_attempt(sdir, due):
         return prev, None                        # someone else just tried; do not pile on
-    got = fetch(cfg)
+    got = fetch(cfg, sdir)
     if isinstance(got, str):
         _log_fetch(sdir, got)
         return prev, got                         # the OLD record survives a failure
@@ -707,6 +793,12 @@ def collect(sdir, cfg):
 
 HISTORY_PREFIX = "limits-history-"
 
+# ⭐ The debug response dump's prefix - same directory, same rotation, different file.
+# ⛔ DELIBERATELY NOT limits-history-*.jsonl. History holds two percentages per row and is
+# PARSED by _projection(); this holds whole response bodies for questions nobody has asked
+# yet. One reader would choke on the other's lines, so they never share a file.
+DEBUG_RESPONSE_PREFIX = "usage-response-"
+
 
 def history_dir(sdir, cfg):
     """Where usage records live. Configurable; defaults to <state dir>/logs.
@@ -720,7 +812,7 @@ def history_dir(sdir, cfg):
     return os.path.abspath(os.path.expanduser(d))
 
 
-def history_path(sdir, cfg, now=None):
+def history_path(sdir, cfg, now=None, prefix=HISTORY_PREFIX):
     """Today's history file: limits-history-<YYYYMMDD-HHMMSS>.jsonl
 
     The stamp is when the FILE was started, in the same YYYYMMDD-HHMMSS form the task
@@ -735,14 +827,17 @@ def history_path(sdir, cfg, now=None):
     1,400 samples a day at a sixty-second refresh, well under a megabyte - and the point
     of keeping history at all is being able to look back. Dropping the early part of a
     day to satisfy a line count would quietly destroy the record it exists to keep.
+
+    ⭐ `prefix` is the ONLY thing the debug response dump (DEBUG_RESPONSE_PREFIX) changes
+    about any of this, so this file has ONE rotation rule rather than two that can drift.
     """
     now = now if now is not None else time.time()
     d = history_dir(sdir, cfg)
     today = time.strftime("%Y%m%d", time.localtime(now))
-    existing = sorted(glob.glob(os.path.join(d, HISTORY_PREFIX + today + "-*.jsonl")))
+    existing = sorted(glob.glob(os.path.join(d, prefix + today + "-*.jsonl")))
     if existing:
         return existing[-1]
-    return os.path.join(d, HISTORY_PREFIX
+    return os.path.join(d, prefix
                         + time.strftime("%Y%m%d-%H%M%S", time.localtime(now)) + ".jsonl")
 
 
@@ -809,6 +904,93 @@ def _append_history(sdir, cfg, five, seven, model=None, session=None):
         with open(history_path(sdir, cfg), "a", encoding="utf-8") as f:
             f.write(json.dumps(sample, ensure_ascii=False) + chr(10))
     except OSError:
+        pass
+
+
+def _account_ids():
+    """(organizationUuid, accountUuid) for a debug row. Either may be None.
+
+    ⭐ POSITION 0 COMES FROM ~/.claude/.credentials.json, the file the access token itself
+    came from, so it is authoritative about which account made the call. Measured
+    2026-08-27: `organizationUuid` sits at the TOP LEVEL there, beside the `claudeAiOauth`
+    block _token_and_expiry() already reads. One dictionary lookup, no new API call.
+
+    ⛔ organizationUuid IDENTIFIES THE ORGANISATION, NOT THE SEAT. Two accounts inside one
+    team share it - measured here organizationType `claude_team`, seatTier `team_tier_1` -
+    and the owner switches BOTH between organisations AND between seats inside one, so the
+    org id alone provably cannot answer "did these two rows come from the same account?".
+    The per-seat `accountUuid` is in ~/.claude.json under `oauthAccount`.
+
+    ⚠ THE TWO FILES ARE WRITTEN AT DIFFERENT MOMENTS. .credentials.json is rewritten when
+    the token refreshes; ~/.claude.json's oauthAccount when the profile is fetched. After an
+    account switch they can disagree, and a stale profile would attach the WRONG seat id to
+    a response - worse than a missing one, because it looks valid. Both files carry
+    organizationUuid, so they are cross-checked and the seat id is DROPPED on a mismatch.
+
+    ⛔ A None in position 1 therefore means "this row cannot be tied to a seat". The row is
+    still KEPT - never lose data - but a reader computing statistics must EXCLUDE it rather
+    than average it in.
+
+    ⚠ ~/.claude.json is about 55 KB and is read only from here, which runs only while the
+    debug switch is on. Nothing extra is read when it is off.
+
+    ⛔ NO emailAddress AND NO TOKEN EVER LEAVES THIS FUNCTION. oauthAccount carries an email
+    address beside the uuid; accountUuid identifies the seat without putting a personal
+    address into a log file that gets copied around.
+    """
+    # ⚠ $ANTHROPIC_TOKEN WINS IN _token_and_expiry(), and on that path the credentials file
+    # is never opened - so it is not the source of the token in hand and its organizationUuid
+    # may describe a different account entirely. That is the same "looks valid but is wrong"
+    # failure the cross-check below exists to prevent, so it gets the same answer: nothing.
+    env = os.environ.get("ANTHROPIC_TOKEN")
+    if env and env.strip():
+        return None, None
+    home = os.path.expanduser("~")
+    cred = read_json(os.path.join(home, ".claude", ".credentials.json"), {}) or {}
+    org = cred.get("organizationUuid") if isinstance(cred, dict) else None
+    org = org if isinstance(org, str) and org else None
+    prof = read_json(os.path.join(home, ".claude.json"), {}) or {}
+    acct = prof.get("oauthAccount") if isinstance(prof, dict) else None
+    acct = acct if isinstance(acct, dict) else {}
+    seat = acct.get("accountUuid")
+    seat = seat if isinstance(seat, str) and seat else None
+    # ⛔ Including the case where the credentials file carries no org id at all: with
+    # nothing to confirm the profile file against, the seat it names cannot be trusted.
+    if org is None or acct.get("organizationUuid") != org:
+        seat = None
+    return org, seat
+
+
+def _dump_response(sdir, cfg, data):
+    """debug.API_response_usage: keep the WHOLE response body, and never break a fetch.
+
+    One JSON array per line, appended to <history_dir>/usage-response-<YYYYMMDD-HHMMSS>.jsonl:
+
+        [organizationUuid, accountUuid, "2026-08-27T09:45:00+00:00", {...the response...}]
+
+    ⛔ POSITION 3 IS THE RAW PARSED BODY - not trimmed, not reshaped, no key dropped for
+    looking useless. The entire point is that a field nobody valued turns out to be the
+    evidence later: `resets_at: null` beside `utilization: 0.0` was measured on 2026-08-27
+    and is what says "no usage YET in this window", which is the only way to find when work
+    actually began inside one. ⚠ That is a property of a SEQUENCE of responses, which no
+    single response and nothing else this plugin stores can answer.
+
+    ⚠ POSITION 2 IS NOT OPTIONAL. The filename records when the FILE was started, not when
+    each call happened, and statistics need a per-line instant.
+
+    ⛔ EVERY FAILURE IS SWALLOWED. This file's rule is that every failure ends as "no
+    number", never as a wrong number and never as a crash - so a full disk or a permission
+    error while writing a DIAGNOSTIC must not cost the brake its reading.
+    """
+    try:
+        org, seat = _account_ids()
+        row = [org, seat,
+               datetime.datetime.now(datetime.timezone.utc).isoformat(), data]
+        os.makedirs(history_dir(sdir, cfg), exist_ok=True)
+        with open(history_path(sdir, cfg, prefix=DEBUG_RESPONSE_PREFIX), "a",
+                  encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + chr(10))
+    except Exception:
         pass
 
 
@@ -1204,11 +1386,17 @@ def _projection(sdir, cfg, pct, resets, now):
         return None
     # ⭐ THIS FILTER IS ALSO WHAT MAKES HISTORY ACCOUNT-SAFE, by accident rather than by
     # design - worth writing down so nobody "tidies" it away. History rows carry no account
-    # field (there is nothing to record: neither the credentials file nor the endpoint
-    # carries an account identifier, measured 2026-08-26). If the signed-in account changes,
-    # rows from the old one would otherwise be mixed into the new one's burn rate. They are
-    # not, because a row is kept only when its resets_at matches the window being projected
-    # to the second, and two accounts' windows do not share an instant.
+    # field, and ⚠ NOT for the reason this comment used to give. It said neither the
+    # credentials file nor the endpoint carries an account identifier (measured 2026-08-26)
+    # and that is WRONG: measured 2026-08-27, ~/.claude/.credentials.json carries
+    # `organizationUuid` at its top level, and ~/.claude.json carries the per-seat
+    # `accountUuid` under `oauthAccount`. Both are what _account_ids() reads for the debug
+    # response dump. ⚠ Whether a history row SHOULD carry one is an open decision nobody has
+    # made - and the safety below is what makes the current answer harmless either way. If
+    # the signed-in account changes, rows from the old one would otherwise be mixed into the
+    # new one's burn rate. They are not, because a row is kept only when its resets_at
+    # matches the window being projected to the second, and two accounts' windows do not
+    # share an instant.
     # Rows carry readable timestamps now and epochs in older files; unstamp() reads both.
     norm = []
     for r in rows:
@@ -1275,6 +1463,30 @@ def should_fetch(sdir, cfg, now=None):
     if idle <= limit:
         return True, None
     return False, "no session active for %s; not fetching" % duration(idle)
+
+
+WATCH_MARK = "watch.alive"
+
+
+def _note_watch(sdir):
+    """Touch a file on every redraw, so somebody can ask whether the watcher is running.
+
+    ⛔ WHY THIS IS NOT `renders.log`. That file records STATUSLINE renders, keyed by session
+    id, and a `--watch` process has no session - so the one question people actually ask,
+    "is the VS Code usage terminal alive?", had no answer anywhere. Measured 2026-08-28: a
+    second machine's terminal did not appear, and every diagnostic could report the task was
+    installed while none could report whether it had ever run.
+
+    ⭐ ON REDRAW, NOT ON FETCH. The watcher deliberately stops calling the API when nobody is
+    working and keeps REDRAWING, so a fetch-based heartbeat would read as dead during exactly
+    the idle stretch it is designed for. What is being proved here is that the process is
+    alive, and the redraw is that proof.
+    """
+    try:
+        with open(os.path.join(sdir, WATCH_MARK), "w", encoding="utf-8") as f:
+            f.write(str(time.time()))
+    except OSError:
+        pass                              # a read-only state dir must not kill the watcher
 
 
 def watch(sdir, cfg, argv):
@@ -1360,6 +1572,7 @@ def watch(sdir, cfg, argv):
             else:
                 sys.stdout.write("\r" + text + ERASE_TO_EOL)
             sys.stdout.flush()
+            _note_watch(sdir)
             time.sleep(every)
     except KeyboardInterrupt:
         if not scroll:
@@ -1538,7 +1751,8 @@ def selftest():
         json.dump(good, f)
     calls = []
     saved = fetch
-    globals()["fetch"] = lambda cfg=None: (calls.append(1), "HTTP 429 rate limited")[1]
+    globals()["fetch"] = (
+        lambda cfg=None, sdir=None: (calls.append(1), "HTTP 429 rate limited")[1])
     try:
         rec, why = ensure_fresh(tmp, cfg)
         assert "429" in (why or ""), why

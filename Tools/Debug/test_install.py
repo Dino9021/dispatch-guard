@@ -251,11 +251,11 @@ def selfheal():
                      '"/gone/dispatch-guard/0.0.1/hooks/usage.py" --statusline')
             with open(install.SETTINGS, "w", encoding="utf-8") as f:
                 json.dump({"statusLine": {"type": "command", "command": stale}}, f)
-            note = dispatch_gate.maybe_repoint_statusline()
+            note, seen = dispatch_gate.maybe_repoint_statusline()
             assert note and "re-pointed" in note, note
             with open(install.SETTINGS, encoding="utf-8") as f:
                 assert json.load(f)["statusLine"]["command"] == install.COMMAND
-            assert dispatch_gate.maybe_repoint_statusline() is None, "must not repeat"
+            assert dispatch_gate.maybe_repoint_statusline() == (None, None), "must not repeat"
 
             # ⛔ Somebody else's statusline is never touched. Taking that slot is a
             # deliberate act and stays behind --take-statusline.
@@ -268,30 +268,33 @@ def selfheal():
             assert not install.statusline_is_ours(theirs), "a foreign command was claimed"
             with open(install.SETTINGS, "w", encoding="utf-8") as f:
                 json.dump({"statusLine": theirs}, f)
-            assert dispatch_gate.maybe_repoint_statusline() is None
+            assert dispatch_gate.maybe_repoint_statusline() == (None, None)
             with open(install.SETTINGS, encoding="utf-8") as f:
                 assert json.load(f)["statusLine"] == theirs, "it took a foreign statusline"
 
             # ⛔ And the same slot must be left alone by the ADOPT path too. Adopting is
             # only ever allowed into an empty slot; silently replacing somebody's statusline
             # would delete work they chose to do.
-            assert dispatch_gate.maybe_adopt_statusline({"auto_statusline": True}) is None
+            assert dispatch_gate.maybe_adopt_statusline({"auto_statusline": True}) == (None, None)
             with open(install.SETTINGS, encoding="utf-8") as f:
                 assert json.load(f)["statusLine"] == theirs, "adopt overwrote a foreign one"
 
             # ⭐ An EMPTY slot is taken, so the CLI shows the line with nothing typed.
             with open(install.SETTINGS, "w", encoding="utf-8") as f:
                 json.dump({}, f)
-            note = dispatch_gate.maybe_adopt_statusline({"auto_statusline": True})
-            assert note and "nothing owned the statusline" in note, note
+            note, seen = dispatch_gate.maybe_adopt_statusline({"auto_statusline": True})
+            # ⛔ AND A LINE FOR THE PERSON. With no usage left there is no model turn to
+            # relay anything, and installing on an empty budget is the case that must work.
+            assert seen and "statusline" in seen, seen
+            assert note and "othing owned the statusline" in note, note
             with open(install.SETTINGS, encoding="utf-8") as f:
                 assert json.load(f)["statusLine"]["command"] == install.COMMAND
-            assert dispatch_gate.maybe_adopt_statusline({"auto_statusline": True}) is None
+            assert dispatch_gate.maybe_adopt_statusline({"auto_statusline": True}) == (None, None)
 
             # ⚠ Off means off, even with the slot empty.
             with open(install.SETTINGS, "w", encoding="utf-8") as f:
                 json.dump({}, f)
-            assert dispatch_gate.maybe_adopt_statusline({"auto_statusline": False}) is None
+            assert dispatch_gate.maybe_adopt_statusline({"auto_statusline": False}) == (None, None)
             with open(install.SETTINGS, encoding="utf-8") as f:
                 assert "statusLine" not in json.load(f), "adopted while switched off"
         finally:

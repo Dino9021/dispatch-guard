@@ -491,7 +491,11 @@ def auto_task_reason(root, cfg, env=None):
 
 
 def maybe_install_vscode_task(root, cfg, sdir=None):
-    """Keep the watcher task correct - in VS Code's USER tasks file. Returns a note.
+    """Keep the watcher task correct - in VS Code's USER tasks file.
+
+    Returns (context, screen): the first for the model, the second for the person. ⛔ A note
+    that only reaches the model is a note that does not exist when the person has no usage
+    left - and installing with an empty budget is the case that has to work.
 
     ⭐ ONE FILE, WRITTEN ONCE, FOR EVERY PROJECT. It used to be per-project, and that could
     never work on a first open: the file is created by a session, and a session starts after
@@ -504,7 +508,7 @@ def maybe_install_vscode_task(root, cfg, sdir=None):
     false` is still honoured, because that is a decision somebody made.
     """
     if not cfg.get("auto_vscode_task"):
-        return None
+        return None, None
     try:
         sys.path.insert(0, os.path.dirname(HERE))
         import install                                  # the plugin root, beside hooks/
@@ -514,23 +518,25 @@ def maybe_install_vscode_task(root, cfg, sdir=None):
         # the folder is already open, so the first open of every new project missed it.
         if not install.vscode_user_task_current():
             lines = install.vscode_user_task()
-            note = (" ⭐ TELL THE USER: the `Claude usage watch` task was added to VS Code's "
-                    "USER tasks, so EVERY project gets the usage line from now on - there is "
-                    "no per-project file and nothing was written into this repository. "
-                    "⚠ REOPEN THE FOLDER once for it to start; after that it is automatic "
-                    "everywhere. Details: %s" % "; ".join(lines))
+            note = (" ⭐ The `Claude usage watch` task was added to VS Code's USER tasks, so "
+                    "EVERY project gets the usage line from now on - there is no per-project "
+                    "file and nothing was written into this repository. ⚠ It starts on the "
+                    "next FOLDER OPEN. Details: %s" % "; ".join(lines))
+            seen = ("added the `Claude usage watch` task to VS Code's user tasks - it covers "
+                    "every project. ⚠ Reopen the folder (or run `Developer: Reload Window`) "
+                    "for the usage terminal to start.")
         else:
-            note = None
+            note = seen = None
         # ⚠ A per-project file from an earlier version would now open a SECOND identical
         # terminal beside the user-level one. It is ours, so it goes - unless it is tracked
         # by git, where removing it would dirty somebody's tree.
         if install.vscode_task_present(root):
             if _git_tracked(root, ".vscode/tasks.json"):
-                return ((note or "") +
-                        " ⚠ TELL THE USER: this project also carries an older per-project "
-                        "`Claude usage watch` task, which will open a SECOND identical "
-                        "terminal. It is TRACKED BY GIT here, so it was not removed - take "
-                        "it out yourself, or run install.py --vscode-task --remove.")
+                extra = ("this project also carries an OLDER per-project `Claude usage watch` "
+                         "task, which opens a SECOND identical terminal. It is tracked by git "
+                         "here, so it was not removed - take it out yourself, or run "
+                         "install.py --vscode-task --remove.")
+                return (note or "") + " ⚠ " + extra, " ".join(x for x in (seen, extra) if x)
             import io as _io
             buf, saved = _io.StringIO(), sys.stdout
             sys.stdout = buf
@@ -538,13 +544,14 @@ def maybe_install_vscode_task(root, cfg, sdir=None):
                 install.vscode_task(root, remove=True)
             finally:
                 sys.stdout = saved
-            return ((note or "") +
-                    " ⭐ TELL THE USER: the older per-project task in this repository was "
-                    "removed, because the user-level one now covers every project and two "
-                    "would open two identical terminals.")
-        return note
+            extra = ("the older per-project task in this repository was removed, because "
+                     "the user-level one now covers every project and two would open two "
+                     "identical terminals.")
+            return (note or "") + " ⭐ " + extra, " ".join(x for x in (seen, extra) if x)
+        return note, seen
     except Exception as exc:
-        return " ⚠ TELL THE USER: the watcher task could not be written (%r)." % (exc,)
+        broke = "the watcher task could NOT be written (%r)." % (exc,)
+        return " ⚠ " + broke, broke
 
 
 def maybe_adopt_statusline(cfg):
@@ -554,7 +561,7 @@ def maybe_adopt_statusline(cfg):
     boundary is the whole of the safety here.
     """
     if not cfg.get("auto_statusline"):
-        return None
+        return None, None
     try:
         sys.path.insert(0, os.path.dirname(HERE))
         import install
@@ -564,14 +571,16 @@ def maybe_adopt_statusline(cfg):
         install.seed_config()
         cmd = install.adopt_statusline_if_empty()
     except Exception:
-        return None                                     # never break a session over a line
+        return None, None                               # never break a session over a line
     if not cmd:
-        return None
-    return (" ⭐ TELL THE USER: nothing owned the statusline slot, so the usage line was "
-            "installed into it - that is where the CLI shows the numbers, and it appears on "
-            "the next interactive turn. To undo it, `/dispatch-guard:uninstall` removes the "
-            "line AND switches this behaviour off; removing the entry alone is not enough, "
-            "because an empty slot is exactly what this refills.")
+        return None, None
+    return (" ⭐ Nothing owned the statusline slot, so the usage line was installed into it - "
+            "that is where the CLI shows the numbers, and it appears on the next interactive "
+            "turn. To undo it, `/dispatch-guard:uninstall` removes the line AND switches this "
+            "behaviour off; removing the entry alone is not enough, because an empty slot is "
+            "exactly what this refills.",
+            "nothing owned the statusline slot, so the usage line went into it. It appears on "
+            "your next turn. `/dispatch-guard:uninstall` takes it back out.")
 
 
 def maybe_repoint_statusline():
@@ -589,13 +598,15 @@ def maybe_repoint_statusline():
         import install                                  # the plugin root, beside hooks/
         moved = install.repoint_statusline()
     except Exception:
-        return None                                     # never break a session over a statusline
+        return None, None                               # never break a session over a statusline
     if not moved:
-        return None
-    return (" ⭐ TELL THE USER: their statusline was still aimed at %s - a copy left behind by "
-            "an earlier version, which keeps working and keeps running OLD code - and it has "
-            "been re-pointed at the running one. Nothing else was changed, and no command is "
-            "needed after a plugin update any more." % moved[0])
+        return None, None
+    return (" ⭐ The statusline was still aimed at %s - a copy left behind by an earlier "
+            "version, which keeps working and keeps running OLD code - and it has been "
+            "re-pointed at the running one. Nothing else was changed, and no command is "
+            "needed after a plugin update any more." % moved[0],
+            "your statusline still pointed at an old version (%s) and was re-pointed at the "
+            "running one." % moved[0])
 
 
 def effort_level(payload):
@@ -1367,26 +1378,48 @@ def on_session_start(payload, root, sdir, cfg):
                    % " and ".join("`dispatch-guard:%s`" % cmd_guards.skill_slug(n)
                                   for n in need))
 
-    # Anything a SessionStart hook prints on stdout enters the session's context.
-    print("Sub-task dispatch is governed by %s and enforced by a hook: one sub-task at "
-          "a time, no background dispatch, no Workflow, and the plan plus every "
-          "sub-task prompt are written to %s/<YYYYMMDD-HHMMSS-task-name>/%s BEFORE any "
-          "dispatch%s.%s %s Before "
-          "dispatching a wave run `%s --verdict` for GO/PACE/STOP - never interpret the "
-          "raw numbers yourself.%s"
-          % (cfg["protocol_doc"], cfg["task_root"], cfg["plan_glob"],
-             (" - that folder already exists, so create the task folder inside it rather "
-              "than choosing a location") if task_root_ready else
-             (" - and %s could NOT be created, so create it yourself before dispatching"
-              % cfg["task_root"]), skills_line, brake,
-             runnable("usage.py"),
-             failed_resume_note(sdir) + stand_down_resume(root, sdir, v)
-             # ⚠ Reported, never silent. It wrote into the user's project; a change to
-             # somebody's repository that nobody is told about is the wrong kind of
-             # convenience, however small the file.
-             + (maybe_install_vscode_task(root, cfg, sdir) or "")
-             + (maybe_repoint_statusline() or "")
-             + (maybe_adopt_statusline(cfg) or "")))
+    # ⚠ Reported, never silent. These write into the user's settings or repository, and a
+    # change nobody is told about is the wrong kind of convenience however small the file.
+    # ⭐ (context, screen) FROM EACH, rather than one string the caller has to parse. The
+    # first version scraped a "TELL THE USER:" marker out of the prose, which would have
+    # dropped the screen line silently the first time somebody reworded a note.
+    pairs = [maybe_install_vscode_task(root, cfg, sdir),
+             maybe_repoint_statusline(),
+             maybe_adopt_statusline(cfg)]
+    notes = [failed_resume_note(sdir), stand_down_resume(root, sdir, v)]
+    notes += [c or "" for c, _s in pairs]
+
+    text = ("Sub-task dispatch is governed by %s and enforced by a hook: one sub-task at "
+            "a time, no background dispatch, no Workflow, and the plan plus every "
+            "sub-task prompt are written to %s/<YYYYMMDD-HHMMSS-task-name>/%s BEFORE any "
+            "dispatch%s.%s %s Before "
+            "dispatching a wave run `%s --verdict` for GO/PACE/STOP - never interpret the "
+            "raw numbers yourself.%s"
+            % (cfg["protocol_doc"], cfg["task_root"], cfg["plan_glob"],
+               (" - that folder already exists, so create the task folder inside it rather "
+                "than choosing a location") if task_root_ready else
+               (" - and %s could NOT be created, so create it yourself before dispatching"
+                % cfg["task_root"]), skills_line, brake,
+               runnable("usage.py"), "".join(notes)))
+
+    # ⛔ THE ONES MARKED "TELL THE USER" NOW REACH THE USER. They were asking the MODEL to
+    # relay them - which is advice a model weighs against its task, and this plugin's whole
+    # argument is that advice is not a mechanism. Every one of these notes describes something
+    # written into somebody's settings or repository, and the one channel that could tell them
+    # was the one channel a model can decline to use.
+    #
+    # ⭐ ONLY WHEN SOMETHING CHANGED. A line on every session start is a line people stop
+    # reading, so the screen channel carries only what a PERSON must act on, the once it
+    # becomes true. Everything else stays in the model's context where it belongs.
+    screen = [s for _c, s in pairs if s]
+    out = {"hookSpecificOutput": {"hookEventName": "SessionStart",
+                                  "additionalContext": text}}
+    if screen:
+        out["systemMessage"] = "dispatch-guard: " + " ".join(screen)
+    # ⚠ JSON RATHER THAN PLAIN TEXT, and the shape is the one hooks/unattended.py already
+    # proves on this event: plain stdout can only ever become model context, so it had no way
+    # to reach a screen at all.
+    print(json.dumps(out, ensure_ascii=False))
 
 
 def on_user_prompt(payload, root, sdir, cfg):
@@ -1856,8 +1889,12 @@ def selftest():
         try:
             up = os.path.join(vsdir, "tasks.json")
             assert not _install.vscode_user_task_current(), "an empty dir cannot be current"
-            note = maybe_install_vscode_task(tempfile.mkdtemp(), dict(DEFAULTS))
+            note, seen = maybe_install_vscode_task(tempfile.mkdtemp(), dict(DEFAULTS))
             assert note and "USER tasks" in note, note
+            # ⛔ AND A LINE FOR THE PERSON, not only for the model. With no usage left there
+            # is no model turn at all, and installing on an empty budget is the case that
+            # has to work - so a note that only reaches the model does not exist.
+            assert seen and "Reopen the folder" in seen, seen
             assert _install.vscode_user_task_current(), "what it wrote does not read back"
             with open(up, encoding="utf-8") as fh:
                 written = fh.read()
@@ -1868,7 +1905,7 @@ def selftest():
             # one it was written from. Measured: the path shortener produced exactly that.
             assert "workspaceFolder" not in written, written
             # ⭐ ...and it does not rewrite a file that is already correct, every session.
-            assert maybe_install_vscode_task(tempfile.mkdtemp(), dict(DEFAULTS)) is None
+            assert maybe_install_vscode_task(tempfile.mkdtemp(), dict(DEFAULTS)) == (None, None)
 
             # ⭐ AFTER `claude plugin update` THE STORED PATH IS STALE, and repairing it is
             # the whole reason nobody has to re-run anything. The cache directory carries the
@@ -1882,7 +1919,7 @@ def selftest():
             with open(up, "w", encoding="utf-8") as fh:
                 _json.dump(book, fh)
             assert not _install.vscode_user_task_current(), "a stale path read as current"
-            assert maybe_install_vscode_task(tempfile.mkdtemp(), dict(DEFAULTS)) is not None
+            assert maybe_install_vscode_task(tempfile.mkdtemp(), dict(DEFAULTS))[0] is not None
             with open(up, encoding="utf-8") as fh:
                 assert "OLDVERSION" not in fh.read(), "an update did NOT repair the path"
 
@@ -1908,7 +1945,7 @@ def selftest():
             # ⚠ An explicit false keeps it out entirely; that is a decision, not a question.
             os.remove(up)
             assert maybe_install_vscode_task(tempfile.mkdtemp(),
-                                             {"auto_vscode_task": False}) is None
+                                             {"auto_vscode_task": False}) == (None, None)
             assert not os.path.exists(up), "false still wrote the user task"
         finally:
             _install.vscode_user_dirs = _saved_dirs

@@ -491,9 +491,11 @@ def status():
         print("pinned settings     : ⚠ %d, and these OVERRIDE any new default" % len(pinned))
         for line in pinned:
             print("                      %s" % line)
+    elsewhere = False
     if found and installed.get(found):
         rec = (installed[found][0].get("installPath") or "").replace("\\", "/").rstrip("/")
         if rec and rec != HERE.replace("\\", "/").rstrip("/"):
+            elsewhere = True
             print("                      ⚠ that is NOT the installed copy. This script was")
             print("                        run from somewhere else; the installed one is:")
             print("                        %s" % rec)
@@ -544,6 +546,88 @@ def status():
         print("                         dispatch when the window runs out, and usage must")
         print("                         be reported as UNKNOWN, never as a number.")
         print("                         Fix: run this script with no arguments.")
+
+    # ⛔ THE HALF --status COULD NOT ANSWER. It reported the statusline and said nothing at
+    # all about the VS Code watcher - so "the usage terminal did not appear" had no diagnosis
+    # and turned into a hunt. Measured 2026-08-28 on a second machine, where the task was
+    # present and correct the whole time and the report could not say so.
+    #
+    # ⭐ IT ALSO NAMES WHAT THIS CANNOT SEE. Whether the task actually STARTED is not
+    # knowable from here: VS Code runs folder-open tasks after enumerating every task
+    # provider in that workspace, and any extension that asks a question during enumeration -
+    # CMake Tools picking a CMakeLists.txt is the measured case - delays or pre-empts it.
+    # That is somebody else's extension and not fixable from this plugin. What IS fixable is
+    # it being invisible, so the two ordinary reasons are printed rather than left to guess.
+    dirs = vscode_user_dirs()
+    if not dirs:
+        print("VS Code task        : no VS Code user directory on this machine - nothing to do")
+    else:
+        entry = user_task_entry()
+        for d in dirs:
+            path = os.path.join(d, "tasks.json")
+            found = [t for t in ((load(path, {}) or {}).get("tasks") or [])
+                     if isinstance(t, dict) and t.get("label") == TASK_LABEL]
+            if not found:
+                print("VS Code task        : ⛔ NOT in %s" % path)
+                print("                      No usage terminal will open. Run this script")
+                print("                      with --all, or start a session INSIDE VS Code")
+                print("                      and the hook writes it.")
+                ok = False
+            elif found[0] != entry:
+                # ⛔ ONLY THE INSTALLED COPY MAY CALL A TASK STALE. `user_task_entry()` builds
+                # the entry from THIS script's own location, so running --status out of a
+                # checkout compares the task against the checkout and reports a perfectly good
+                # task as broken. Caught on the first run of this check, against a task that
+                # was correct - which is the same false alarm the line above already exists to
+                # prevent, and would have sent somebody to re-run --all for nothing.
+                if elsewhere:
+                    print("VS Code task        : present in %s" % path)
+                    print("                      ⚠ cannot say whether it is CURRENT: this")
+                    print("                        script is not the installed copy, so there")
+                    print("                        is nothing valid to compare its path with.")
+                else:
+                    print("VS Code task        : ⚠ STALE in %s" % path)
+                    print("                      it points at a different install path, so it")
+                    print("                      fails silently. Re-run with --all.")
+                    ok = False
+            else:
+                print("VS Code task        : present and current in %s" % path)
+        auto = None
+        for d in dirs:
+            auto = (load(os.path.join(d, "settings.json"), {}) or {}).get("task.allowAutomaticTasks")
+            if auto:
+                break
+        if auto == "on":
+            print("automatic tasks     : allowed (task.allowAutomaticTasks = on)")
+        else:
+            print("automatic tasks     : ⛔ %s - VS Code will NOT start the task on folder"
+                  % ("not set" if auto is None else auto))
+            print("                      open, and says nothing about it. Fix: Ctrl+Shift+P")
+            print("                      -> Tasks: Manage Automatic Tasks -> Allow.")
+            ok = False
+        # ⭐ AND NOW IT CAN SAY WHETHER THE TASK ACTUALLY RAN. `--watch` touches this on every
+        # redraw - on the REDRAW rather than the fetch, because it deliberately stops calling
+        # the API while nobody works and keeps drawing, so a fetch-based signal would read as
+        # dead during exactly the idle stretch it is built for.
+        mark = os.path.join(STATE_DIR, "watch.alive")
+        if os.path.exists(mark):
+            age = (time.time() - os.path.getmtime(mark)) / 60.0
+            if age <= 2:
+                print("usage watcher       : RUNNING - last drew %.0f min ago" % age)
+            else:
+                print("usage watcher       : ⚠ last drew %.0f min ago, so it is not running now"
+                      % age)
+                print("                      Reopen the FOLDER - the task fires on folder open.")
+        else:
+            print("usage watcher       : ⛔ HAS NEVER RUN on this machine.")
+            print("                      The task above is only a definition; this is the")
+            print("                      proof it started. Reopen the FOLDER (a task written")
+            print("                      during a session starts on the NEXT one), and if it")
+            print("                      still does not: check whether another extension")
+            print("                      prompts you at folder open - VS Code runs the")
+            print("                      folder-open tasks only after every task provider")
+            print("                      has answered.")
+            ok = False
 
     resume_status()
 

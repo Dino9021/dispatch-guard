@@ -29,3 +29,4 @@ limits.json
 # directory that everything is funnelled into is also the check that they stayed put:
 # after a run, `git status` must be clean.
 Tools/Debug/scratch/
+.gitignore
