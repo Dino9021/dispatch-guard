@@ -51,6 +51,7 @@ otherwise says plainly what it did not do.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -729,7 +730,7 @@ def status():
                 print("VS Code task        : present and current in %s" % path)
         auto = None
         for d in dirs:
-            auto = (load(os.path.join(d, "settings.json"), {}) or {}).get("task.allowAutomaticTasks")
+            auto = automatic_tasks_value(os.path.join(d, "settings.json"))
             if auto:
                 break
         if auto == "on":
@@ -812,6 +813,37 @@ def _watch_command(repo):
     the day this needs a workspace-relative form again, it will need it back.
     """
     return (SHIM_CMD if os.name == "nt" else SHIM_SH), ["usage.py", "--watch"]
+
+
+# ⛔ LINE-ANCHORED, so a commented-OUT setting does not count as a setting. `\s*` cannot
+# match `//`, and that is the point: a line somebody commented out is how they say they
+# withheld the permission, and reading it as granted would report the opposite of the truth.
+AUTO_TASKS_RE = re.compile(r'^\s*"task\.allowAutomaticTasks"\s*:\s*"?(\w+)"?', re.M)
+
+
+def automatic_tasks_value(path):
+    """`task.allowAutomaticTasks` as VS Code reads it from `path`. None when it is not set.
+
+    ⛔ THE RAW TEXT, NEVER load(). A VS Code user settings.json is JSONC - comments and
+    trailing commas are legal there and json.load rejects both - so load() falls back to {}
+    and EVERY key in the file reads as unset. That is not a corner case in this file: the
+    grant below writes a `//` comment as it grants, so from the moment this plugin allowed
+    automatic tasks, `--status` reported them as forbidden, for ever, on that machine.
+    Measured 2026-08-29 against a settings.json holding one comment and
+    `"task.allowAutomaticTasks": "on"`: load() answered None, the raw text answered "on".
+
+    ⛔ AND IT READS THE VALUE, not just the key. allow_automatic_tasks() asks
+    `"allowAutomaticTasks" in raw`, and that bias is right THERE - it exists to never
+    overwrite a choice somebody already made. Here the same test would call a value of
+    "off" allowed, which is a false all-clear on the one line a person consults when the
+    terminal did not open.
+    """
+    try:
+        raw = open(path, "rb").read().decode("utf-8-sig")
+    except OSError:
+        return None
+    found = AUTO_TASKS_RE.search(raw)
+    return found.group(1) if found else None
 
 
 def allow_automatic_tasks():

@@ -33,6 +33,53 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.39.0
+
+- ⭐ **計量條改看最近 30 分鐘，而不是整個 5 小時視窗。** 新參數 **`burn_window_min`**（預設 30）
+  讓你自己調。⚠ **0 = 整個視窗**（穩，但要一個多小時才會發現速度變了）。
+  ⛔ 小於 5 會被抬到 5 **並且在畫面上說出來** —— 更短的基準線量不出速度，設 2 不會讓計量條變靈敏，
+  是會**把它永久關掉**。
+- ⛔ **修掉一個 bug：`_burn_rate` 收下 `now` 卻一次都沒讀。** 它的終點是「最後一筆有紀錄的資料」，
+  而歷史**只在數字有變化時才寫入** —— ⇒ 閒置時分子和分母**兩端一起凍結**，那個數字根本沒有在重算，
+  只是同一個值被重畫。⚠ 實測（真實視窗）：閒置 84 分鐘後速度高報 **39%**、見底時間早報 **78 分鐘**。
+  現在終點是 `now` 和當下的 `pct`。
+- ⭐ **起點是「`burn_window_min` 分鐘前用掉多少」。** 一筆紀錄的值會一直有效到下一筆為止
+  （沒變化就不會寫），所以「切點之前最新的那一筆」可以直接當成「切點當時的值」。
+  ⇒ 基準線是**真正的 30 分鐘**，不是「上一筆剛好在多久以前」。
+- ⭐ **視窗開頭的錨點留著，在它有效的範圍內。** 視窗開始後的前 30 分鐘，切點會落到視窗開頭以前，
+  而視窗開始必定是 0% —— 這時候一筆紀錄都不需要。
+- ⛔ **這個數字現在是刻意會抖的。** 端點只給整數百分比，30 分鐘基準線上一階就是 **0.033 %/分**，
+  安靜的視窗上這個量化階梯就是訊號的大部分。實測真實歷史：25 分鐘基準線在半小時內
+  **0.407 → 0.040 %/分**，而同一段時間整段視窗的數字只從 0.150 動到 0.137。
+  ⇒ 之所以可以接受抖，只有一個理由：**沒有任何燃燒數字會進到 GO / PACE / STOP**，這件事有檢查釘住。
+- ⚠ **實測本機的差別**：同一刻，最近 30 分鐘 **0.23 %/分**，整段視窗 **0.053 %/分** —— 差 4.4 倍。
+- ⚠ **有一個前提寫在程式碼註解裡**：紀錄的空白有兩種原因，時間戳分不出來 —— 沒有花費（讀數正確），
+  或**沒有人在記錄**（Claude Code 關了、機器關機）。而額度是**整個帳號共用**的。
+  ⇒ 第二種情況會低報速度，方向偏危險。⛔ 「進入睡眠」標記解決不了：真正麻煩的關機正是那個
+  **來不及寫任何東西**的關機。解法是**心跳紀錄**，還沒做。
+
+---
+
+## 0.38.2
+
+- ⛔ **`--status` 把自己剛授予的權限報成「沒設定」。** VS Code 的使用者 `settings.json`
+  是 JSONC —— 註解和多餘的逗號都合法，`json.load` 兩個都不收。`--status` 用 `load()` 讀它，
+  所以整個檔案讀回來是空的，裡面每一個設定都變成「沒設定」。
+  ⚠ 這不是邊角情況：`allow_automatic_tasks()` **授予權限的時候就寫了一行 `//` 註解**，
+  所以一台被這個外掛授權過的機器，從那一刻起永遠回報「⛔ not set」。
+  實測 2026-08-29（另一台開發機）：任務在使用者層級、正確、就位，`--status` 說權限沒開，
+  而人直接讀檔案看到的是 `"on"`。⇒ 終端機沒開的時候，那一行是唯一能問的東西。
+- ⭐ **改讀原始文字，而且讀的是「值」不是「鍵」。** `automatic_tasks_value()` 用一個行首
+  錨定的樣式把值取出來。⛔ 不能用 `allow_automatic_tasks()` 的子字串測試：那個測試在
+  「授予」那邊是對的（它的偏誤是絕不覆蓋別人已經選的值），在「回報」這邊會把 `"off"`
+  講成允許，也會把一行**被註解掉的**設定算成有設定 —— 而註解掉正是人表達「我不要」的方式。
+- ⭐ **檢查用突變殺過。** 換回 `json.load` → `JSONC read as unset`；換成子字串 →
+  `off read as allowed`。兩個都在 `dispatch_gate.py --selftest` 裡。
+- ⚠ **授予的政策沒有動。** 權限仍然只在「這次呼叫真的安裝了任務」時才寫進使用者設定。
+  一個 hook 每個 session 偷改別人的編輯器設定，正是這個外掛到處在避免的驚嚇。
+
+---
+
 ## 0.38.1
 
 - ⛔ **煞車不讀燃燒速度，而且這件事現在被釘住了。** 擁有者的指示：
@@ -950,6 +997,68 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.39.0
+
+- ⭐ **The gauge reads the last 30 minutes, not the whole five-hour window.** New key
+  **`burn_window_min`** (default 30) sets it. ⚠ **0 = the whole window** - steady, but over an
+  hour to notice that the rate changed. ⛔ Below 5 it is raised to 5 **and says so**: a shorter
+  baseline cannot resolve a rate from whole-percent readings, so a well-meant `2` would not
+  make the gauge twitchy, it would **switch it off for ever**.
+- ⛔ **A bug fixed: `_burn_rate` accepted `now` and never read it.** Its end point was the last
+  *logged* row, and history rows are written only when a number MOVES - ⇒ an idle stretch froze
+  **both** ends and the figure was not being recomputed at all, just redrawn. ⚠ Measured on a
+  real window: after 84 quiet minutes the rate read **39% high** and the burn-out time **78
+  minutes too soon**. The end point is now `now` and the live `pct`.
+- ⭐ **The start point is what was spent `burn_window_min` minutes ago.** A row's value stands
+  until the next row (nothing changed, or a row would have been written), so the newest row at
+  or before the cut IS the value at the cut. ⇒ The baseline is a true 30 minutes, not "however
+  long ago the last row happens to sit".
+- ⭐ **The window's own start survives as the anchor where it is valid.** Inside the first
+  `burn_window_min` minutes the cut reaches back past the open, and a window opens at 0% by
+  definition - so no logged row is needed at all.
+- ⛔ **The number is now deliberately twitchy.** `used_percentage` is reported in whole
+  percent, so one step over a 30-minute baseline is **0.033 %/min**, and on a quiet window that
+  quantum is most of the signal. Measured on real history, a 25-minute baseline swung
+  **0.407 → 0.040 %/min** across half an hour in which the whole-window figure moved
+  0.150 → 0.137. ⇒ It is safe to be twitchy for exactly one reason: **no burn figure reaches
+  GO / PACE / STOP**, and a check pins that.
+- ⚠ **Measured live on this machine**: at one instant the last 30 minutes read **0.23 %/min**
+  against the whole window's **0.053** - a factor of 4.4.
+- ⚠ **One assumption is recorded at the rule itself**: a gap in the history has two causes the
+  timestamps cannot separate - nothing was spent (the reading is right), or nothing was
+  WATCHING (Claude Code closed, the machine off), and the quota is account-wide. ⇒ The second
+  under-states the rate, the dangerous direction. ⛔ A "went to sleep" marker does not fix it:
+  the shutdown that matters is the one that does not get to write anything. A **heartbeat row**
+  does. Not built.
+
+---
+
+## 0.38.2
+
+- ⛔ **`--status` reported the permission it had just granted as "not set".** A VS Code user
+  `settings.json` is JSONC — comments and trailing commas are legal there and `json.load`
+  rejects both — and `--status` read it with `load()`, so the whole file came back empty and
+  every setting in it read as unset. ⚠ Not a corner case: `allow_automatic_tasks()` **writes
+  a `//` comment as it grants**, so from the moment this plugin allowed automatic tasks on a
+  machine, that machine reported "⛔ not set" for ever. Measured 2026-08-29 on a second
+  development machine: the task was present, current and at user level, `--status` called the
+  permission missing, and the file itself said `"on"`. ⇒ That line is the one thing there is
+  to consult when the terminal did not open.
+- ⭐ **It reads the raw text now, and reads the VALUE rather than the key.**
+  `automatic_tasks_value()` extracts it with a line-anchored pattern. ⛔ Not the substring
+  test `allow_automatic_tasks()` uses: that test is right THERE — its bias is to never
+  overwrite a value somebody already chose — and here it would call `"off"` allowed, and
+  would count a commented-OUT line as set, which is exactly how a person says they withheld
+  it.
+- ⭐ **The check is mutation-killed.** Put back `json.load` → `JSONC read as unset`;
+  substitute the substring test → `off read as allowed`. Both live in
+  `dispatch_gate.py --selftest`.
+- ⚠ **The grant policy is unchanged.** The permission is still written only when that call is
+  the one that installed the task. A hook quietly editing somebody's editor settings every
+  session is the surprise this plugin avoids everywhere else.
 
 ---
 

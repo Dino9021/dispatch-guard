@@ -27,6 +27,8 @@
 
   "_stale_min": "Data older than this is not trusted. Past it the percentage is shown as -- rather than as a number, and the verdict says how old it is.",
   "_stale_min_zh": "資料比這個時間更舊就不信任。超過之後百分比會顯示成 -- 而不是數字，判定也會講出它多舊了。",
+  "_burn_window_min": "How many minutes back the burn gauge looks. It answers \"how fast am I burning NOW\", so it reads the recent past rather than the whole window. 0 = the whole window: steady, but over an hour to notice a change. Under 5 is raised to 5 - a shorter baseline cannot resolve a rate from whole-percent readings.",
+  "burn_window_min": 30,
   "stale_min": 15,
 
   "_near_reset_min": "Within this long of a reset, thresholds soften by one level, so 95% can read PACE rather than STOP. Deliberate: hitting the cap there costs a pause of a few minutes, not lost work. It is also why a caller must act on the VERDICT WORD and never on the percentage.",

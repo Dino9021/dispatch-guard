@@ -84,6 +84,12 @@ DEFAULTS = {
     "hard_pct_5h": 85,       # STOP  - wrap up and schedule a resume
     "soft_pct_7d": 95,
     "hard_pct_7d": 97,
+    # ⭐ HOW FAR BACK THE BURN GAUGE LOOKS. The gauge answers "how fast am I burning NOW",
+    # so it reads the last `burn_window_min` minutes rather than the whole five-hour window.
+    # ⚠ 0 means the WHOLE WINDOW - steady, and roughly `pct / minutes elapsed`, but it takes
+    # over an hour to notice that the rate changed. See _burn_rate() for the trade this buys
+    # and what it costs.
+    "burn_window_min": 30,
     "stale_min": 15,         # data older than this is not trusted
     "near_reset_min": 20,    # within this long of the reset, soften by one level
     "colour_warn_pct": 70,   # bar turns orange at or above this
@@ -238,6 +244,18 @@ def config(sdir):
             "allows only ~5 calls per token; see FETCH_FLOOR_SECONDS.\n"
             % (cfg["fetch_seconds"], FETCH_FLOOR_SECONDS))
         cfg["fetch_seconds"] = FETCH_FLOOR_SECONDS
+    # ⛔ CLAMPED UP, NOT REJECTED, and it SAYS SO. Below BURN_WINDOW_FLOOR_MIN the span guard
+    # in _burn_rate() refuses every sample, so a well-meant "burn_window_min": 2 would not
+    # make the gauge twitchy - it would switch the gauge OFF, silently and for ever.
+    # ⚠ 0 IS NOT CLAMPED: it is the documented way to ask for the whole window instead.
+    if cfg["burn_window_min"] < 0:
+        cfg["burn_window_min"] = DEFAULTS["burn_window_min"]
+    if 0 < cfg["burn_window_min"] < BURN_WINDOW_FLOOR_MIN:
+        sys.stderr.write(
+            "usage.py: burn_window_min=%g raised to the %d min floor - a shorter baseline "
+            "cannot resolve a rate from whole-percent readings; 0 asks for the whole "
+            "window.%s" % (cfg["burn_window_min"], BURN_WINDOW_FLOOR_MIN, chr(10)))
+        cfg["burn_window_min"] = BURN_WINDOW_FLOOR_MIN
     # ⛔ NEGATIVE JITTER IS REFUSED, and this is the load-bearing clamp. Jitter is added,
     # so a negative value would SUBTRACT and could push the real interval under the floor -
     # which is the one thing the floor exists to prevent.
@@ -1982,12 +2000,15 @@ def burn_triple(sdir, cfg, record, now=None):
     if not isinstance(pct, (int, float)) or not resets or now >= resets:
         return None
     burn = burnout_min(sdir, cfg, pct, resets, now)
-    rate = _burn_rate(sdir, cfg, resets, now)
+    rate = _burn_rate(sdir, cfg, pct, resets, now)
     return burn, int((resets - now) / 60), (rate * 60 if rate else 0)
 
 
-def _burn_rate(sdir, cfg, resets, now, window_secs=5 * 3600):
-    """Percent per SECOND, across this window so far, or None if unknowable.
+BURN_WINDOW_FLOOR_MIN = 5           # under this, a 1% reading cannot resolve a rate
+
+
+def _burn_rate(sdir, cfg, pct, resets, now, window_secs=5 * 3600):
+    """Percent per SECOND over the last `burn_window_min` minutes, or None if unknowable.
 
     ⭐ Split out so the projection and the burn-out time are computed from ONE sampling of
     one history. Two samplings would disagree at the edges and put a contradiction on one
@@ -2036,37 +2057,75 @@ def _burn_rate(sdir, cfg, resets, now, window_secs=5 * 3600):
             continue
         norm.append({"ts": at, "pct": r["pct"]})
     rows = norm
-    # ⭐ THE WINDOW'S OWN START IS A DATA POINT, AND IT IS FREE. A window opens at zero by
-    # definition, so `(resets - window_secs, 0)` is a reading nobody had to record.
-    #
-    # ⛔ WITHOUT IT THE BUSY TAIL STOOD FOR THE WHOLE WINDOW. Logging does not begin when the
-    # window does - a reinstall, a first run, a machine that was off. MEASURED on a second
-    # machine, 2026-08-28: the window opened at 14:10 and the first row is 16:49 with 35%
-    # ALREADY SPENT. Reading only the logged rows gave 0.48 %/min for a window whose true
-    # average was 0.22, because those rows happened to cover a busy stretch. ⇒ Anchoring
-    # folds the unlogged head back in at its average, which is the only thing knowable about
-    # a stretch nobody recorded.
-    #
-    # ⚠ IT IS A NO-OP WHEN LOGGING COVERED THE WINDOW. The first real row is then already
-    # near the open with a percentage near zero, so the anchor sits on top of it.
-    #
-    # ⛔ AND THE DIRECTION OF ERROR CHANGES, WHICH IS THE PART TO KNOW. Before, a late start
-    # OVER-stated the rate - the safe direction. Anchored, a window that sat idle for hours
-    # and then burst UNDER-states it, because the idle hours are averaged in. That is the
-    # dangerous direction, and it is accepted here for one reason: this figure no longer
-    # drives GO/PACE/STOP. It is a gauge to read. ⇒ If the projection is ever re-enabled as a
-    # verdict input, this anchor has to be revisited with it.
-    opened = resets - window_secs
-    if not rows or rows[0]["ts"] > opened:
-        rows = [{"ts": opened, "pct": 0.0}] + rows
-    if len(rows) < 2:
+    rows.sort(key=lambda r: r["ts"])
+    if not isinstance(pct, (int, float)):
         return None
-    first, last = rows[0], rows[-1]
-    span = last["ts"] - first["ts"]
+    opened = resets - window_secs
+
+    # ⭐ THE END POINT IS `now` AND THE LIVE `pct`, NOT THE LAST LOGGED ROW. History rows are
+    # written only when a number MOVES (see the `moved` gate before _append_history), so an
+    # idle stretch writes nothing at all - and reading the last row as "now" froze BOTH ends
+    # of the measurement. ⛔ MEASURED on a real idle window: after 84 quiet minutes the rate
+    # read 39% HIGH and the burn-out time 78 minutes too soon, and it was not being recomputed
+    # at all - the same number was redrawn. ⚠ `now` was in this signature and unread; that is
+    # what the bug looked like from outside.
+    #
+    # ⭐ THE START POINT IS WHAT WAS SPENT `burn_window_min` MINUTES AGO. The gauge answers
+    # "how fast am I burning NOW", so it must not average in an hour that is over.
+    # ⚠ A ROW'S VALUE STANDS UNTIL THE NEXT ROW, which is exactly why the newest row at or
+    # before the cut can be read AS the value at the cut: nothing changed in between, or a
+    # row would have been written. So the baseline is a true `burn_window_min` minutes, not
+    # "however long ago the last row happens to sit".
+    #
+    # ⛔ AND THAT HOLDS ONLY WHILE THE RECORDER WAS RUNNING. A gap in the history has two
+    # causes and the timestamps cannot tell them apart: nothing was spent (the reading is
+    # right), or nothing was WATCHING - Claude Code closed, the machine off, the watcher never
+    # started - and the quota is account-wide, so another seat may have spent through the gap.
+    # ⇒ In the second case this under-states the rate, which is the dangerous direction.
+    # ⚠ A "went to sleep" marker does not fix it: the shutdown that matters is the one that
+    # does not get to write anything. What fixes it is a HEARTBEAT row - write one when the
+    # value moves OR when the newest row is older than some age - because then the absence of
+    # a heartbeat is itself the evidence, recorded by the passage of time rather than by an
+    # event somebody had to catch. Not built; see Memory/notes/SHELVED-burn-meter.md.
+    #
+    # ⭐ AND THE WINDOW'S OWN START IS STILL A DATA POINT, AND STILL FREE. Inside the first
+    # `burn_window_min` minutes the cut reaches back past the open, and a window opens at zero
+    # by definition - so `(opened, 0)` is a reading nobody had to record. ⛔ WITHOUT IT THE
+    # BUSY TAIL STOOD FOR THE WHOLE WINDOW: measured on a second machine, a window that opened
+    # at 14:10 whose first row is 16:49 with 35% ALREADY SPENT read 0.48 %/min against a true
+    # average of 0.22. That is why the anchor survives here rather than being replaced.
+    #
+    # ⛔ WHAT THIS COSTS, AND IT IS NOT SMALL. `used_percentage` is reported in WHOLE percent,
+    # so over a 30-minute baseline one step is 0.033 %/min - the gauge cannot resolve finer,
+    # and on a quiet window that quantum is most of the signal. MEASURED on real history, a
+    # 25-minute baseline swung 0.407 -> 0.040 %/min across half an hour in which the
+    # whole-window figure moved 0.150 -> 0.137. ⇒ THE NUMBER IS DELIBERATELY TWITCHY, because
+    # what was asked of it is "react", and it is safe to be twitchy for exactly one reason:
+    # NO BURN FIGURE REACHES GO/PACE/STOP. That is pinned by a check that forces both figures
+    # to their worst and asserts the word does not move. Set burn_window_min to 0 for the
+    # steady whole-window figure instead.
+    span_want = cfg.get("burn_window_min") or 0
+    cut = now - span_want * 60 if span_want else opened
+    if cut <= opened:
+        start_ts, start_pct = opened, 0.0
+    else:
+        older = [r for r in rows if r["ts"] <= cut]
+        if older:
+            start_ts, start_pct = cut, older[-1]["pct"]
+        elif rows:
+            # ⚠ Nothing that old exists: the baseline is SHORTER than asked, and saying so
+            # with a number is better than saying nothing. The span guard below still applies.
+            start_ts, start_pct = rows[0]["ts"], rows[0]["pct"]
+        else:
+            return None
+    span = now - start_ts
     if span < 300:                                   # under 5 minutes proves nothing
         return None
-    rate = (last["pct"] - first["pct"]) / span       # percent per second
+    rate = (pct - start_pct) / span                  # percent per second
     if rate <= 0:
+        # ⚠ NOT ZERO, AND NOT "SAFE". Nothing was spent in the baseline, so there is no rate
+        # to draw - and _burn_part() renders that as its own glyph rather than as an empty
+        # bar, because empty means DANGER in that column.
         return None
     return rate
 
@@ -2077,7 +2136,7 @@ def _projection(sdir, cfg, pct, resets, now):
     ⚠ A LOWER BOUND. Under bursty multi-agent dispatch the real burn runs ahead of it, so
     the hard stop still rules regardless of what this says.
     """
-    rate = _burn_rate(sdir, cfg, resets, now)
+    rate = _burn_rate(sdir, cfg, pct, resets, now)
     if rate is None:
         return None
     return int(min(999, pct + rate * (resets - now)))
@@ -2096,11 +2155,12 @@ def burnout_min(sdir, cfg, pct, resets, now):
     number alone.
 
     ⚠ None means "cannot be known", never "safe". No history (debug.token_usage off), under
-    five minutes since the window OPENED, or a flat-or-falling rate all return None, and
-    every caller must print something that says so rather than nothing. ⭐ A single logged row
-    is enough since 0.38.0, because the window's own start is the second point.
+    five minutes of baseline, or nothing spent within it all return None, and every caller
+    must print something that says so rather than nothing. ⭐ Inside the first
+    `burn_window_min` minutes of a window no logged row is needed at all, because the
+    window's own start is the second point.
     """
-    rate = _burn_rate(sdir, cfg, resets, now)
+    rate = _burn_rate(sdir, cfg, pct, resets, now)
     if rate is None or not isinstance(pct, (int, float)):
         return None
     if pct >= 100:
@@ -2778,8 +2838,12 @@ def selftest():
     _bt = tempfile.mkdtemp(prefix="dg-burn-")
     _blogs = os.path.join(_bt, "logs")
     os.makedirs(_blogs)
+    # ⚠ burn_window_min 0 = the WHOLE window, which is what these fixtures were written
+    # against. The trailing baseline gets its own block below rather than silently changing
+    # what every case here means.
     _bcfg = {"history_dir": _blogs, "soft_pct_5h": 70, "hard_pct_5h": 85, "stale_min": 15,
-             "near_reset_min": 10, "soft_pct_7d": 95, "hard_pct_7d": 97, "debug": {"token_usage": True}}
+             "near_reset_min": 10, "soft_pct_7d": 95, "hard_pct_7d": 97,
+             "burn_window_min": 0, "debug": {"token_usage": True}}
     _bnow = time.time()
 
     def _plant(rows, resets):
@@ -2835,7 +2899,7 @@ def selftest():
     _plant(_rows, _far)
     assert burnout_min(_bt, _bcfg, 100, _far, _bnow) == 0
 
-    # ⭐ THE ANCHOR: THE WINDOW'S OWN START COUNTS. Logging does not begin when the window
+    # ⭐ THE WINDOW'S OWN START AS THE ANCHOR: THE WINDOW'S OWN START COUNTS. Logging does not begin when the window
     # does - a reinstall, a first run, a machine that was off - and reading only the logged
     # rows lets a busy tail stand for the whole window. MEASURED on a second machine: the
     # window opened at 14:10, the first row is 16:49 with 35% ALREADY SPENT, and those rows
@@ -2845,7 +2909,7 @@ def selftest():
     _aw = _bnow + 60 * 60                                        # opened 4 hours ago
     _open = _aw - 5 * 3600
     _plant([(_bnow - 1800, 35), (_bnow - 1, 52)], _aw)           # 17 points in 30 min
-    _ar = _burn_rate(_bt, _bcfg, _aw, _bnow) * 60
+    _ar = _burn_rate(_bt, _bcfg, 52, _aw, _bnow) * 60
     _seg = (52 - 35) / 30.0                                      # 0.567 %/min
     assert _ar < _seg / 2, "the unlogged head was ignored: %.3f vs %.3f %%/min" % (_ar, _seg)
     # ...and what it lands on is the whole-window average, the only thing knowable about a
@@ -2854,11 +2918,103 @@ def selftest():
     # ⚠ AND A NO-OP WHERE LOGGING DID COVER THE WINDOW: the first row already sits at the
     # open with nothing used, so the anchor lands on top of it.
     _plant([(_open, 0), (_bnow - 1, 52)], _aw)
-    assert abs(_burn_rate(_bt, _bcfg, _aw, _bnow) * 60 - _ar) < 0.01
+    assert abs(_burn_rate(_bt, _bcfg, 52, _aw, _bnow) * 60 - _ar) < 0.01
     # ⭐ ONE LOGGED ROW IS NOW ENOUGH, which is the whole point: a machine that has just
     # started logging still gets a rate, where before it got None.
     _plant([(_bnow - 1, 52)], _aw)
-    assert abs(_burn_rate(_bt, _bcfg, _aw, _bnow) * 60 - _ar) < 0.01
+    assert abs(_burn_rate(_bt, _bcfg, 52, _aw, _bnow) * 60 - _ar) < 0.01
+
+    # ⭐⭐ THE TRAILING BASELINE - what the gauge actually uses. The owner asked for a gauge
+    # that reacts to the last half hour rather than to the whole window, and the two answers
+    # differ by an order of magnitude on the same history. Every case below plants ONE history
+    # and reads it two ways, so what is being checked is the baseline and nothing else.
+    _tt = tempfile.mkdtemp(prefix="dg-trail-")
+    _tlogs = os.path.join(_tt, "logs")
+    os.makedirs(_tlogs)
+    _t30 = {"history_dir": _tlogs, "burn_window_min": 30, "debug": {"token_usage": True}}
+    _tall = dict(_t30, burn_window_min=0)
+    _tnow = time.time()
+
+    def _rate(cfgd, pct, resets, why):
+        """The rate as %/min, refusing to be None - a None here is the defect, not a case."""
+        _r = _burn_rate(_tt, cfgd, pct, resets, _tnow)
+        assert _r is not None, "no rate where one is measurable: %s" % why
+        return _r * 60
+
+    def _tplant(rows, resets):
+        for _f in glob.glob(os.path.join(_tlogs, "*.jsonl")):
+            os.remove(_f)
+        with open(os.path.join(_tlogs, HISTORY_PREFIX + "20200101-000000.jsonl"),
+                  "w", encoding="utf-8") as _f:
+            for _at, _pct in rows:
+                _f.write(json.dumps({"at": stamp(_at), "pct": _pct,
+                                     "resets_at": stamp(resets)}) + chr(10))
+
+    # A window that opened 200 minutes ago, so the cut at 30 minutes is well inside it.
+    _tres = _tnow + 100 * 60
+    _topen = _tres - 5 * 3600
+
+    # ⛔ BURNED HARD EARLY, QUIET NOW. The whole-window figure still reports the morning; the
+    # trailing one reports the last half hour, which is the question the gauge is asked.
+    _tplant([(_topen + 60, 0), (_topen + 30 * 60, 40), (_tnow - 40 * 60, 40)], _tres)
+    _slow = _rate(_t30, 41, _tres, "quiet tail, 30 min baseline")
+    _whole = _rate(_tall, 41, _tres, "quiet tail, whole window")
+    assert abs(_slow - 1.0 / 30.0) < 0.001, (
+        "the baseline is not the last 30 minutes: %.4f, expected %.4f %%/min - the whole "
+        "window reads %.4f" % (_slow, 1.0 / 30.0, _whole))
+    assert _whole > 5 * _slow, (_whole, _slow)
+
+    # ⭐ AND THE REVERSE, which is the whole point: quiet early, busy now. The whole-window
+    # figure is still reporting the quiet hours while the machine is spending fast.
+    _tplant([(_topen + 60, 0), (_tnow - 40 * 60, 5)], _tres)
+    _fast = _rate(_t30, 25, _tres, "busy tail, 30 min baseline")
+    _whole = _rate(_tall, 25, _tres, "busy tail, whole window")
+    assert abs(_fast - 20.0 / 30.0) < 0.001, (
+        "the baseline is not the last 30 minutes: %.4f, expected %.4f %%/min - the whole "
+        "window reads %.4f" % (_fast, 20.0 / 30.0, _whole))
+    assert _fast > 5 * _whole, (_fast, _whole)
+
+    # ⛔ THE END POINT IS `now`, NOT THE LAST LOGGED ROW - the bug this replaces. Rows are
+    # written only when a number MOVES, so an idle stretch writes nothing and reading the last
+    # row as "now" froze both ends: the same number was redrawn while time passed.
+    # ⚠ Asked over the WHOLE window so the last row is the only candidate endpoint.
+    _tplant([(_topen + 60, 0), (_tnow - 90 * 60, 30)], _tres)
+    _live = _rate(_tall, 30, _tres,
+                  "the end point is the last logged row again, so the span ran backwards")
+    assert abs(_live - 30.0 / 200.0) < 0.001, (
+        "the rate does not end at `now`: %.5f, expected %.5f %%/min" % (_live, 30.0 / 200.0))
+    _frozen = 30.0 / ((_tnow - 90 * 60 - _topen) / 60.0)   # what the last row alone gives
+    assert _live < _frozen * 0.6, (_live, _frozen)
+
+    # ⚠ AND IDLE READS AS UNKNOWABLE, NOT AS SAFE. Nothing was spent inside the baseline, so
+    # there is no rate to draw - and _burn_part() gives that its own glyph rather than an
+    # empty bar, because empty means DANGER in that column.
+    _tplant([(_topen + 60, 0), (_tnow - 90 * 60, 30)], _tres)
+    assert _burn_rate(_tt, _t30, 30, _tres, _tnow) is None
+    assert "─" in _burn_part(None, 100, None, {"colour": False})
+
+    # ⭐ INSIDE THE FIRST burn_window_min MINUTES THE ANCHOR STILL CARRIES IT, with no logged
+    # row at all: the cut reaches back past the open, and a window opens at zero by definition.
+    _young = _tnow + 5 * 3600 - 20 * 60                    # opened 20 minutes ago
+    _tplant([], _young)
+    assert _burn_rate(_tt, _t30, 10, _young, _tnow) is None      # no history file: unknowable
+    _tplant([(_tnow - 60, 10)], _young)
+    _anch = _rate(_t30, 10, _young, "young window, anchor at the open")
+    assert abs(_anch - 10.0 / 20.0) < 0.001, _anch
+    shutil.rmtree(_tt, ignore_errors=True)
+
+    # ⛔ AND THE FLOOR IS CLAMPED UP RATHER THAN SILENTLY DISABLING THE GAUGE. Under five
+    # minutes the span guard refuses every sample, so a well-meant 2 would switch the gauge
+    # off for ever instead of making it twitchy. ⚠ 0 is NOT clamped - it asks for the whole
+    # window - and that distinction is the whole reason this check exists.
+    _cdir = tempfile.mkdtemp(prefix="dg-bwcfg-")
+    assert config(_cdir)["burn_window_min"] == DEFAULTS["burn_window_min"]
+    for _v, _want in ((2, BURN_WINDOW_FLOOR_MIN), (0, 0), (-1, DEFAULTS["burn_window_min"]),
+                      (45, 45)):
+        with open(os.path.join(_cdir, "config.json"), "w", encoding="utf-8") as _f:
+            json.dump({"burn_window_min": _v}, _f)
+        assert config(_cdir)["burn_window_min"] == _want, (_v, config(_cdir))
+    shutil.rmtree(_cdir, ignore_errors=True)
     shutil.rmtree(_bt, ignore_errors=True)
 
     # ⛔ THE IN-PLACE REWRITE, AND THE ONE THING THAT MUST NOT BE BACKWARDS. The cursor climbs
@@ -3042,7 +3198,7 @@ def selftest():
     os.makedirs(_plogs)
     _pcfg = {"history_dir": _plogs, "soft_pct_5h": 70, "hard_pct_5h": 85,
              "soft_pct_7d": 95, "hard_pct_7d": 97, "near_reset_min": 20, "stale_min": 15,
-             "debug": {"token_usage": True}}
+             "burn_window_min": 0, "debug": {"token_usage": True}}
     _pnow = time.time()
     # ⚠ 47% SPENT IN THE FIRST HOUR OF THE WINDOW, which is what a projection over 100% takes
     # once the rate is anchored at the window's open (0.38.0). The incident above happened at

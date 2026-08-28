@@ -2450,6 +2450,31 @@ def selftest():
             assert maybe_install_vscode_task(tempfile.mkdtemp(),
                                              {"auto_vscode_task": False}) == (None, None)
             assert not os.path.exists(up), "false still wrote the user task"
+
+            # ⛔ JSONC IS THE ORDINARY SHAPE OF A USER settings.json, and reading it with
+            # json.load reported every setting in it as unset. That bit the one line people
+            # consult when the terminal did not open: allow_automatic_tasks() writes a `//`
+            # comment as it grants, so from the moment this plugin allowed automatic tasks,
+            # `--status` called them forbidden on that machine, for ever.
+            # ⚠ Built by join, no escapes - see the note on the jsonc fixture above.
+            sfile = os.path.join(vsdir, "settings.json")
+            on = chr(10).join(["{", "  // added by dispatch-guard",
+                               '  "task.allowAutomaticTasks": "on",',
+                               '  "editor.fontSize": 13', "}"])
+            with open(sfile, "w", encoding="utf-8") as fh:
+                fh.write(on)
+            assert _install.load(sfile, {}) == {}, "the fixture stopped being JSONC"
+            assert _install.automatic_tasks_value(sfile) == "on", "JSONC read as unset"
+            # ⛔ THE VALUE, NOT THE KEY. A substring test calls both of these allowed: "off",
+            # and a line somebody commented OUT to withhold the permission on purpose.
+            with open(sfile, "w", encoding="utf-8") as fh:
+                fh.write(on.replace('"on"', '"off"'))
+            assert _install.automatic_tasks_value(sfile) == "off", "off read as allowed"
+            with open(sfile, "w", encoding="utf-8") as fh:
+                fh.write(on.replace('  "task.', '  // "task.'))
+            assert _install.automatic_tasks_value(sfile) is None, "a commented-out line counted"
+            os.remove(sfile)
+            assert _install.automatic_tasks_value(sfile) is None, "a missing file was not None"
         finally:
             _install.vscode_user_dirs = _saved_dirs
             _install.allow_automatic_tasks = _saved_grant
