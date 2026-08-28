@@ -41,6 +41,10 @@ CHECKS = [
     ("resume cancel", [os.path.join(DEBUG_DIR, "test_resume_cancel.py")]),
     ("cmd guards",    [os.path.join(DEBUG_DIR, "test_guards.py")]),
     ("usage debug dump", [os.path.join(DEBUG_DIR, "test_usage_debug_dump.py")]),
+    # ⚠ Runs the watch LOOP for a few seconds and counts what comes out. The defect it
+    # covers - an idle watcher redrawing a too-wide line for ever - cannot be seen from a
+    # pure function, only from the loop that never returns.
+    ("usage watch", [os.path.join(DEBUG_DIR, "test_usage_watch.py")]),
 ]
 
 # ⚠ Per check, not for the whole run. The slowest of these takes seconds; anything near this

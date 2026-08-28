@@ -83,6 +83,54 @@ def _tree_log():
     return os.path.getsize(p) if os.path.exists(p) else None
 
 
+def case_arms_against_the_blocking_window():
+    """⛔ THE RESUME MUST WAIT FOR THE WINDOW THAT IS ACTUALLY BLOCKING.
+
+    It read `five_hour.resets_at` and nothing else, which was harmless while the brake could
+    only ever STOP on the five-hour window. The moment it learned to STOP on the seven-day
+    one, that became a trap: wrap up, arm against the FIVE-hour reset, wake three minutes
+    later, still be at STOP because the WEEK is what is spent, retry every twenty minutes for
+    two hours, announce failure. A scheduled resume that cannot succeed is worse than none -
+    it looks armed the whole time.
+
+    ⚠ AND THE RULE IS NOT "whichever resets later". A 7d window that resets BEFORE the current
+    5h window ends is not a constraint at all - its percentage is about to become zero - so
+    waiting days for it would be waiting for nothing. The question is which window is
+    blocking, and verdict() already answers it.
+    """
+    import json
+    import time
+    mod = load_resume()
+    import usage
+    now = time.time()
+    r5, r7 = now + 2 * 3600, now + 3 * 86400
+
+    def armed_for(p5, p7, seven_resets):
+        with scratch_dir("arm-target-%d-%d" % (p5, p7)) as sdir:
+            cfg = dict(usage.config(sdir))
+            with open(cfg["token_usage_file"], "w", encoding="utf-8") as f:
+                json.dump({"ts": int(now * 1000),
+                           "five_hour": {"used_percentage": p5, "resets_at": int(r5)},
+                           "seven_day": {"used_percentage": p7,
+                                         "resets_at": int(seven_resets)}}, f)
+            return mod.reset_time(sdir, cfg)
+
+    when, which = armed_for(90, 10, r7)
+    assert which == "5h" and abs(when - r5) < 2, (when, which)
+    # ⭐ THE CASE THE FIX EXISTS FOR: the week is spent, the five hours are empty.
+    when, which = armed_for(0, 99, r7)
+    assert which == "7d" and abs(when - r7) < 2, (
+        "the resume would wake at the 5h reset and find itself still blocked: %r"
+        % ((when, which),))
+    # ⚠ ...and a 7d window that resets first is not a constraint, so it is not the target.
+    when, which = armed_for(0, 99, now + 1800)
+    assert which == "5h" and abs(when - r5) < 2, (when, which)
+    # Nothing blocking at all still answers with the near window, so arming early works.
+    when, which = armed_for(10, 10, r7)
+    assert which == "5h" and abs(when - r5) < 2, (when, which)
+    print("ok - the resume waits for the window that is actually blocking")
+
+
 def main():
     fresh_scratch()
     before = _tree_log()
@@ -112,6 +160,7 @@ def main():
     assert _tree_log() == before, (
         "the test changed %s/.claude/dispatch_gate.log (%r -> %r)"
         % (HERE, before, _tree_log()))
+    case_arms_against_the_blocking_window()
     print("ok - not-there, deleted and refused are three different answers")
 
 

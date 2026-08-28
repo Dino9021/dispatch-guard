@@ -704,6 +704,257 @@ def case_price_refresh(gate, sdir):
     print("ok - price refresh decides without fetching, keeps the table on failure, records why")
 
 
+def case_handoff_past_soft(gate, sdir, root):
+    """⛔ PAST THE SOFT THRESHOLD, A DISPATCH NEEDS A CURRENT HANDOFF ON DISK.
+
+    The handoff used to be written when the agent hit STOP - which assumes it still gets a
+    turn. A real cut-off, the server refusing, gives no turn at all, and then the resume
+    wakes with nothing on disk saying what was being done and spends the new window
+    rediscovering it. ⇒ The file has to exist BEFORE the interruption, and the room between
+    soft and hard is exactly where it can be written.
+
+    ⚠ FOUR STATES, NOT A BOOLEAN, because the remedies differ: missing means write one,
+    stale means refresh the one that is there, thin means it is a placeholder. A check that
+    only asked "does the file exist" would pass a handoff from three windows ago describing
+    work that no longer exists - and a resume acting on wrong instructions is worse than one
+    that knows it is reconstructing.
+    """
+    import json as _json
+    import time as _time
+    folder = "20260828-160000-handoff-case"
+    tdir = os.path.join(root, "Memory", "tasks", folder)
+    os.makedirs(tdir, exist_ok=True)
+    hpath = os.path.join(tdir, "HANDOFF.md")
+    started = _time.time() - 600
+    cfg = dict(gate.DEFAULTS)
+    cfg["task_root"] = "Memory/tasks"
+
+    def usage_at(pct):
+        """Put a five-hour reading on disk, so verdict() answers from data like the gate."""
+        now = _time.time()
+        with open(os.path.join(sdir, "token_usage.json"), "w", encoding="utf-8") as f:
+            _json.dump({"ts": int(now * 1000),
+                        "five_hour": {"used_percentage": pct,
+                                      "resets_at": int(now) + 3 * 3600}}, f)
+
+    def refusal():
+        return gate.handoff_refusal(root, sdir, cfg, folder, started)
+
+    def write(chars, age=0):
+        with open(hpath, "w", encoding="utf-8") as f:
+            f.write("x" * chars)
+        if age:
+            os.utime(hpath, (_time.time() - age, _time.time() - age))
+
+    # ⭐ BELOW SOFT IT NEVER FIRES. The whole point is that it bites only when an
+    # interruption is near; a gate that refused at 10% would be switched off in a day.
+    usage_at(10)
+    if os.path.exists(hpath):
+        os.remove(hpath)
+    assert refusal() is None, "it refused below the soft threshold"
+
+    # ...and past it, with nothing on disk, it refuses and says which state.
+    usage_at(90)
+    r = refusal()
+    assert r and "no HANDOFF.md in that task folder" in r, r
+    assert hpath.replace(chr(92), "/") in r.replace(chr(92), "/"), (
+        "the refusal must name the exact path to write: %r" % r)
+
+    # ⚠ A PLACEHOLDER IS NOT A HANDOFF. resume.py refuses to arm against one for the same
+    # measured reason: a resume that wakes with nothing to read burns a window for nothing.
+    write(50)
+    r = refusal()
+    assert r and "placeholder rather than a work order" in r, r
+
+    # ⛔ AND NEITHER IS ONE FROM AN EARLIER SESSION. This is the state a size check cannot
+    # see, and the one that produces a resume acting on instructions that are wrong.
+    write(500, age=3600)
+    r = refusal()
+    assert r and "older than this session" in r, r
+
+    # A current, substantial handoff passes.
+    write(500)
+    assert refusal() is None, refusal()
+
+    # ⚠ THE OFF SWITCH. The owner may want to dispatch without one and take the
+    # reconstruction prompt instead.
+    os.remove(hpath)
+    assert refusal(), "the missing handoff stopped being refused"
+    off = dict(cfg)
+    off["require_handoff_past_soft"] = False
+    assert gate.handoff_refusal(root, sdir, off, folder, started) is None, "the switch is dead"
+
+    # ⚠ NO TASK FOLDER MEANS NO REFUSAL FROM HERE. The plan check has already refused that
+    # case, and reporting it twice would name the wrong reason for it.
+    assert gate.handoff_refusal(root, sdir, cfg, None, started) is None
+
+    # ⛔ PUT THE USAGE READING BACK. These cases share one state directory, and leaving 90%
+    # in it puts every LATER case past the soft threshold - where this new precondition
+    # refuses their dispatches before the guard they are actually testing ever runs. Measured
+    # the moment this case was added: the model-ceiling case started failing on a refusal
+    # that had nothing to do with models.
+    os.remove(os.path.join(sdir, "token_usage.json"))
+    print("ok - past soft a dispatch needs a current handoff; four states, and an off switch")
+
+
+def case_auto_arm(gate, sdir, root):
+    """⭐ THE RESUME ARMS ITSELF once there is something worth resuming.
+
+    Arming was the agent's job, and it is the one step whose omission cannot be recovered
+    from: everything else leaves a trace to pick up later, but a run that ends with nothing
+    armed simply never continues - the handoff sits on disk and nothing ever reads it.
+
+    ⛔ NOTHING HERE REGISTERS AN OS TASK. `subprocess.Popen` is replaced with a recorder, so
+    the check asserts WHAT WOULD BE SPAWNED. A check that scheduled real tasks on the machine
+    it runs on is the class of defect this repository has already shipped twice.
+    """
+    import json as _json
+    import time as _time
+    folder = "20260828-170000-auto-arm-case"
+    tdir = os.path.join(root, "Memory", "tasks", folder)
+    os.makedirs(tdir, exist_ok=True)
+    with open(os.path.join(tdir, "HANDOFF.md"), "w", encoding="utf-8") as f:
+        f.write("y" * 500)
+    started = _time.time() - 600
+    cfg = dict(gate.DEFAULTS)
+    cfg["task_root"] = "Memory/tasks"
+    now = _time.time()
+    r5, r7 = now + 2 * 3600, now + 3 * 86400
+
+    spawned = []
+
+    class _Rec(object):
+        def __init__(self, argv, **kw):
+            spawned.append(list(argv))
+
+    def usage_at(p5, p7=10):
+        with open(os.path.join(sdir, "token_usage.json"), "w", encoding="utf-8") as f:
+            _json.dump({"ts": int(now * 1000),
+                        "five_hour": {"used_percentage": p5, "resets_at": int(r5)},
+                        "seven_day": {"used_percentage": p7, "resets_at": int(r7)}}, f)
+
+    def armed(**state):
+        path = os.path.join(sdir, "resume.json")
+        if state:
+            with open(path, "w", encoding="utf-8") as f:
+                _json.dump(state, f)
+        elif os.path.exists(path):
+            os.remove(path)
+
+    def try_arm(c=None):
+        del spawned[:]
+        mark = os.path.join(sdir, gate.ARM_MARK)
+        if os.path.exists(mark):
+            os.remove(mark)                     # the spawn floor is tested on its own below
+        keep = gate.subprocess.Popen
+        gate.subprocess.Popen = _Rec
+        try:
+            return gate.maybe_auto_arm(root, sdir, c or cfg, folder, started)
+        finally:
+            gate.subprocess.Popen = keep
+
+    armed()
+    # ⭐ BELOW SOFT IT DOES NOTHING. Arming early would be harmless but noisy; the point is
+    # the closing window.
+    usage_at(10)
+    assert try_arm() is False and not spawned, spawned
+
+    # ...and past it, with a usable handoff and nothing armed, it arms for THIS folder.
+    usage_at(90)
+    assert try_arm() is True, "it did not arm with the window closing"
+    argv = spawned[0]
+    assert "--arm" in argv and folder in argv and "--dir" in argv, argv
+    assert argv[-1] == sdir, argv
+
+    # ⛔ ONCE. Armed for the same task and the same reset, it must not re-register on every
+    # single dispatch for the rest of the window.
+    armed(task=folder, armed_for_reset=r5)
+    assert try_arm() is False and not spawned, spawned
+
+    # ⛔ BUT AGAIN WHEN THE TARGET MOVES. The brake can flip from the five-hour window to the
+    # seven-day one, and a resume aimed at the old reset would wake still blocked.
+    usage_at(0, 99)                             # now the WEEK is what stops the work
+    assert try_arm() is True, "the reset target moved and it did not re-arm"
+    assert folder in spawned[0], spawned
+
+    # ⚠ ...and for a DIFFERENT task it arms too - resume.json belongs to one task at a time.
+    usage_at(90)
+    armed(task="some-other-task", armed_for_reset=r5)
+    assert try_arm() is True, spawned
+
+    # ⚠ NOTHING WORTH RESUMING, NOTHING ARMED. A placeholder handoff is refused by the
+    # precondition above; arming for it would schedule a run with nothing to read.
+    armed()
+    with open(os.path.join(tdir, "HANDOFF.md"), "w", encoding="utf-8") as f:
+        f.write("tiny")
+    assert try_arm() is False and not spawned, spawned
+    with open(os.path.join(tdir, "HANDOFF.md"), "w", encoding="utf-8") as f:
+        f.write("y" * 500)
+
+    # ⚠ THE OFF SWITCH.
+    off = dict(cfg)
+    off["auto_arm_resume"] = False
+    assert try_arm(off) is False and not spawned, spawned
+
+    # ⛔ AND THE SPAWN FLOOR, which try_arm() clears deliberately every other time. Without
+    # it a run that cannot arm - no scheduler, no permission - starts a subprocess on every
+    # tool call for the rest of the session.
+    assert try_arm() is True, "the setup for the floor check did not arm"
+    del spawned[:]
+    with open(os.path.join(sdir, gate.ARM_MARK), "w") as f:
+        f.write(str(_time.time()))
+    keep = gate.subprocess.Popen
+    gate.subprocess.Popen = _Rec
+    try:
+        assert gate.maybe_auto_arm(root, sdir, cfg, folder, started) is False, "no floor"
+    finally:
+        gate.subprocess.Popen = keep
+    assert not spawned, spawned
+
+    # ⛔ AND IT MUST FIRE ON THE STOP PATH, WHICH IS THE ONE THAT MATTERS MOST. The usage
+    # brake refuses a dispatch at STOP and RETURNS - so the auto-arm further down the
+    # function is unreachable there, and the feature would miss exactly the moment it exists
+    # for. ⚠ Driven through main() with a real payload, because that unreachability is a
+    # property of the WIRING and cannot be seen by calling the function directly.
+    sid = "s-autoarm"
+    stamp_session(gate, sdir, sid)
+    load_skills(gate, root, sid, "dispatch-guard:dispatch-protocol",
+                "dispatch-guard:unattended-work")
+    plan = os.path.join(tdir, "prompts-auto-arm.md")
+    with open(plan, "w", encoding="utf-8") as f:
+        f.write("the sub-task prompt")
+    # ⚠ REWRITTEN AFTER THE SESSION STAMP. handoff_state() calls anything older than the
+    # session start STALE - correctly - and the copy written at the top of this case predates
+    # the stamp taken two lines above.
+    with open(os.path.join(tdir, "HANDOFF.md"), "w", encoding="utf-8") as f:
+        f.write("y" * 500)
+    armed()
+    if os.path.exists(os.path.join(sdir, gate.ARM_MARK)):
+        os.remove(os.path.join(sdir, gate.ARM_MARK))
+    usage_at(99)                                    # well past hard_pct_5h
+    del spawned[:]
+    keep = gate.subprocess.Popen
+    gate.subprocess.Popen = _Rec
+    try:
+        r = run_gate(gate, {"hook_event_name": "PreToolUse", "tool_name": "Agent",
+                            "cwd": root, "session_id": sid,
+                            "tool_input": {"prompt": "write to Memory/tasks/%s/ now" % folder,
+                                           "description": "d"}})
+    finally:
+        gate.subprocess.Popen = keep
+    assert decision(r) == "deny" and "STOP" in reason(r), r
+    assert spawned and folder in spawned[0], (
+        "the brake refused at STOP and nothing was armed - the auto-arm is unreachable "
+        "there: %r" % (spawned,))
+
+    # ⛔ Put the usage reading back - these cases share a state directory. See the handoff
+    # case for what leaving it behind did to every LATER case.
+    os.remove(os.path.join(sdir, "token_usage.json"))
+    armed()
+    print("ok - the resume arms itself once, re-arms when the target moves, never twice, "
+          "and fires on the STOP path")
+
+
 def case_model_price_limit(gate, sdir, root):
     """The sub-agent model price limit, weighed with the catalog's published prices.
 
@@ -947,6 +1198,8 @@ def main():
         case_require_skills(gate, sdir, root)
         case_skill_price_table(gate)
         case_price_refresh(gate, sdir)
+        case_handoff_past_soft(gate, sdir, root)
+        case_auto_arm(gate, sdir, root)
         case_model_price_limit(gate, sdir, root)
         case_unpushed(gate, sdir, root)
         # ⚠ Last: it moves the fixture's branch, and the cases above assume `master`.

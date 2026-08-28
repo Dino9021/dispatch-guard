@@ -75,13 +75,19 @@ DEFAULTS = {
     # thresholds are what refuses a tool call, and somebody who wants a warning colour
     # earlier than the slow-down - or no colour at all - must not have to give up the brake
     # to get it.
-    "soft_pct": 70,          # PACE  - finish what is in flight, start nothing heavy
-    "hard_pct": 85,          # STOP  - wrap up and schedule a resume
+    # ⛔ ONE PAIR PER WINDOW, because one pair could only ever watch one window. The brake
+    # read the five-hour percentage and nothing else, so an account at 7d 99% and 5h 0% was
+    # told GO and dispatched until the server refused - the 5h number was true and the
+    # answer was wrong. ⚠ The 7d pair sits high on purpose: that window is usually NOT the
+    # constraint, and pacing on it at 70% would throttle a week of work for nothing.
+    "soft_pct_5h": 70,       # PACE  - finish what is in flight, start nothing heavy
+    "hard_pct_5h": 85,       # STOP  - wrap up and schedule a resume
+    "soft_pct_7d": 95,
+    "hard_pct_7d": 97,
     "stale_min": 15,         # data older than this is not trusted
     "near_reset_min": 20,    # within this long of the reset, soften by one level
     "colour_warn_pct": 70,   # bar turns orange at or above this
     "colour_alarm_pct": 85,  # bar turns red at or above this
-    "seven_day_binding_pct": 95,
     # How often the API may be asked. ⚠ THE REAL INTERVAL IS THIS PLUS UP TO
     # fetch_seconds_jitter of randomness - see _interval(). See FETCH_FLOOR_SECONDS:
     # values below that floor are clamped, and the reason is not a preference.
@@ -336,6 +342,12 @@ def config(sdir):
     cfg["show_context"] = bool(disk.get("show_context", True))
     cfg["show_model"] = bool(disk.get("show_model", True))
     cfg["width"] = disk.get("width")        # None -> detect
+    # ⭐ MAY THE DISPLAY SPEND A SECOND ROW when one will not hold everything? ON by default,
+    # for both the statusline and `--watch`: the alternative is throwing information away,
+    # and the context bar and the note are the parts that get thrown. ⚠ A second row costs a
+    # row of the terminal above the input box, which on a narrow one is a row of
+    # conversation - so it is switchable, and false packs one row exactly as before.
+    cfg["two_rows"] = _truthy(disk.get("two_rows"), True)
     # ⚠ Reads as a gap in the bar until you know what it is, so it is switchable.
     cfg["show_time_marker"] = bool(disk.get("show_time_marker", True))
     # ⛔ Default is to REWRITE one line. A watcher that scrolls fills a panel with history
@@ -481,10 +493,13 @@ def token_note():
         return None
     left = expires - time.time()
     if left <= 0:
-        return "OAuth token EXPIRED - open a Claude session to refresh it"
+        return "OAuth token EXPIRED - open a session"
     if left <= TOKEN_WARN_SECONDS:
-        return ("OAuth token expires in %d min - open a Claude session to refresh it"
-                % max(1, round(left / 60.0)))
+        # ⚠ SHORT ON PURPOSE. This is appended inside a status line, and at 68 characters it
+        # was most of what pushed that line past the terminal width - which wrapped it, which
+        # stranded a row that `\r` could never reach. `install.py --status` and the README
+        # carry the long form; a bar is not the place for a sentence.
+        return "OAuth token expires in %dm - open a session" % max(1, round(left / 60.0))
     return None
 
 
@@ -511,6 +526,60 @@ def _iso_epoch(value):
 # key. Measured live 2026-08-27: `session` carries the five-hour figure, `weekly_all` the
 # seven-day one, and both give `percent` as a WHOLE NUMBER.
 _LIMIT_KIND = {"five_hour": "session", "seven_day": "weekly_all"}
+
+
+# ⭐ A WINDOW SCOPED TO ONE MODEL. Measured on two accounts, 2026-08-27, captured in
+# Memory/tasks/20260827-153945-usage-api-fable-window/: `limits[]` carries a third row whose
+# `kind` is "weekly_scoped" and whose `scope.model.display_name` is the plain string "Fable".
+_SCOPED_KIND = "weekly_scoped"
+
+
+def _scoped_window(data):
+    """The model-scoped window the account is actually using, or None.
+
+    ⛔ THE RESPONSE CARRIES NO ENTITLEMENT FLAG, and that is measured rather than assumed.
+    Two accounts were captured - one that may use Fable and one that may not - and the row
+    EXISTS on both, `is_active` is false on both (it stayed false at 19% used), and
+    `nimbus_quill` read 0.0 while the scoped row read 19%, which is evidence AGAINST that
+    top-level codename being Fable's counterpart rather than for it. ⇒ Nothing in the
+    payload says "this account may use Fable".
+
+    ⇒ SO THIS ANSWERS A DIFFERENT QUESTION, and says so: is there a scoped window RUNNING?
+    `percent > 0` or a non-null `resets_at`. On the two captures that is exactly the
+    difference - the account that cannot use Fable had 0 and null, the one that can had 19
+    and a timestamp. ⚠ An entitled account that used none this week therefore shows nothing
+    until its first use. That is the acceptable direction: the owner asked for no extra text
+    when it does not apply, and a bar that appears on first use is not a lie.
+
+    ⭐ THE MODEL IS NOT HARD-CODED. The row names itself, so a scoped window for any other
+    model works the same day it appears. ⚠ Only the first qualifying row is returned; the
+    line has one column of room for this, and no account has yet shown two.
+
+    ⛔ `percent` HERE NEEDS NO SCALE CHECK, unlike `utilization`. See _whole_percent(): the
+    `limits[]` figure is a whole number by construction, which is the whole reason that
+    function exists.
+    """
+    for row in (data or {}).get("limits") or []:
+        if not isinstance(row, dict) or row.get("kind") != _SCOPED_KIND:
+            continue
+        scope = row.get("scope")
+        model = (scope or {}).get("model") if isinstance(scope, dict) else None
+        name = (model or {}).get("display_name") if isinstance(model, dict) else None
+        if not isinstance(name, str) or not name.strip():
+            continue
+        pct = row.get("percent")
+        if not isinstance(pct, (int, float)) or isinstance(pct, bool):
+            continue
+        if not 0 <= pct <= 100:
+            continue
+        resets = _iso_epoch(row.get("resets_at"))
+        if not (pct > 0 or resets):
+            continue                     # present but not running - see the docstring
+        out = {"label": name.strip(), "used_percentage": float(pct)}
+        if resets:
+            out["resets_at"] = int(round(resets))
+        return out
+    return None
 
 
 def _whole_percent(data, name):
@@ -648,6 +717,11 @@ def fetch(cfg=None, sdir=None):
     seven = _api_window(data.get("seven_day"), _whole_percent(data, "seven_day"))
     if seven:
         record["seven_day"] = seven
+    # ⭐ Only when one is RUNNING, so an account without it carries no extra key and its
+    # display gains no extra text. See _scoped_window().
+    scoped = _scoped_window(data)
+    if scoped:
+        record["scoped"] = scoped
     return record
 
 
@@ -670,7 +744,11 @@ def _write_record(sdir, cfg, record, prev):
         return
     moved = not (isinstance(prev, dict)
                  and prev.get("five_hour") == record.get("five_hour")
-                 and prev.get("seven_day") == record.get("seven_day"))
+                 and prev.get("seven_day") == record.get("seven_day")
+                 # ⭐ The model-scoped window counts as a number that can move. Left out, a
+                 # session that spent only on the scoped model would look like a session
+                 # where nothing happened, and the history would have no row for it.
+                 and prev.get("scoped") == record.get("scoped"))
     if moved and cfg["debug"]["token_usage"]:
         # ⚠ model and session are no longer recorded, and that is accepted rather than
         # overlooked: they came off the statusline payload, which this path does not see.
@@ -873,7 +951,10 @@ def collect(sdir, cfg):
         note = "%s; %s" % (note, tnote) if note else tnote
 
     _note_render(sdir, payload, record.get("five_hour") or {})
-    print(_line(record, note, cfg, payload))
+    # ⭐ ONE print PER ROW. Claude Code renders each line of this command's output as its own
+    # row, so a second row needs nothing but a second print.
+    for _row in line_rows(record, note, cfg, payload):
+        print(_row)
     return 0
 
 
@@ -1270,6 +1351,78 @@ def _window(label, win, now, cfg=None, window_secs=None, stale=False):
     return out
 
 
+# ⭐ THE WORD THAT REPLACES THE VERDICT WHILE NOTHING IS HAPPENING. Display only - see
+# _watch_line() for why it must never reach verdict(). Upper case like GO, PACE and STOP:
+# it stands in the same column and means the same kind of thing.
+SLEEP_WORD = "SLEEP"
+
+
+def _rewrite(prev_rows, lines, erase="\033[K"):
+    """The bytes that redraw `lines` in place over a previous draw of `prev_rows` rows.
+
+    ⛔ THE CURSOR CLIMBS BY WHAT WAS ON SCREEN, NOT BY WHAT IS ABOUT TO BE. Getting that
+    backwards is a real defect and it shipped once: the first draw that needed a SECOND row
+    moved the cursor up one row FIRST - into whatever was above the watcher, the launch
+    command or somebody's prior output - and overwrote it. Every later 1-to-2 growth ate
+    another line of scrollback. ⇒ `prev_rows` is the previous draw, always.
+
+    ⭐ GROWING NEEDS NO CLIMB AT ALL. Row 1 is written over the row the cursor is already on,
+    and the `\n` before row 2 allocates the new row the way any program does.
+
+    ⚠ SHRINKING PADS INSTEAD OF CLIMBING LESS. A draw with fewer rows than the last leaves
+    the old row on screen holding a line nothing will ever overwrite, so the difference is
+    written as blanks - which `erase` then clears.
+    """
+    rows = max(prev_rows, len(lines))
+    padded = list(lines) + [""] * (rows - len(lines))
+    up = "\033[%dA" % (prev_rows - 1) if prev_rows > 1 else ""
+    body = "".join(("" if i == 0 else "\n") + "\r" + one + erase
+                   for i, one in enumerate(padded))
+    return up + body, rows
+
+
+def _watch_line(stamp, data, v, note, cfg, idle=False):
+    """The row(s) `--watch` prints, fitted to the terminal ONCE. A list; pure, no I/O.
+
+    ⛔ THE BUG THIS FUNCTION EXISTS FOR. `_line()` fits ITSELF to the terminal width - and
+    the watcher then prepended a timestamp and appended the verdict word, sixteen columns
+    nobody had subtracted. MEASURED at width 150: `_line` returned 149 characters and the
+    line that reached the terminal was 165. ⇒ It wrapped; `\r` returns to the start of the
+    LAST VISUAL ROW and `\033[K` clears only that row, so every render stranded its first
+    row on screen for ever. That is the residue in the owner's screenshot, and it is why the
+    whole thing is assembled in one place that owns the width.
+
+    ⭐ AND WHY IT RETURNS A LIST. When everything will not fit on one row, the answer used to
+    be to DROP the least valuable parts. A terminal has more rows, so the second one is spent
+    instead: the usage bars and the verdict stay together on the first, the context bar, the
+    model and the note move to the second. ⚠ Each row is fitted separately - two rows that
+    can each wrap is the original defect twice over.
+
+    ⭐ IDLE KEEPS THE FIGURES AND DROPS THE COLOUR. A frozen percentage is dangerous when a
+    FETCH is failing; while nobody is working nobody is spending, so it cannot drift. The
+    exposure is the moment work resumes, and should_fetch() starts fetching at that same
+    moment. `SLEEP` is what says the row is not live. ⚠ watch() also stops redrawing while
+    idle - see there - so this is called ONCE per quiet spell.
+
+    ⛔ AND `SLEEP` NEVER REACHES verdict(). The gate reads verdict() for GO/PACE/STOP; a
+    fourth word arriving from the display side would be a word the dispatch logic does not
+    know. This substitution is local to the watcher's screen.
+    """
+    word = SLEEP_WORD if idle else v["verdict"]
+    lcfg = dict(cfg)
+    if idle:
+        # ⭐ ONE key carries the whole idle appearance: _colour() already honours it, so "no
+        # colour anywhere" costs a setting rather than a second code path.
+        lcfg["colour"] = False
+    von, voff = _colour(v.get("pct") if isinstance(v.get("pct"), (int, float)) else 0, lcfg)
+    head = "%s  " % stamp
+    tail = "  %s%s%s  " % (von, word, voff)
+    windows, extras = _line_parts(data, note, lcfg, None, stale=False if idle else None)
+
+    return _rows(windows, extras, terminal_width(cfg), head, tail,
+                 cfg.get("two_rows", True))
+
+
 # The payload key that carries context usage. ⭐ Named once because Part B turns its
 # PRESENCE into the difference between "zero" and "unknown".
 CONTEXT_KEY = "context_window"
@@ -1326,9 +1479,15 @@ def _model_part(payload):
     return "%s%s" % (name, "·" + eff if eff else "")
 
 
+# ⛔ ONE definition. A second copy of this pattern is a second chance to get it wrong, and
+# getting it wrong means truncating INSIDE an escape sequence - which garbles a terminal
+# rather than tidying it.
+_STRIP_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
 def _visible_len(text):
     """Length as the terminal sees it: ANSI codes occupy no columns."""
-    return len(re.sub(r"\x1b\[[0-9;]*m", "", text))
+    return len(_STRIP_ANSI.sub("", text))
 
 
 def terminal_width(cfg):
@@ -1355,24 +1514,102 @@ def terminal_width(cfg):
         return None
 
 
-def _line(record, stale_note=None, cfg=None, payload=None):
-    """One rendered line, trimmed from the right until it fits.
+def _rows(windows, extras, width, head="", tail="", two_rows=True):
+    """The row(s) to draw: one when everything fits, two when it does not and `two_rows`.
 
-    ⛔ WRAPPING IS WHY THIS EXISTS. A status line that spills onto a second row does not
-    merely look untidy - it pushes the prompt around and reads as a bug. claude-pacer
-    solved it with three responsive layouts and width probing; that is the large half of
-    that project. This does the small version: parts are ordered by how much they are
-    worth, and the least valuable are dropped until the line fits.
+    ⭐ ONE SPLITTER FOR BOTH SURFACES. The watcher and the statusline had different ideas
+    about what to do with a line that will not fit - the watcher spent a second row, the
+    statusline threw the least valuable parts away - and two answers to one question drift.
+    `head` and `tail` are what the caller wraps around the middle (a timestamp and a verdict
+    word, for the watcher; nothing, for the statusline).
+
+    ⛔ THE BUDGETS ARE PER ROW, and each subtracts what surrounds it. Fitting the middle and
+    then adding the wrapper around it is the measured defect this whole area came from: at
+    width 150 the middle came back 149 characters and the line was 165.
+
+    ⚠ `two_rows` false keeps the old behaviour exactly - one row, packed, and whatever does
+    not fit is dropped from the right. A second row costs a row of the terminal, and on a
+    narrow one that is a row of conversation; the owner decides.
+    """
+    if not width:
+        return [head + _fit(windows + extras, None) + tail]
+    one = head + _fit(windows + extras, None) + tail
+    if _visible_len(one) <= width:
+        return [one]
+    # ⚠ With nothing to move to a second row there is nothing to split, so the single row is
+    # cut instead. Dropping the only content would leave an empty display.
+    if not two_rows or not extras:
+        return [_cut(head + _fit(windows + extras, width - _visible_len(head)
+                                 - _visible_len(tail)) + tail, width)]
+    room = width - _visible_len(head) - _visible_len(tail)
+    first = _cut(head + _fit(windows, room) + tail, width)
+    pad = " " * _visible_len(head)
+    second = _cut(pad + _fit(extras, width - len(pad)), width)
+    return [first, second] if second.strip() else [first]
+
+
+def _cut(text, width):
+    """`text` shortened to `width` COLUMNS, never mid-escape-sequence.
+
+    ⛔ THE LAST GUARD, AND IT IS NOT REDUNDANT WITH _fit(). That function drops whole parts
+    and never drops the last one, so a single part wider than the terminal - a long note on
+    a narrow window - survives and overflows. One column too many wraps the row, and a
+    wrapped row is what `\r` can never repair.
+
+    ⚠ IT CUTS THE PLAIN TEXT AND RE-CLOSES THE COLOUR. Slicing a string full of `\033[32m`
+    by length would eventually land INSIDE an escape sequence, and a half-written escape
+    garbles a terminal rather than tidying it.
+    """
+    if not width or _visible_len(text) <= width:
+        return text
+    plain = _STRIP_ANSI.sub("", text)[:width]
+    return plain + (ANSI["reset"] if _STRIP_ANSI.search(text) else "")
+
+
+def _fit(parts, width, keep=1):
+    """Join `parts` with two spaces, dropping from the RIGHT until it fits `width`.
+
+    ⭐ The rightmost parts are the least load-bearing, and `keep` is how many may never be
+    dropped - one, normally, because the five-hour window is what the brake acts on and a
+    line without it says nothing.
+    """
+    parts = [p for p in parts if p]
+    if not width:
+        return "  ".join(parts)
+    while len(parts) > keep and _visible_len("  ".join(parts)) > width:
+        parts.pop()
+    return "  ".join(parts)
+
+
+def _line_parts(record, stale_note=None, cfg=None, payload=None, stale=None):
+    """(windows, extras) - every segment of the line, in falling order of worth.
+
+    ⭐ SPLIT OUT SO A CALLER CAN PUT THEM ON TWO ROWS. `_line()` joins them into one and
+    drops what does not fit, which is right for a statusline that owns a single row; the
+    watcher owns a terminal and can spend a second one rather than throw information away.
+    ⇒ `windows` are the usage bars and must stay together; `extras` are the context bar, the
+    model and the note, which are the ones worth moving.
     """
     rec = record or {}
     cfg = cfg or {}
     now = time.time()
     # ⛔ One decision, applied to both windows: is the stored value old enough that showing
-    # it as a percentage would mislead? stale_note is set by the caller from the file's age.
-    stale = bool(stale_note)
+    # it as a percentage would mislead? By default that is "there is a note", which the
+    # caller sets from the file's age; a caller that knows better says so explicitly.
+    stale = bool(stale_note) if stale is None else bool(stale)
     parts = [_window("5h", rec.get("five_hour"), now, cfg, 5 * 3600, stale)]
     if isinstance(rec.get("seven_day"), dict):
         parts.append(_window("7d", rec["seven_day"], now, cfg, 7 * 86400, stale))
+    # ⭐ THE MODEL-SCOPED WINDOW, when the account has one running. It goes THROUGH _window()
+    # like the other two, so staleness, the idle rule and the past-a-reset rule all apply to
+    # it identically - a bar that degraded differently would be the one bar that lies.
+    # ⚠ Its window length is the WEEKLY one: measured, the scoped reset lands one second
+    # before the same account's weekly_all reset, so it rides that boundary rather than
+    # running a clock of its own.
+    sc = rec.get("scoped")
+    if isinstance(sc, dict) and isinstance(sc.get("label"), str):
+        parts.append(_window(sc["label"], sc, now, cfg, 7 * 86400, stale))
+    extras = []
     if payload and cfg.get("show_context", True):
         # ⛔ ALWAYS DRAWN, from the first moment of a session. It used to appear only once
         # work had begun, so the line changed width partway through and the reader could
@@ -1389,26 +1626,58 @@ def _line(record, stale_note=None, cfg=None, payload=None):
         # the same width the marker'd bars occupy, so the columns still line up.
         cpct = _context_pct(payload)
         if cpct is None:
-            parts.append("Ctx %s %s" % (BAR_EMPTY * (BAR_WIDTH + 1), "--"))
+            extras.append("Ctx %s %s" % (BAR_EMPTY * (BAR_WIDTH + 1), "--"))
         else:
             on, off = _colour(cpct, cfg)
-            parts.append("Ctx %s%s %d%%%s"
-                         % (on, _bar(cpct, BAR_WIDTH + 1), round(cpct), off))
+            extras.append("Ctx %s%s %d%%%s"
+                          % (on, _bar(cpct, BAR_WIDTH + 1), round(cpct), off))
+    # ⛔ THE NOTE OUTRANKS THE MODEL NAME, and it used to be the other way round. Parts are
+    # dropped from the RIGHT when they do not fit, so with the model last a narrow display
+    # kept the label "Opus 5" and threw away "OAuth token EXPIRED". ⇒ A warning beats a
+    # caption: the note says something is wrong, the model name says what was already known.
+    if stale_note:
+        extras.append("(%s)" % stale_note)
     if payload and cfg.get("show_model", True):
         mp = _model_part(payload)
         if mp:
-            parts.append(mp)
-    if stale_note:
-        parts.append("(%s)" % stale_note)
+            extras.append(mp)
+    return parts, extras
 
-    width = terminal_width(cfg)
-    if not width:
-        return "  ".join(parts)
-    # Drop from the right - the rightmost parts are the least load-bearing - but never
-    # drop the 5h window, which is the one the brake acts on.
-    while len(parts) > 1 and _visible_len("  ".join(parts)) > width:
-        parts.pop()
-    return "  ".join(parts)
+
+def line_rows(record, stale_note=None, cfg=None, payload=None, stale=None):
+    """The statusline's row(s). ⭐ Claude Code prints one row per line of output.
+
+    ⛔ MEASURED, not assumed, because this used to be capped at one row on a belief. The
+    documentation says "each `echo` or `print` statement displays as a separate row", and the
+    shipped binary splits the command's output on newlines and counts them
+    (`line_count: ge.length`). ⇒ A statusline may be two rows, and throwing information away
+    to fit one was this plugin's limitation rather than the platform's.
+
+    ⚠ `two_rows: false` returns to one packed row. A second row costs a row of the terminal
+    above the input box, which on a narrow one is a row of conversation.
+    """
+    windows, extras = _line_parts(record, stale_note, cfg, payload, stale)
+    cfg = cfg or {}
+    return _rows(windows, extras, terminal_width(cfg),
+                 two_rows=cfg.get("two_rows", True))
+
+
+def _line(record, stale_note=None, cfg=None, payload=None, stale=None):
+    """One rendered line, trimmed from the right until it fits.
+
+    ⛔ WRAPPING IS WHY THIS EXISTS. A status line that spills onto a second row does not
+    merely look untidy - it pushes the prompt around and reads as a bug. claude-pacer solved
+    it with three responsive layouts and width probing; that is the large half of that
+    project. This does the small version: parts are ordered by how much they are worth, and
+    the least valuable are dropped until the line fits.
+
+    ⭐ `stale` SEPARATES THE NOTE FROM THE JUDGEMENT, for one caller. A note used to MEAN
+    stale - and while the watcher is idle there is a note to show with nothing stale about
+    it: nobody is spending, so the number cannot drift. ⛔ Left coupled, the idle line threw
+    its percentages away and printed `--`, which is how the owner found it.
+    """
+    windows, extras = _line_parts(record, stale_note, cfg, payload, stale)
+    return _fit(windows + extras, terminal_width(cfg))
 
 
 # --------------------------------------------------------------------------- verdict
@@ -1450,57 +1719,143 @@ def verdict(sdir, cfg, now=None, data=None):
 
     age_min = (now * 1000 - data.get("ts", 0)) / 60000.0
 
-    # A window that has already turned over makes the stored percentage meaningless -
-    # and it will read stale-HIGH, which is the dangerous direction.
-    if now >= resets:
-        return {"verdict": "GO", "exit": 0, "pct": pct, "age_min": age_min,
-                "text": "GO - the 5h window already reset; treat usage as fresh. "
-                        "Do not spend tokens re-verifying: the stored number stays "
-                        "stale-high until the next statusline render."}
+    seven = data.get("seven_day") if isinstance(data.get("seven_day"), dict) else None
+    pct7 = (seven or {}).get("used_percentage")
+    resets7 = (seven or {}).get("resets_at")
 
-    remain_min = int((resets - now) / 60)
+    # ⚠ A window that has already turned over makes its stored percentage meaningless, and
+    # meaningless in the dangerous direction: it reads stale-HIGH. ⛔ But it used to return
+    # GO on the spot, which threw the SEVEN-DAY window away with it - an account whose week
+    # was spent got told GO the moment its five-hour window rolled over.
+    five_over = now >= resets
+    remain_min = 0 if five_over else int((resets - now) / 60)
     clock = time.strftime("%H:%M", time.localtime(resets))
-    sd = _seven_day_note(data.get("seven_day"), resets, now, cfg)
-    proj = _projection(sdir, cfg, pct, resets, now)
+    sd = _seven_day_note(seven, resets, now, cfg)
 
-    level = None
-    if pct >= cfg["hard_pct"]:
-        level = "STOP"
-    elif pct >= cfg["soft_pct"] or (proj is not None and proj >= 100):
-        level = "PACE"
+    # --------------------------------------------------------------- the five-hour window
+    proj = burn = None
+    early = False
+    five_level = None
+    if not five_over:
+        proj = _projection(sdir, cfg, pct, resets, now)
+        # ⭐ WHEN, not only WHETHER. "Projected 140% by reset" says the window will be
+        # exhausted and leaves the reader to work out whether there is room for one more
+        # wave. ⚠ None means unknowable, never safe - see burnout_min().
+        burn = burnout_min(sdir, cfg, pct, resets, now)
+        early = burn is not None and burn < remain_min
+        five_level = _window_level(pct, cfg["soft_pct_5h"], cfg["hard_pct_5h"])
+        if five_level is None and proj is not None and proj >= 100:
+            five_level = "PACE"
+        five_level = _soften_near_reset(five_level, remain_min, cfg)
+    burn_note = ("" if not early else
+                 " ⛔ At the current rate the 5h window is SPENT in ~%d min - %d min BEFORE "
+                 "it resets. Plan for the gap, not for the reset."
+                 % (burn, remain_min - burn))
 
-    # ⭐ Near the reset the stakes shrink: hitting the cap costs a pause of a few
-    # minutes, not lost work. Softening by one level here is deliberate, and it is why
-    # a caller must act on the VERDICT and never on the percentage.
-    if level and remain_min <= cfg["near_reset_min"]:
-        level = "PACE" if level == "STOP" else None
+    # --------------------------------------------------------------- the seven-day window
+    # ⛔ THE BRAKE USED TO IGNORE THIS ENTIRELY. The 7d figure produced a NOTE and nothing
+    # else, so 7d 99% beside 5h 0% read as GO - both numbers true, the answer wrong, and the
+    # only thing that stopped the work was the server refusing.
+    seven_level = None
+    remain7 = None
+    if _seven_day_binds(seven, resets, now):
+        remain7 = int((resets7 - now) / 60)
+        seven_level = _window_level(pct7, cfg["soft_pct_7d"], cfg["hard_pct_7d"])
+        seven_level = _soften_near_reset(seven_level, remain7, cfg)
+
+    # ⭐ THE STRICTER OF THE TWO WINS, and ties go to the five-hour window because it is the
+    # nearer and more actionable one to name.
+    if _STRICTNESS[seven_level] > _STRICTNESS[five_level]:
+        level, driver = seven_level, "7d"
+    else:
+        level, driver = five_level, "5h"
 
     stale = " [data %d min old - may understate]" % age_min if age_min > cfg["stale_min"] else ""
-    # ⭐ frozen_note() used to hang here. It detected the STATUSLINE REPLAYING an unchanged
-    # value, which was a real defect and is now impossible: the number is fetched, so an
-    # unchanged reading is the server confirming flat usage rather than a stale replay.
-    # Worse, history is only appended when a number MOVES, so it could never again find the
-    # three identical rows it needed - it could only have fired on pre-change files, as a
-    # false alarm. Deleted rather than left inert.
 
-    if level == "STOP":
-        text = ("STOP - 5h at %d%% >= hard %d%%. Wrap up: finish the current step, commit or "
-                "save state, start nothing new. Schedule a ONE-SHOT resume a few minutes after "
-                "%s, then end the turn." % (round(pct), cfg["hard_pct"], clock))
+    if level == "STOP" and driver == "7d":
+        text = ("STOP - 7d at %d%% >= hard_pct_7d %d%%. ⛔ The 5h window is NOT the "
+                "constraint here (5h %d%%): the WEEK is nearly spent, and it does not reset "
+                "for %s. Wrap up: finish the current step, commit or save state, start "
+                "nothing new. A resume must be scheduled after the SEVEN-DAY reset, not "
+                "after the five-hour one."
+                % (round(pct7), cfg["hard_pct_7d"], round(pct), duration(remain7)))
+    elif level == "STOP":
+        text = ("STOP - 5h at %d%% >= hard_pct_5h %d%%. Wrap up: finish the current step, "
+                "commit or save state, start nothing new. Schedule a ONE-SHOT resume a few "
+                "minutes after %s, then end the turn."
+                % (round(pct), cfg["hard_pct_5h"], clock))
+    elif level == "PACE" and driver == "7d":
+        text = ("PACE - 7d at %d%%, and it does not reset for %s. ⚠ The 5h window has room "
+                "(5h %d%%) - that is not the one to watch. Finish what is in flight; do not "
+                "start new heavy work or another dispatch wave."
+                % (round(pct7), duration(remain7), round(pct)))
     elif level == "PACE":
         why = ("projected %d%% by reset" % proj) if (proj is not None and proj >= 100
-                                                     and pct < cfg["soft_pct"]) else \
+                                                     and pct < cfg["soft_pct_5h"]) else \
               ("5h at %d%%" % round(pct))
         text = ("PACE - %s, %d min left (resets %s). Finish what is in flight; do not start "
                 "new heavy work or another dispatch wave." % (why, remain_min, clock))
+    elif five_over:
+        text = ("GO - the 5h window already reset; treat usage as fresh. Do not spend tokens "
+                "re-verifying: the stored number stays stale-high until the next statusline "
+                "render.")
     else:
         text = ("GO - 5h at %d%%, %d min left (resets %s). Headroom available."
                 % (round(pct), remain_min, clock))
 
     return {"verdict": level or "GO", "exit": {"STOP": 2, "PACE": 1}.get(level, 0),
-            "pct": pct, "remain_min": remain_min, "resets_clock": clock,
+            "pct": pct, "pct_7d": pct7, "driver": driver if level else None,
+            "remain_min": remain_min, "resets_clock": clock,
             "age_min": age_min, "projected_pct": proj, "seven_day": sd,
-            "text": text + stale + (" [%s]" % sd if sd else "")}
+            "burnout_min": burn, "burns_out_early": early,
+            "text": text + burn_note + stale + (" [%s]" % sd if sd else "")}
+
+
+_STRICTNESS = {None: 0, "PACE": 1, "STOP": 2}
+
+
+def _window_level(pct, soft, hard):
+    """None / PACE / STOP for one window, from its own pair of thresholds."""
+    if not isinstance(pct, (int, float)):
+        return None
+    if pct >= hard:
+        return "STOP"
+    if pct >= soft:
+        return "PACE"
+    return None
+
+
+def _soften_near_reset(level, remain_min, cfg):
+    """⭐ Near a reset the stakes shrink: hitting the cap costs a pause of a few minutes,
+    not lost work. Softening by one level is deliberate, and it is why a caller must act on
+    the VERDICT and never on the percentage.
+
+    ⚠ It is applied PER WINDOW. A 5h STOP twelve minutes from its reset is worth softening; a
+    7d STOP three days from its reset is not, and one shared test would have softened both.
+    """
+    if not level or remain_min > cfg["near_reset_min"]:
+        return level
+    return "PACE" if level == "STOP" else None
+
+
+def _seven_day_binds(seven, five_resets, now):
+    """Can the 7-day window actually stop work inside THIS five-hour window?
+
+    ⛔ THE ANSWER IS NOT ALWAYS YES, AND THAT PREDATES THE FOUR THRESHOLDS. If the 7d window
+    resets before the 5h one ends, its percentage cannot be what stops you here - it is about
+    to become zero. Counting it anyway would brake on a number that is on its way out.
+
+    ⚠ It is also not "is it high": how high is the threshold's business. This answers only
+    whether the window is a live constraint at all.
+    """
+    if not isinstance(seven, dict):
+        return False
+    pct, resets = seven.get("used_percentage"), seven.get("resets_at")
+    if not isinstance(pct, (int, float)) or not resets:
+        return False
+    if now >= resets:
+        return False                      # already reset; the stored number reads stale-high
+    return resets > five_resets
 
 
 def _seven_day_note(seven, five_resets, now, cfg):
@@ -1515,21 +1870,22 @@ def _seven_day_note(seven, five_resets, now, cfg):
     if resets <= five_resets:
         return ("7d %d%% but it resets before this 5h window ends - IGNORE, not a constraint"
                 % round(pct))
-    if pct >= cfg["seven_day_binding_pct"]:
+    if pct >= cfg["soft_pct_7d"]:
         return "7d %d%% - BINDING, near cap" % round(pct)
     return "7d %d%% - not near cap, ignore" % round(pct)
 
 
-def _projection(sdir, cfg, pct, resets, now):
-    """Where usage lands by reset at the recent burn rate, or None if unknowable.
+def _burn_rate(sdir, cfg, resets, now):
+    """Percent per SECOND, from this window's history, or None if unknowable.
 
-    ⚠ A LOWER BOUND. Under bursty multi-agent dispatch the real burn runs ahead of it,
-    so the hard stop still rules regardless of what this says.
+    ⭐ Split out so the projection and the burn-out time are computed from ONE sampling of
+    one history. Two samplings would disagree at the edges and put a contradiction on one
+    line - "projected 140% by reset" beside "runs out after the reset".
 
-    ⛔ Returns None when the token-usage history is off. ⚠ It is ON by default now - it
-    used to be off, and this docstring used to say so. That is a real
-    reduction in what PACE can catch, not a technicality - say so rather than letting a
-    silently absent projection read as "nothing projected".
+    ⛔ Returns None when the token-usage history is off. ⚠ It is ON by default now - it used
+    to be off, and this docstring used to say so. That is a real reduction in what PACE can
+    catch, not a technicality - say so rather than letting a silently absent projection read
+    as "nothing projected".
     """
     # Read the last two files: a 5h window can straddle midnight, and therefore two.
     # ⛔ ONE PREFIX, AND NO PATH FOR THE NAMES THIS FILE USED TO HAVE. A projection quietly
@@ -1578,7 +1934,43 @@ def _projection(sdir, cfg, pct, resets, now):
     rate = (last["pct"] - first["pct"]) / span       # percent per second
     if rate <= 0:
         return None
+    return rate
+
+
+def _projection(sdir, cfg, pct, resets, now):
+    """Where usage lands by reset at the recent burn rate, or None if unknowable.
+
+    ⚠ A LOWER BOUND. Under bursty multi-agent dispatch the real burn runs ahead of it, so
+    the hard stop still rules regardless of what this says.
+    """
+    rate = _burn_rate(sdir, cfg, resets, now)
+    if rate is None:
+        return None
     return int(min(999, pct + rate * (resets - now)))
+
+
+def burnout_min(sdir, cfg, pct, resets, now):
+    """Minutes until this window reaches 100% at the recent burn rate, or None.
+
+    ⭐ THE INVERSE OF _projection(), AND THE OWNER ASKED FOR IT BECAUSE THE TWO ANSWER
+    DIFFERENT QUESTIONS. "Projected 140% by reset" says the window will be exhausted; it
+    does not say WHEN, and when is what decides whether there is time for one more wave.
+
+    ⛔ IT SHARES _burn_rate() WITH THE PROJECTION ON PURPOSE. Two samplings of the same
+    history would disagree at the edges, and then the line would say "projected 140%" beside
+    "runs out after the reset" - a contradiction on one screen, which is worse than either
+    number alone.
+
+    ⚠ None means "cannot be known", never "safe". No history (debug.token_usage off), fewer
+    than two rows in this window, under five minutes of span, or a flat-or-falling rate all
+    return None, and every caller must print something that says so rather than nothing.
+    """
+    rate = _burn_rate(sdir, cfg, resets, now)
+    if rate is None or not isinstance(pct, (int, float)):
+        return None
+    if pct >= 100:
+        return 0
+    return int((100.0 - pct) / rate / 60.0)
 
 
 # --------------------------------------------------------------------------- main
@@ -1624,7 +2016,8 @@ def should_fetch(sdir, cfg, now=None):
         return True, None
     if idle <= limit:
         return True, None
-    return False, "no session active for %s; not fetching" % duration(idle)
+    # ⚠ Short, for the same reason as token_note(): it is appended inside a status line.
+    return False, "idle %s" % duration(idle)
 
 
 WATCH_MARK = "watch.alive"
@@ -1688,6 +2081,8 @@ def watch(sdir, cfg, argv):
         scroll = True
 
     ERASE_TO_EOL = "\033[K"        # so a shorter line cannot leave the old tail behind
+    drawn_idle = False             # has this quiet spell's SLEEP line been drawn already?
+    rows = 1                       # how many rows the last draw occupied; see the write below
     try:
         while True:
             # ⭐ Pause the FETCH when nobody is working - never the redraw. A frozen
@@ -1707,7 +2102,12 @@ def watch(sdir, cfg, argv):
                 age = (time.time() * 1000 - data["ts"]) / 60000.0
             v = verdict(sdir, cfg, data=data)           # same record, passed by value
             note = None
-            if age is not None and age > cfg["stale_min"]:
+            # ⭐ WHILE IDLE THE AGE IS NOT A WARNING, it is the whole point of the line: it
+            # says how old the figure the reader is looking at is. So it is shown at any
+            # age, not only past stale_min, and `Sleep` beside it says why it stopped
+            # moving. ⛔ Outside idle the old rule stands - an age only appears once the
+            # number is old enough that showing it could mislead.
+            if age is not None and (idle_note or age > cfg["stale_min"]):
                 note = "%.0f min old" % age
             if reason and (note or age is None):
                 note = "%s; %s" % (note, reason) if note else reason
@@ -1716,23 +2116,38 @@ def watch(sdir, cfg, argv):
                 note = "%s; %s" % (note, tnote) if note else tnote
             if idle_note:
                 note = "%s; %s" % (note, idle_note) if note else idle_note
-            # ⭐ THE VERDICT WORD CARRIES THE SAME COLOUR AS THE BARS: green below
-            # colour_warn_pct, orange from there, red from colour_alarm_pct. It is the one
-            # word a person reads when they are not reading anything else.
-            # ⚠ AND IT ENDS WITH TWO SPACES. `--watch` rewrites the line in place, so the
-            # terminal leaves its cursor at the end - directly on top of the last character,
-            # which renders as a box over the "O" of GO. The trailing spaces park the cursor
-            # somewhere harmless. ERASE_TO_EOL still clears whatever a longer previous line
-            # left behind, so this costs nothing but two columns.
-            von, voff = _colour(v.get("pct") if isinstance(v.get("pct"), (int, float))
-                                else 0, cfg)
-            text = "%s  %s  %s%s%s  " % (time.strftime("%H:%M:%S"),
-                                         _line(data, note, cfg),
-                                         von, v["verdict"], voff)
+            # ⭐ ONE FUNCTION OWNS THE WHOLE LINE, INCLUDING ITS WIDTH. This used to assemble
+            # the stamp, the body and the verdict word here - and _line() fitted only the
+            # BODY, so the sixteen columns added around it overflowed the terminal and the
+            # line wrapped. See _watch_line() for what that cost.
+            # ⚠ AND THE LINE STILL ENDS WITH TWO SPACES. `--watch` rewrites in place, so the
+            # terminal parks its cursor on the last character - which renders as a box over
+            # the "O" of GO. Those two spaces put it somewhere harmless; ERASE_TO_EOL still
+            # clears whatever a longer previous line left behind.
+            idle = bool(idle_note)
+            # ⛔ WHILE IDLE, DRAW ONCE AND THEN STOP - the owner's instruction, and it removes
+            # the reported defect at its source instead of mitigating it. A line nothing is
+            # rewriting cannot strand a row whatever its width, and an idle machine stops
+            # scrolling a terminal full of identical lines all night.
+            # ⇒ ONE render marks the transition: the same figures, no colour, the word SLEEP.
+            # After that nothing is printed until work resumes. ⚠ `drawn_idle` is cleared on
+            # the way back, so the NEXT quiet spell marks itself too - without that, a machine
+            # that went idle, woke and went idle again would never say so a second time.
+            if idle and drawn_idle:
+                _note_watch(sdir)
+                time.sleep(every)
+                continue
+            drawn_idle = idle
+            lines = _watch_line(time.strftime("%H:%M:%S"), data, v, note, cfg, idle=idle)
+            # ⛔ REWRITING MORE THAN ONE ROW NEEDS THE CURSOR MOVED BACK UP BY WHAT THE LAST
+            # DRAW LEFT THERE. See _rewrite(): sizing that climb by the CURRENT draw walks
+            # the cursor into the caller's own output the first time a second row appears.
             if scroll:
-                print(text)
+                for one in lines:
+                    print(one)
             else:
-                sys.stdout.write("\r" + text + ERASE_TO_EOL)
+                out, rows = _rewrite(rows, lines, ERASE_TO_EOL)
+                sys.stdout.write(out)
             sys.stdout.flush()
             _note_watch(sdir)
             time.sleep(every)
@@ -2078,6 +2493,322 @@ def selftest():
         with open(os.path.join(tmp4, "config.json"), "w", encoding="utf-8") as f:
             json.dump(blob, f)
         assert config(tmp4)["debug"]["token_usage"] is want, "%s: %r" % (why, blob)
+
+    # ⛔ THE WATCHER'S LINE MUST NEVER BE WIDER THAN THE TERMINAL. It was, and the way it
+    # failed is the reason this check exists at all: _line() fitted the BODY, watch() then
+    # added a timestamp and a verdict word around it, and the sixteen columns nobody had
+    # subtracted pushed the line into a wrap. `\r` returns to the start of the LAST VISUAL
+    # ROW and `\033[K` clears only that row, so every render stranded its first row on
+    # screen for ever. MEASURED at width 150: body 149, line 165.
+    _now = time.time()
+    _live = {"ts": int(_now * 1000),
+             "five_hour": {"used_percentage": 55, "resets_at": int(_now) + 1600},
+             "seven_day": {"used_percentage": 32, "resets_at": int(_now) + 300000}}
+    _v = {"verdict": "GO", "pct": 55}
+    _note = "idle 7h-35m; OAuth token expires in 10m - open a session"
+    # ⚠ EVERY ROW, not the joined text: the point of a second row is that each one fits.
+    for _w in (200, 150, 120, 100, 80, 60, 40, 25):
+        for _idle in (True, False):
+            _rows = _watch_line("07:26:12", _live, _v, _note, {"width": _w}, idle=_idle)
+            assert 1 <= len(_rows) <= 2, _rows
+            for _r in _rows:
+                assert _visible_len(_r) <= _w, (
+                    "width %d, idle=%s: a row is %d columns and WILL wrap: %r"
+                    % (_w, _idle, _visible_len(_r), _r))
+
+    # ⭐ IDLE KEEPS THE NUMBERS, DROPS EVERY COLOUR, AND SAYS Sleep. The owner's rule: while
+    # nobody is working nobody is spending, so a frozen figure cannot drift - and hiding it
+    # threw away information for a danger that is not there. `Sleep` is what says the line
+    # is not live.
+    _idle_line = chr(10).join(
+        _watch_line("07:26:12", _live, _v, _note, {"width": 200}, idle=True))
+    assert SLEEP_WORD in _idle_line, _idle_line
+    assert "55%" in _idle_line, "idle threw the percentage away: %r" % _idle_line
+    assert _STRIP_ANSI.sub("", _idle_line) == _idle_line, (
+        "the idle line is coloured: %r" % _idle_line)
+    # ...and the active line is the opposite on all three counts, or the test proves nothing.
+    _live_line = chr(10).join(
+        _watch_line("07:26:12", _live, _v, _note, {"width": 200}, idle=False))
+    assert SLEEP_WORD not in _live_line and "GO" in _live_line, _live_line
+    assert _STRIP_ANSI.sub("", _live_line) != _live_line, (
+        "the active line lost its colour: %r" % _live_line)
+
+    # ⛔ AND A WINDOW THAT ALREADY RESET STILL SHOWS DASHES, EVEN IDLE. This is the one place
+    # the owner's rule collides with an existing invariant, and the invariant wins: overnight
+    # idle crosses the five-hour reset by construction, and a percentage stored before a
+    # reset reads HIGH. Measured 2026-08-26: the display said 97% while the account page
+    # said 0%.
+    _past = dict(_live)
+    _past["five_hour"] = {"used_percentage": 97, "resets_at": int(_now) - 60}
+    _reset_line = chr(10).join(
+        _watch_line("07:26:12", _past, _v, _note, {"width": 200}, idle=True))
+    assert "97%" not in _reset_line, (
+        "a percentage from before the reset was shown: %r" % _reset_line)
+    assert SLEEP_WORD in _reset_line, _reset_line
+
+    # ⚠ MUTATION CHECK on the width guard: a line built WITHOUT the overhead subtraction must
+    # actually exceed the terminal. Without this the loop above could be passing because
+    # _line() happens to be short, not because anything subtracts.
+    # ⚠ The note here is the ORIGINAL 110-character one, from the owner's screenshot, because
+    # that is the input that actually filled a 150-column terminal. A short note leaves _line
+    # well under its budget and the control passes for the wrong reason.
+    _long = ("OAuth token expires in 10 min - open a Claude session to refresh it; "
+             "no session active for 7h-35m; not fetching")
+    _body = _line(_live, _long, {"width": 150})
+    _unfitted = "%s  %s  %s  " % ("07:26:12", _body, "GO")
+    assert _visible_len(_body) <= 150, _visible_len(_body)
+    assert _visible_len(_unfitted) > 150, (
+        "the unfitted line is only %d columns - this check no longer proves anything"
+        % _visible_len(_unfitted))
+    # ...and the same input, through the function under test, must FIT - on every row.
+    for _r in _watch_line("07:26:12", _live, _v, _long, {"width": 150}):
+        assert _visible_len(_r) <= 150, _r
+
+    # ⭐ TWO ROWS RATHER THAN DROPPING WHAT WILL NOT FIT. Narrow enough, and the context bar,
+    # the model and the note move to a second row instead of being thrown away.
+    _wide = {"ts": int(time.time() * 1000),
+             "five_hour": {"used_percentage": 55, "resets_at": int(time.time()) + 1600},
+             "seven_day": {"used_percentage": 32, "resets_at": int(time.time()) + 300000}}
+    _two = _watch_line("07:26:12", _wide, _v, _long, {"width": 100})
+    assert len(_two) == 2, "it dropped the note instead of using a second row: %r" % (_two,)
+    assert "5h" in _two[0] and "GO" in _two[0], _two
+    assert "OAuth" in _two[1], _two
+    # ...and a line that FITS must stay on one row, or every watcher grows a blank second one.
+    assert len(_watch_line("07:26:12", _wide, _v, None, {"width": 200})) == 1
+
+    # ⛔ THE MODEL-SCOPED WINDOW, against BOTH measured accounts. The rows below are the real
+    # `limits[]` entries captured 2026-08-27 from an account that may NOT use Fable and one
+    # that may, in Memory/tasks/20260827-153945-usage-api-fable-window/. They are inlined
+    # rather than read from that folder because Memory/ is not part of the published
+    # repository - a check that cannot run where the code runs is not a check.
+    #
+    # ⚠ WHAT SEPARATES THEM IS NOT AN ENTITLEMENT FLAG, because the response has none. The
+    # row exists on both, `is_active` is false on both - it stayed false at 19% used - and
+    # `nimbus_quill` read 0.0 while the scoped row read 19%, which argues against that
+    # codename being Fable's counterpart. Only `percent` and `resets_at` differ.
+    _cannot = {"limits": [
+        {"kind": "session", "percent": 9, "is_active": False},
+        {"kind": "weekly_all", "percent": 12, "is_active": True},
+        {"kind": "weekly_scoped", "percent": 0, "resets_at": None, "is_active": False,
+         "scope": {"model": {"id": None, "display_name": "Fable"}, "surface": None}}]}
+    _can = {"limits": [
+        {"kind": "session", "percent": 59, "is_active": True},
+        {"kind": "weekly_all", "percent": 21, "is_active": False},
+        {"kind": "weekly_scoped", "percent": 19, "is_active": False,
+         "resets_at": "2026-09-02T02:59:59.602732+00:00",
+         "scope": {"model": {"id": None, "display_name": "Fable"}, "surface": None}}]}
+    assert _scoped_window(_cannot) is None, _scoped_window(_cannot)
+    _got = _scoped_window(_can)
+    assert _got and _got["label"] == "Fable" and _got["used_percentage"] == 19.0, _got
+    assert isinstance(_got.get("resets_at"), int), _got
+
+    # ⭐ THE MODEL IS NOT HARD-CODED: the row names itself, so another scoped model works.
+    _other = {"limits": [{"kind": "weekly_scoped", "percent": 4, "is_active": False,
+                          "resets_at": None,
+                          "scope": {"model": {"display_name": "Mythos"}}}]}
+    assert (_scoped_window(_other) or {}).get("label") == "Mythos", _scoped_window(_other)
+
+    # ⛔ AND NOTHING ELSE IN limits[] MAY BE MISTAKEN FOR ONE. `session` and `weekly_all` are
+    # not scoped, and a scoped row with no model name is not usable.
+    assert _scoped_window({"limits": [{"kind": "session", "percent": 99}]}) is None
+    assert _scoped_window({"limits": [{"kind": "weekly_scoped", "percent": 9,
+                                       "scope": {}}]}) is None
+    assert _scoped_window({}) is None and _scoped_window(None) is None
+
+    # ⭐ It reaches the line, and ONLY when there is one. The owner asked for no extra text
+    # on an account that has none - not "cannot use Fable", nothing at all.
+    _with = {"ts": int(time.time() * 1000),
+             "five_hour": {"used_percentage": 55, "resets_at": int(time.time()) + 1600},
+             "scoped": _got}
+    _shown = _line(_with, None, {"width": 200})
+    assert "Fable" in _shown, _shown
+    _without = dict(_with)
+    del _without["scoped"]
+    _plain = _line(_without, None, {"width": 200})
+    assert "Fable" not in _plain and "annot" not in _plain, _plain
+
+    # ⛔ AND IT DEGRADES LIKE THE OTHER BARS, or it is the one bar that lies. Past its reset,
+    # dashes - not a percentage stored before the window turned over.
+    _old = dict(_with)
+    _old["scoped"] = dict(_got, resets_at=int(time.time()) - 60)
+    assert "19%" not in _line(_old, None, {"width": 200}), _line(_old, None, {"width": 200})
+
+    # ⛔ WHEN THE WINDOW RUNS OUT, NOT ONLY WHETHER. "Projected 175% by reset" says it will
+    # be exhausted and leaves the reader to work out whether there is room for another wave.
+    # ⚠ AND None MEANS UNKNOWABLE, NEVER SAFE - three ways to get there, each checked, because
+    # a missing warning and a warning that says "fine" look identical on a screen.
+    _bt = tempfile.mkdtemp(prefix="dg-burn-")
+    _blogs = os.path.join(_bt, "logs")
+    os.makedirs(_blogs)
+    _bcfg = {"history_dir": _blogs, "soft_pct_5h": 70, "hard_pct_5h": 85, "stale_min": 15,
+             "near_reset_min": 10, "soft_pct_7d": 95, "hard_pct_7d": 97, "debug": {"token_usage": True}}
+    _bnow = time.time()
+
+    def _plant(rows, resets):
+        for _f in glob.glob(os.path.join(_blogs, "*.jsonl")):
+            os.remove(_f)
+        with open(os.path.join(_blogs, HISTORY_PREFIX + "20200101-000000.jsonl"),
+                  "w", encoding="utf-8") as _f:
+            for _at, _pct in rows:
+                _f.write(json.dumps({"at": stamp(_at), "pct": _pct,
+                                     "resets_at": stamp(resets)}) + chr(10))
+
+    # 30 points in 30 minutes is 1%/min; from 55% there are 45 points left, so ~44-45 min.
+    _rows = [(_bnow - 1800, 25), (_bnow - 1, 55)]
+    _far = _bnow + 120 * 60
+    _plant(_rows, _far)
+    _b = burnout_min(_bt, _bcfg, 55, _far, _bnow)
+    assert _b is not None and 40 <= _b <= 50, _b
+    # ⭐ The projection and the burn-out must agree, because they share one sampling. A window
+    # projected past 100% MUST have a burn-out inside it, or the line contradicts itself.
+    _pj = _projection(_bt, _bcfg, 55, _far, _bnow)
+    assert _pj is not None and _pj >= 100 and _b < (_far - _bnow) / 60, (_pj, _b)
+
+    _v = verdict(_bt, _bcfg, data={"ts": int(_bnow * 1000),
+                                   "five_hour": {"used_percentage": 55,
+                                                 "resets_at": int(_far)}})
+    assert _v["burns_out_early"] is True, _v
+    assert "SPENT in ~" in _v["text"] and "BEFORE it resets" in _v["text"], _v["text"]
+
+    # ⛔ AND IT MUST STAY QUIET when the window resets first - the same rate, a nearer reset.
+    _near = _bnow + 20 * 60
+    _plant(_rows, _near)
+    _vn = verdict(_bt, _bcfg, data={"ts": int(_bnow * 1000),
+                                    "five_hour": {"used_percentage": 55,
+                                                  "resets_at": int(_near)}})
+    assert _vn["burns_out_early"] is False, _vn
+    assert "SPENT in ~" not in _vn["text"], _vn["text"]
+
+    # ⚠ THE THREE UNKNOWABLE CASES. Each returns None and none of them warns.
+    _plant([(_bnow - 1800, 55), (_bnow - 1, 55)], _far)          # flat: no rate
+    assert burnout_min(_bt, _bcfg, 55, _far, _bnow) is None
+    _plant([(_bnow - 1, 55)], _far)                              # one row: no span
+    assert burnout_min(_bt, _bcfg, 55, _far, _bnow) is None
+    _plant([(_bnow - 60, 25), (_bnow - 1, 55)], _far)            # under 5 min of span
+    assert burnout_min(_bt, _bcfg, 55, _far, _bnow) is None
+    for _f in glob.glob(os.path.join(_blogs, "*.jsonl")):        # no history at all
+        os.remove(_f)
+    assert burnout_min(_bt, _bcfg, 55, _far, _bnow) is None
+    # ...and a window already at 100% is not "unknowable", it is spent NOW.
+    _plant(_rows, _far)
+    assert burnout_min(_bt, _bcfg, 100, _far, _bnow) == 0
+    shutil.rmtree(_bt, ignore_errors=True)
+
+    # ⛔ THE IN-PLACE REWRITE, AND THE ONE THING THAT MUST NOT BE BACKWARDS. The cursor climbs
+    # by what the PREVIOUS draw left on screen. Sized by the CURRENT draw instead - which
+    # shipped once - the first render that needs a second row climbs into whatever was above
+    # the watcher and overwrites it, and every later 1-to-2 growth eats another line.
+    # ⚠ The bytes are asserted rather than the intent, because "moved up by one" and "moved
+    # up by one too many" produce the same shape and different screens.
+    _r, _n = _rewrite(1, ["a"], "<K>")
+    assert _r == "\ra<K>" and _n == 1, (_r, _n)
+    # ⭐ GROWING NEEDS NO CLIMB: row 1 lands on the row the cursor is on, and the newline
+    # allocates row 2. Any escape here is the defect.
+    _r, _n = _rewrite(1, ["a", "b"], "<K>")
+    assert "\033[" not in _r, "it climbed on the way from one row to two: %r" % _r
+    assert _r == "\ra<K>\n\rb<K>" and _n == 2, (_r, _n)
+    # ...and holding at two rows climbs exactly one.
+    _r, _n = _rewrite(2, ["a", "b"], "<K>")
+    assert _r == "\033[1A\ra<K>\n\rb<K>" and _n == 2, (_r, _n)
+    # ⚠ SHRINKING CLEARS THE ROW IT NO LONGER USES, rather than leaving a line nothing will
+    # overwrite. It stays two rows tall, so the next climb is still right.
+    _r, _n = _rewrite(2, ["a"], "<K>")
+    assert _r == "\033[1A\ra<K>\n\r<K>" and _n == 2, (_r, _n)
+
+    # ⭐ TWO ROWS ARE A SETTING, AND BOTH SURFACES OBEY IT. The statusline was capped at one
+    # row on a BELIEF, not a limit: the documentation says "each `echo` or `print` statement
+    # displays as a separate row", and the shipped binary splits the command's output on
+    # newlines and counts them. ⇒ Throwing the context bar and the note away to fit one row
+    # was this plugin's choice, and it is now the owner's.
+    _tr = {"ts": int(time.time() * 1000),
+           "five_hour": {"used_percentage": 55, "resets_at": int(time.time()) + 1600},
+           "seven_day": {"used_percentage": 32, "resets_at": int(time.time()) + 300000}}
+    # ⚠ A REALISTIC note, not an absurd one. The real ones are this shape - the age, the idle
+    # reason, the token warning - and a 150-character fixture would prove only that _fit()
+    # drops parts it cannot fit, which is not the behaviour under test.
+    _tnote = "12 min old; idle 7h-35m; OAuth token expires in 10m - open a session"
+    for _pay in (None, {"model": {"display_name": "Opus 5"},
+                        CONTEXT_KEY: {"used_percentage": 41}}):
+        _on = line_rows(_tr, _tnote, {"width": 100, "two_rows": True}, _pay)
+        _off = line_rows(_tr, _tnote, {"width": 100, "two_rows": False}, _pay)
+        assert len(_on) == 2, "two_rows:true did not use a second row: %r" % (_on,)
+        assert len(_off) == 1, "two_rows:false used %d rows: %r" % (len(_off), _off)
+        for _r in _on + _off:
+            assert _visible_len(_r) <= 100, (_visible_len(_r), _r)
+        # ⛔ THE SECOND ROW MUST CARRY WHAT THE ONE-ROW FORM THREW AWAY, or it costs a row of
+        # the terminal and buys nothing. ⚠ A note this long still gets CUT on the second row
+        # at width 100 - what matters is that its opening survives there and nowhere in the
+        # one-row form.
+        assert "OAuth token expires" in _on[1], _on
+        assert "OAuth token expires" not in _off[0], _off
+        # ...and the five-hour window is on the FIRST row either way - it is what the brake
+        # acts on, and a display that can hide it is worse than a narrower one.
+        assert "5h" in _on[0] and "5h" in _off[0], (_on, _off)
+
+    # ⚠ AND THE WATCHER READS THE SAME KEY. One question, one answer: they had different ones
+    # for a while and that is how two surfaces drift.
+    _v2 = {"verdict": "GO", "pct": 55}
+    assert len(_watch_line("07:26:12", _tr, _v2, _tnote,
+                           {"width": 100, "two_rows": True})) == 2
+    assert len(_watch_line("07:26:12", _tr, _v2, _tnote,
+                           {"width": 100, "two_rows": False})) == 1
+
+    # ⚠ A line that FITS stays on one row whatever the setting, or every display grows a
+    # blank second row it does not need.
+    assert len(line_rows(_tr, None, {"width": 200, "two_rows": True})) == 1
+
+    # ⛔ THE BRAKE WEIGHS BOTH WINDOWS. It used to read the five-hour percentage and nothing
+    # else: the seven-day figure produced a NOTE and never a level, so an account at 7d 99%
+    # beside 5h 0% was told GO and kept dispatching until the SERVER refused. Both numbers
+    # were true and the answer was wrong, which is the shape of every defect in this file.
+    _bnow2 = time.time()
+    _bc = {"soft_pct_5h": 70, "hard_pct_5h": 85, "soft_pct_7d": 95, "hard_pct_7d": 97,
+           "near_reset_min": 20, "stale_min": 15, "debug": {"token_usage": False}}
+    _bdir = tempfile.mkdtemp(prefix="dg-brake-")
+
+    def _verdict(p5, p7, r5=None, r7=None):
+        return verdict(_bdir, _bc, data={
+            "ts": int(_bnow2 * 1000),
+            "five_hour": {"used_percentage": p5,
+                          "resets_at": int(r5 if r5 else _bnow2 + 3 * 3600)},
+            "seven_day": {"used_percentage": p7,
+                          "resets_at": int(r7 if r7 else _bnow2 + 3 * 86400)}})
+
+    _v = _verdict(0, 99)
+    assert (_v["verdict"], _v["driver"]) == ("STOP", "7d"), _v
+    # ⭐ AND IT SAYS WHICH WINDOW, or the reader looks at 5h 0% and concludes the brake is
+    # broken - which is how a guard gets switched off.
+    assert "7d at 99%" in _v["text"] and "5h window is NOT the constraint" in _v["text"], _v
+    assert _verdict(0, 96)["verdict"] == "PACE", _verdict(0, 96)
+    assert _verdict(0, 90)["verdict"] == "GO", _verdict(0, 90)
+    # ...and the five-hour thresholds still do their own job, unchanged.
+    assert (_verdict(90, 10)["verdict"], _verdict(90, 10)["driver"]) == ("STOP", "5h")
+    assert _verdict(75, 10)["verdict"] == "PACE"
+    # ⚠ TIES GO TO THE FIVE-HOUR WINDOW, because it is the nearer and more actionable one.
+    assert _verdict(90, 99)["driver"] == "5h", _verdict(90, 99)
+
+    # ⛔ A SEVEN-DAY WINDOW THAT RESETS FIRST IS NOT A CONSTRAINT, and that judgement predates
+    # the four thresholds. Its percentage is about to become zero; braking on it would brake
+    # on a number on its way out.
+    _v = _verdict(0, 99, r7=_bnow2 + 1800)
+    assert _v["verdict"] == "GO", _v
+    assert "IGNORE, not a constraint" in _v["text"], _v
+
+    # ⛔ AND THE EARLY RETURN THAT THREW THE WEEK AWAY. A five-hour window that has already
+    # turned over used to return GO on the spot - so an account whose WEEK was spent was told
+    # GO the moment its five-hour window rolled over.
+    _v = _verdict(0, 99, r5=_bnow2 - 60)
+    assert (_v["verdict"], _v["driver"]) == ("STOP", "7d"), _v
+    # ...while the same reset with a quiet week is still the plain "treat usage as fresh".
+    _v = _verdict(0, 10, r5=_bnow2 - 60)
+    assert _v["verdict"] == "GO" and "already reset" in _v["text"], _v
+
+    # ⚠ NEAR-RESET SOFTENING IS PER WINDOW. A 5h STOP twelve minutes from its reset softens;
+    # a 7d STOP three days out does not, and one shared test would have softened both.
+    assert _verdict(90, 10, r5=_bnow2 + 12 * 60)["verdict"] == "PACE"
+    assert _verdict(0, 99)["verdict"] == "STOP"
+    assert _verdict(0, 99, r7=_bnow2 + 12 * 60)["verdict"] == "GO", "7d resets first"
+    shutil.rmtree(_bdir, ignore_errors=True)
 
     print("selftest OK")
     return 0

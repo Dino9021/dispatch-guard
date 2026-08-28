@@ -282,13 +282,13 @@ def main():
         # ⚠ A FIRST VERSION CALLED _settable() AND COMPARED THE DICTS HERE - a
         # re-implementation, not the shipped code. Measured: breaking the real comparison
         # left the whole suite green.
-        stale = {"soft_pct": _usage.DEFAULTS["soft_pct"] + 7,
+        stale = {"soft_pct_5h": _usage.DEFAULTS["soft_pct_5h"] + 7,
                  "debug": {"token_usage": False}}
         with open(inst3.CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(stale, f)
         out = _status_text(tmp)
         assert "NO LONGER MATCH THE DEFAULT" in out, out[:1500]
-        assert "soft_pct = %d" % stale["soft_pct"] in out, out[:1500]
+        assert "soft_pct_5h = %d" % stale["soft_pct_5h"] in out, out[:1500]
         assert "debug.token_usage = false" in out, out[:1500]
 
         # ⛔ AND EVERY RETIRED KEY, which the comparison above CANNOT see: they are gone from
@@ -304,31 +304,48 @@ def main():
             assert "IGNORED" in out, (dead, out[:1500])
         # ⛔ MUTATION CHECK: the assertion must fail on a config that carries no retired key.
         with open(inst3.CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump({"soft_pct": _usage.DEFAULTS["soft_pct"]}, f)
+            json.dump({"soft_pct_5h": _usage.DEFAULTS["soft_pct_5h"]}, f)
         assert "IGNORED" not in _status_text(tmp), "every config reports IGNORED"
 
         # ⚠ ...and a config that matches the defaults must report NOTHING, or it is noise.
         with open(inst3.CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump({"soft_pct": _usage.DEFAULTS["soft_pct"]}, f)
+            json.dump({"soft_pct_5h": _usage.DEFAULTS["soft_pct_5h"]}, f)
         out = _status_text(tmp)
         assert "NO LONGER MATCH" not in out, out[:1500]
         assert "all still equal to the current default" in out, out[:1500]
 
-        # ⛔ THE 'log files' LINE MUST REPORT THE EFFECTIVE SWITCHES, not the raw JSON. A
-        # refuting pass caught an earlier version calling both switches off on a machine whose
-        # history was ON: an untouched config carries no switch at all, and only usage.config()
-        # knows the defaults and the list alias. A status line that contradicts the running
-        # code sends a person hunting for a file that is being written.
-        with open(inst3.CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump({}, f)                       # empty: every switch at its default
-        out = _status_text(tmp)
-        assert "debug.token_usage came on" in out, out[:2000]
-        # ...and switching it off must be reported as off, or the line is just a constant.
-        with open(inst3.CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump({"debug": {"token_usage": False}}, f)
-        out = _status_text(tmp)
-        assert "came on" not in out, out[:2000]
-        assert "debug.token_usage" in out and "off" in out, out[:2000]
+        # ⛔ EVERY DEBUG SWITCH MUST BE NAMED, WITH ITS EFFECTIVE VALUE, ON EVERY RUN.
+        # Two separate defects live here, and the second hid for weeks behind the first.
+        #
+        #   1. The values must come from usage.config(), never off the raw JSON. An untouched
+        #      config carries no switch at all - both sit at their defaults, and one of those
+        #      defaults is ON - so reading the file calls it off and sends somebody hunting
+        #      for a file that is being written. Caught by a refuting pass.
+        #   2. ⛔ THE LINE ONLY PRINTED WHEN THE LOG FOLDER DID NOT EXIST, which is to say on
+        #      a machine that had never fetched. Everywhere else the switches were invisible -
+        #      and `debug.API_response_usage` was then undiscoverable on any existing install,
+        #      because seed_config() never overwrites a config.json and nothing else named the
+        #      key. That was an open pending item. ⇒ Both states are asserted below.
+        for logs_exist in (False, True):
+            logs = os.path.join(inst3.STATE_DIR, "logs")
+            if logs_exist:
+                os.makedirs(logs, exist_ok=True)
+            elif os.path.isdir(logs):
+                os.rmdir(logs)
+            with open(inst3.CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump({}, f)               # empty: every switch at its default
+            out = _status_text(tmp)
+            where = "with a logs folder" if logs_exist else "without one"
+            assert "debug switches" in out, "%s: the switches are not named%s%s" % (
+                where, chr(10), out[:2000])
+            assert "token_usage = ON" in out, "%s: %s" % (where, out[:2000])
+            assert "API_response_usage = off" in out, "%s: %s" % (where, out[:2000])
+            # ...and switching one off must READ as off, or the line is just a constant.
+            with open(inst3.CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump({"debug": {"token_usage": False}}, f)
+            out = _status_text(tmp)
+            assert "token_usage = ON" not in out, "%s: %s" % (where, out[:2000])
+            assert "token_usage = off" in out, "%s: %s" % (where, out[:2000])
 
     print("ok - --check neither wrote nor removed anything, and said so")
 

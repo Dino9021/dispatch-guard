@@ -613,11 +613,22 @@ claude plugin install dispatch-guard@dispatch-guard --config announce_unattended
 | 情況 | watcher 做什麼 |
 |---|---|
 | 有 session 在動 | 正常撈，最快每 `fetch_seconds` 一次 |
-| 超過 `idle_after_min`（預設 15 分）沒有任何 hook 事件 | ⭐ **停止撈**，但**繼續重畫**那一行 |
+| 超過 `idle_after_min`（預設 15 分）沒有任何 hook 事件 | ⭐ **停止撈**，而且從 0.33.0 起**停止重畫** |
 | 心跳回來 | ⭐ 立刻恢復，而且只花**一次**呼叫，不補打一串 |
 
-⚠ **它不會凍住畫面。** 那一行照樣更新，並且加一句說明現在沒有活動、手上的數字多舊了。
-安靜地把過期數字當成現在的數字，正是這個外掛到處都在拒絕的那種有自信的錯答案。
+⭐ **0.33.0 起：閒置時只畫一次，然後安靜。** 那一次會把判定字換成 **`SLEEP`**、
+**把顏色全部拿掉**，數字**照樣留著**。之後就不再輸出任何東西，直到有人開始工作。
+
+⛔ **為什麼「不重畫」比「繼續重畫」對。** 舊行為每一格都重畫，而那一行有時候比終端機寬 ——
+`\r` 只回到**最後一個視覺列**、`\033[K` 只清那一列，於是每一次重繪都把自己的第一列
+永遠留在畫面上。整晚下來就是一整面半截的行。⇒ **沒有東西在重繪的行，不可能留下殘骸。**
+
+⚠ **數字為什麼可以留著。** 凍住的數字在「抓取失敗」的時候危險 ——
+但**沒有人在工作就沒有人在花**，所以它不會漂移。風險只在恢復工作的那一刻，
+而那一刻 watcher 同時就恢復抓取。⭐ `SLEEP` 和「沒有顏色」就是在說這一行不是即時的。
+
+⭐ **資訊太多的時候改用兩列，而不是把東西丟掉。** 用量長條和判定字留在第一列，
+Context 長條、模型、說明移到第二列，**兩列各自裁到寬度**。
 
 ⭐ **訊號本來就在硬碟上：** gate 每次 hook 事件都會寫 `state/<session-id>.alive`。
 ⚠ 而 `prune_state()` 是**按數量**留最新的 20 個，不是按年齡刪，所以活著的那個 session
@@ -651,8 +662,8 @@ claude plugin install dispatch-guard@dispatch-guard --config announce_unattended
 變成長條圖跟數字互相矛盾。
 
 顏色只是提醒，不是政策：綠色 → `colour_warn_pct` 以上轉橘 → `colour_alarm_pct` 以上轉紅。
-⭐ **這兩個門檻跟「會拒絕東西」的門檻是對齊的：** 橘色 = `soft_pct` 開始 PACE，
-紅色 = `hard_pct` 開始 STOP。所以你瞄一眼的顏色，和 gate 做的決定，不會各說各話。
+⭐ **這兩個門檻跟「會拒絕東西」的門檻是對齊的：** 橘色 = `soft_pct_5h` 開始 PACE，
+紅色 = `hard_pct_5h` 開始 STOP。所以你瞄一眼的顏色，和 gate 做的決定，不會各說各話。
 ⚠ **但它們仍然是四個獨立的設定值。** 顏色是給人看的，門檻是拿來拒絕工具呼叫的；
 想要顏色比減速更早出現、或乾脆不要顏色的人，不該為此放棄煞車。
 
@@ -806,7 +817,7 @@ Nothing was dispatched. The agent has been told to save the current step and arm
 `~/.claude/dispatch-guard/state/<session-id>.warned` 裡面就是 `PACE` 或 `STOP` 那個字。
 下一次送出訊息時，如果算出來的等級跟檔案裡一樣，hook 就直接結束，什麼都不印。
 
-⇒ 所以一次長時間的執行會聽到**最多兩次**：跨過 `soft_pct` 一次，跨過 `hard_pct` 再一次。
+⇒ 所以一次長時間的執行會聽到**最多兩次**：跨過 `soft_pct_5h` 一次，跨過 `hard_pct_5h`t` 再一次。
 
 ⚠ **等級變了就會重新武裝**，包括往回走。用量視窗重置之後回到 GO，之後再爬到 PACE，
 你會再收到一次 —— 因為那是新的一輪，不是同一輪的重複。
@@ -821,14 +832,23 @@ Nothing was dispatched. The agent has been told to save the current step and arm
 
 | 門檻 | 預設 | 行為 | 長條顏色 |
 |---|---|---|---|
-| `soft_pct` | **70** | **PACE** —— 縮小範圍，派工**仍然允許** | 橘（`colour_warn_pct` 70） |
-| `hard_pct` | **85** | **STOP** —— 派工**被拒絕** | 紅（`colour_alarm_pct` 85） |
+| `soft_pct_5h` | **70** | **PACE** —— 縮小範圍，派工**仍然允許** | 橘（`colour_warn_pct` 70） |
+| `hard_pct_5h` | **85** | **STOP** —— 派工**被拒絕** | 紅（`colour_alarm_pct` 85） |
+| `soft_pct_7d` | **95** | **PACE**，由「七天」視窗觸發 | —— |
+| `hard_pct_7d` | **97** | **STOP**，由「七天」視窗觸發 | —— |
+
+⛔ **0.34.0 以前煞車完全不看 7d。** 它只讀五小時的百分比，所以 **7d 99% 配 5h 0% 會被判成 GO**，
+然後一直派工到「伺服器」拒絕為止 —— 兩個數字都是真的，答案是錯的。
+⇒ 現在**兩個視窗取比較嚴的那個**，而且判定會講出是哪一個在管。
+⚠ 7d 那一對故意設得高：那個視窗通常不是限制，在 70% 就 PACE 會白白拖慢一整週。
+⚠ 而且如果 7d 在「目前這個 5h 視窗結束之前」就會重置，它會被**完全忽略** ——
+它的百分比馬上就要歸零。
 
 ⇒ **85% 就是 STOP，派工會被拒絕。** ⚠ 這個值從 90 降下來，是因為 90 還在派工，結果撞到 session limit 被強制終止。想更早或更晚，改
 `~/.claude/dispatch-guard/config.json`：
 
 ```json
-{ "soft_pct": 60, "hard_pct": 85 }
+{ "soft_pct_5h": 60, "hard_pct_5h": 85 }
 ```
 
 ⚠ 只寫你要改的那幾個。⛔ 寫進去的值會被**釘住**，以後版本改了預設值也到不了你這裡 ——
@@ -1232,7 +1252,7 @@ dispatch_gate.py        ← 每次工具呼叫都是新行程，跟上面沒有�
   整份都是 `ADVISORY(no-session-stamp)` 表示它**什麼都沒在管**，
   而這跟「大家都乖乖守規矩」的紀錄長得一模一樣。
 - ⚠ **只用擴充套件，煞車照樣有數據。**
-  擴充套件確實從不呼叫狀態列，但 gate 會自己 fork 一個背景刷新，所以 `hard_pct` 有數字可以比。
+  擴充套件確實從不呼叫狀態列，但 gate 會自己 fork 一個背景刷新，所以 `hard_pct_5h`ct` 有數字可以比。
   ⚠ 第一次判定仍然可能是「還沒有數字」—— 那一刻 fetch 才剛送出去。⛔ 但如果**每個** session
   都這樣說，那就是 fetch 一直失敗，不是還沒回來：跑 `usage.py --fetch-now` 看原因。
 - ⛔ **只有「還可能是真的」的百分比才會顯示。**
@@ -1303,7 +1323,7 @@ dispatch_gate.py        ← 每次工具呼叫都是新行程，跟上面沒有�
   所以沒有用量資料的機器永遠不會自動取消。用 `usage.py --fetch-now` 確認，或把狀態列裝起來。
 - ⚠ **完整的鏈路從來沒有被一次跑完過。** 每一段都單獨量過，端到端也跑過個別 hook；
   但「真的撞到 STOP → 兩條都預約 → 視窗重開 → 鬧鐘被取消 → 工作繼續」
-  需要把額度真的燒到 `hard_pct`，所以沒有被刻意製造過一次。
+  需要把額度真的燒到 `hard_pct_5h`，所以沒有被刻意製造過一次。
 - **外掛啟用之前就開始的 session 只有建議效力。**
   這是刻意的：去管它等於為了一個它根本無從得知需要存在的計畫檔而拒絕派遣。
 
@@ -1952,12 +1972,26 @@ used to poll all night against an endpoint that allows about **five** calls per 
 | Situation | What the watcher does |
 |---|---|
 | a session is working | fetches normally, at most once per `fetch_seconds` |
-| no hook event for `idle_after_min` (default 15) | ⭐ **stops fetching**, and **keeps redrawing** |
+| no hook event for `idle_after_min` (default 15) | ⭐ **stops fetching**, and from 0.33.0 **stops redrawing** |
 | a heartbeat comes back | ⭐ resumes at once, for **one** call — never a catch-up burst |
 
-⚠ **The display never freezes.** The line keeps updating and says that there is no activity and
-how old the figure is. Silently showing a stale number as a current one is exactly the confident
-wrong answer this plugin refuses everywhere else.
+⭐ **From 0.33.0: idle draws once, then goes quiet.** That one render turns the verdict word
+into **`SLEEP`** and **drops every colour**, and **keeps the figures**. Nothing else is printed
+until somebody starts working.
+
+⛔ **Why "stop redrawing" beats "keep redrawing".** The old behaviour redrew every tick, and the
+line was sometimes wider than the terminal — `\r` returns to the start of the **last visual row**
+and `\033[K` clears only that row, so each render left its first row on screen for ever.
+Overnight that is a wall of half-lines. ⇒ **A row nothing is rewriting cannot be stranded.**
+
+⚠ **Why the figures may stay.** A frozen number is dangerous when a FETCH is failing — but
+**while nobody is working nobody is spending**, so it cannot drift. The exposure is the moment
+work resumes, and the watcher starts fetching at that same moment. ⭐ `SLEEP` and the absence of
+colour are what say the row is not live.
+
+⭐ **Two rows when one will not hold everything, instead of dropping information.** The usage
+bars and the verdict stay on the first row; the context bar, the model and the note move to the
+second, and **each row is fitted separately**.
 
 ⭐ **The signal was already on disk:** the gate writes `state/<session-id>.alive` on every hook
 event. ⚠ And `prune_state()` keeps those **by count, newest first**, rather than deleting by age,
@@ -1992,7 +2026,7 @@ proportion read a cell short, so the bar and the number disagree.
 
 Colours are attention, not policy: green, orange from `colour_warn_pct`, red from
 `colour_alarm_pct`. ⭐ **Aligned with the thresholds that decide:** orange is where
-`soft_pct` starts PACE, red is where `hard_pct` starts STOP, so the bar you glance at and the
+`soft_pct_5h` starts PACE, red is where `hard_pct_5h` starts STOP, so the bar you glance at and the
 decision the gate makes cannot disagree. ⚠ They remain four separate keys: colour is what a
 person reads, the thresholds are what refuses a tool call, and wanting the warning earlier than
 the slow-down must not cost you the brake.
@@ -2158,7 +2192,7 @@ merely decide against it.
 holds the word `PACE` or `STOP`. On your next message, if the level works out the same as what
 that file says, the hook returns and prints nothing.
 
-⇒ So a long run hears it **at most twice**: once crossing `soft_pct`, once crossing `hard_pct`.
+⇒ So a long run hears it **at most twice**: once crossing `soft_pct_5h`, once crossing `hard_pct_5h`.
 
 ⚠ **A change of level re-arms it**, including downwards. After the window resets you are back
 at GO, and climbing into PACE again says it again — that is a new round, not a repeat of the
@@ -2174,14 +2208,24 @@ that is `PreToolUse`, judged on every dispatch, and refused every time.
 
 | Threshold | Default | Behaviour | Bar colour |
 |---|---|---|---|
-| `soft_pct` | **70** | **PACE** — shrink scope, dispatch is **still allowed** | orange (`colour_warn_pct` 70) |
-| `hard_pct` | **85** | **STOP** — dispatch is **refused** | red (`colour_alarm_pct` 85) |
+| `soft_pct_5h` | **70** | **PACE** — shrink scope, dispatch is **still allowed** | orange (`colour_warn_pct` 70) |
+| `hard_pct_5h` | **85** | **STOP** — dispatch is **refused** | red (`colour_alarm_pct` 85) |
+| `soft_pct_7d` | **95** | **PACE**, driven by the seven-day window | — |
+| `hard_pct_7d` | **97** | **STOP**, driven by the seven-day window | — |
+
+⛔ **Before 0.34.0 the brake ignored the 7d window entirely.** It read the five-hour
+percentage and nothing else, so **7d 99% beside 5h 0% read as GO** and kept dispatching until
+the SERVER refused — both numbers true, the answer wrong. ⇒ The **stricter of the two windows
+wins** now, and the verdict says which one is driving it. ⚠ The 7d pair sits high on purpose:
+that window is usually not the constraint, and pacing on it at 70% would throttle a week of
+work for nothing. ⚠ And a 7d window that resets **before the current 5h window ends** is
+ignored entirely — its percentage is about to become zero.
 
 ⇒ **85% IS the STOP, and dispatch is refused there.** ⚠ It came down from 90 after a dispatch at 90 ran into a session limit and was killed. For different points, edit
 `~/.claude/dispatch-guard/config.json`:
 
 ```json
-{ "soft_pct": 60, "hard_pct": 85 }
+{ "soft_pct_5h": 60, "hard_pct_5h": 85 }
 ```
 
 ⚠ Write only the keys you want to change. ⛔ A value written there is PINNED, so a later
@@ -2637,7 +2681,7 @@ Read this before trusting it. Every item is a way it can look like it is working
   `<repo>/.claude/dispatch_gate.log` — a log full of `ADVISORY(no-session-stamp)` means it is
   enforcing **nothing**, and looks identical to a log in which nobody broke the rules.
 - ⚠ **The extension alone still leaves the brake with data.** It invokes no statusline, but
-  the gate forks its own refresh, so `hard_pct` has a number to compare against. ⚠ The first verdict of a fresh install can still
+  the gate forks its own refresh, so `hard_pct_5h` has a number to compare against. ⚠ The first verdict of a fresh install can still
   read "no numbers yet" — the fetch has only just gone out. ⛔ If EVERY session says it, the
   fetch is failing rather than pending: `usage.py --fetch-now` prints the reason.
 - ⛔ **A percentage is shown only while it can still be true.** No data, data older than
@@ -2719,7 +2763,7 @@ Read this before trusting it. Every item is a way it can look like it is working
 - ⚠ **The whole chain has never been run end to end in one go.** Every stage is measured
   individually and individual hooks were driven end to end, but "really hit STOP → arm both →
   window reopens → alarm cancelled → work continues" needs the allowance actually burned to
-  `hard_pct`, so it has never been staged deliberately.
+  `hard_pct_5h`, so it has never been staged deliberately.
 - **A session that began before the plugin was enabled is advisory only.** Deliberate: policing it
   would refuse dispatches for a plan file it had no way to know it needed.
 

@@ -120,6 +120,21 @@ DEFAULTS = {
     # ever meets as a refusal is a rule it tries to route around; Tools/Debug/test_guards.py
     # asserts the skill's table and this table have not drifted apart.
     "max_model_price": 5,
+    # ⛔ PAST THE SOFT THRESHOLD, A DISPATCH NEEDS A CURRENT HANDOFF ON DISK. Default ON,
+    # and the reasoning is the owner's: the handoff is written when the agent hits STOP,
+    # which assumes it still gets a turn - and a real cut-off, the server refusing, gives no
+    # turn at all. ⇒ The file has to exist BEFORE the interruption, and the window between
+    # soft and hard is exactly the room to write it in.
+    # ⚠ Set false and a dispatch is allowed without one; the resume then wakes with the
+    # RECONSTRUCTION prompt instead (see hooks/resume.py), which costs a chunk of the new
+    # window rediscovering what the last one was doing.
+    "require_handoff_past_soft": True,
+    # ⭐ ARM THE RESUME AUTOMATICALLY once there is something worth resuming. Default ON.
+    # The one thing the owner cannot recover from is a run that ends with nobody having
+    # armed anything - the handoff is on disk and nothing ever reads it. ⚠ Arming is
+    # REVERSIBLE (`resume.py --cancel`, and the run stands down by itself if a session is
+    # alive); missing the moment is not. Set false to arm by hand only.
+    "auto_arm_resume": True,
     # ⭐ HOW OLD THE PRICE TABLE MAY GET before the gate forks a background refresh, in hours.
     # ⚠ The refresh NEVER blocks anything: the session that notices the staleness keeps using
     # the file it has, and the new numbers land for the next one. So a longer interval costs
@@ -1248,6 +1263,169 @@ def plan_for(root, cfg, prompt_text):
     return newest(os.path.join(root, tr.replace("/", os.sep), "*", cfg["plan_glob"]))[0], None
 
 
+ARM_MARK = "auto-arm.spawn"
+HANDOFF = "HANDOFF.md"
+# ⛔ Below this it is a placeholder, not a work order. ⚠ ONE definition, here rather than in
+# resume.py, because resume.py imports this module and not the other way round - and two
+# copies of a threshold are two chances for the gate to refuse what the resume would accept.
+MIN_HANDOFF_CHARS = 200
+
+
+def handoff_state(root, cfg, folder, started):
+    """(state, path) for a task folder's handoff: "ok" / "missing" / "thin" / "stale".
+
+    ⭐ "STALE" IS A STATE OF ITS OWN, and it is the one a size check cannot see. A handoff
+    written three windows ago passes existence and length while describing work that no
+    longer exists - and a resume then acts on instructions that are wrong, which is worse
+    than the reconstruction prompt: that one at least KNOWS it is rebuilding. ⇒ Newer than
+    this session's start stamp, or it does not count.
+
+    ⚠ The remedies differ, which is why the states are named rather than collapsed into a
+    boolean: missing means write one, stale means refresh the one that is there.
+    """
+    if not folder:
+        return "unknown", None
+    path = os.path.join(root, cfg["task_root"].replace("/", os.sep), folder, HANDOFF)
+    try:
+        st = os.stat(path)
+    except OSError:
+        return "missing", path
+    if st.st_size < MIN_HANDOFF_CHARS:
+        return "thin", path
+    if started and st.st_mtime < started:
+        return "stale", path
+    return "ok", path
+
+
+def handoff_refusal(root, sdir, cfg, folder, started, log_to=None):
+    """Refuse this dispatch because the window is closing and nothing would survive it.
+
+    ⛔ WHY THIS IS A GATE AND NOT ADVICE, which is this plugin's whole argument applied to
+    its own worst gap. "Write a handoff before you run out" was already in the protocol, and
+    an instruction an agent only meets as advice is one it can weigh against the task in
+    front of it. The cost of it losing that weighing is a whole window: the run is cut off,
+    the resume wakes, and there is nothing on disk saying what was being done.
+
+    ⚠ IT ONLY BITES PAST THE SOFT THRESHOLD - when an interruption is genuinely near - and it
+    gates DISPATCH only. The agent's own work is never blocked, and writing the file is one
+    tool call it can always make.
+
+    ⭐ THE VERDICT DECIDES "PAST SOFT", never a raw percentage. That is the rule everywhere
+    else in this plugin: the verdict already folds in the seven-day window, the near-reset
+    softening and the burn projection, and a second comparison here would eventually
+    disagree with the one the brake acts on.
+    """
+    if not cfg.get("require_handoff_past_soft", DEFAULTS["require_handoff_past_soft"]):
+        return None
+    v = usage.verdict(sdir, usage.config(sdir))
+    if v["verdict"] not in ("PACE", "STOP"):
+        return None
+    state, path = handoff_state(root, cfg, folder, started)
+    if state in ("ok", "unknown"):
+        # ⚠ "unknown" means the prompt named no task folder, so there is nowhere to look.
+        # The plan check has already refused that case; refusing again here would report the
+        # wrong reason for it.
+        if state == "unknown" and log_to:
+            log(log_to, "HANDOFF-CHECK-SKIPPED (no task folder in the prompt)")
+        return None
+    why = {"missing": "there is no %s in that task folder" % HANDOFF,
+           "thin": "%s is under %d characters, which is a placeholder rather than a work "
+                   "order" % (HANDOFF, MIN_HANDOFF_CHARS),
+           "stale": "%s is older than this session, so it describes work that has already "
+                    "moved on" % HANDOFF}[state]
+    if log_to:
+        log(log_to, "DENY(handoff-%s) %s" % (state, path))
+    return ("dispatch gate: usage is at %s and %s. ⛔ Write it BEFORE dispatching again:\n"
+            "  %s\n"
+            "It must say what is done, what is in flight, what is next, and which files to "
+            "read - enough that a fresh session can act without your context. ⚠ THIS IS THE "
+            "POINT OF THE SOFT THRESHOLD: a hard cut-off gives you no turn to write it in, "
+            "and then the next window is spent rediscovering what this one was doing. "
+            "⭐ Set `require_handoff_past_soft: false` to dispatch without one - the resume "
+            "then wakes with a reconstruction prompt instead, which costs tokens."
+            % (v["verdict"], why, path))
+
+
+def maybe_auto_arm(root, sdir, cfg, folder, started):
+    """Arm a resume, once, when the window is closing and there IS something to resume.
+
+    ⭐ WHY AUTOMATIC. Arming was the agent's job and it is the one step whose omission
+    cannot be recovered from: everything else leaves a trace to pick up later, but a run
+    that ends with nothing armed simply never continues - the handoff sits on disk and
+    nothing ever reads it. ⚠ And arming is REVERSIBLE (`--cancel`, and do_run() stands down
+    on its own when a session is alive), while missing the moment is not.
+
+    ⛔ IT ARMS FOR THE FOLDER OF THIS DISPATCH, never "the newest task folder". The gate can
+    see several under task_root; arming for the wrong one plants a resume that continues
+    work nobody asked to continue.
+
+    ⛔ AND IT RE-ARMS WHEN THE TARGET MOVES. `resume.json` records the task and the reset it
+    was armed for. Same task and same reset - do nothing. A DIFFERENT reset means the window
+    that is blocking has changed, which really does happen: the brake can flip from the
+    five-hour window to the seven-day one, and a resume aimed at the old reset would wake to
+    find itself still blocked.
+
+    ⚠ NEVER RAISES, and never waits. This runs inside a PreToolUse hook: `schtasks` is fast
+    but it is still a subprocess, and nothing it can do may be allowed to take enforcement
+    down with it. Returns True when it started one.
+    """
+    if not cfg.get("auto_arm_resume", DEFAULTS["auto_arm_resume"]):
+        return False
+    if not folder:
+        return False
+    v = usage.verdict(sdir, usage.config(sdir))
+    if v["verdict"] not in ("PACE", "STOP"):
+        return False
+    if handoff_state(root, cfg, folder, started)[0] != "ok":
+        return False        # nothing worth waking up for; the refusal above says so
+    # ⭐ THE TARGET IS THE WINDOW THAT IS BLOCKING, which resume.py already works out - and
+    # asking it beats re-deriving it here, where the two could disagree about which reset a
+    # resume was armed for.
+    try:
+        sys.path.insert(0, HERE)
+        import resume as _resume
+        want, _which = _resume.reset_time(sdir, usage.config(sdir))
+    except Exception as exc:
+        log(root, "AUTO-ARM-FAILED %r" % (exc,))
+        return False
+    if not want:
+        return False
+    state = usage.read_json(os.path.join(sdir, "resume.json"), {}) or {}
+    if (state.get("task") == folder
+            and isinstance(state.get("armed_for_reset"), (int, float))
+            and abs(state["armed_for_reset"] - want) <= 1):
+        return False                      # already armed for exactly this
+    # ⚠ AND A SPAWN FLOOR, like every other fork in this file. Without it a run that cannot
+    # arm - no scheduler, no permission - would start a subprocess on every tool call for
+    # the rest of the session.
+    mark = os.path.join(sdir, ARM_MARK)
+    now = time.time()
+    try:
+        if now - os.path.getmtime(mark) < 300:
+            return False
+    except OSError:
+        pass
+    try:
+        os.makedirs(sdir, exist_ok=True)
+        with open(mark, "w") as f:
+            f.write(str(now))
+        kw = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
+              "stderr": subprocess.DEVNULL, "cwd": root}
+        if os.name == "nt":
+            kw["creationflags"] = (getattr(subprocess, "DETACHED_PROCESS", 0x8)
+                                   | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200))
+        else:
+            kw["start_new_session"] = True
+        subprocess.Popen([sys.executable, os.path.join(HERE, "resume.py"),
+                          "--arm", "--task", folder, "--dir", sdir], **kw)
+    except Exception as exc:
+        log(root, "AUTO-ARM-FAILED %r" % (exc,))
+        return False
+    log(root, "AUTO-ARM %s for %s" % (folder, time.strftime("%Y-%m-%d %H:%M",
+                                                            time.localtime(want))))
+    return True
+
+
 def approved_slots(root, cfg, cutoff, folder, log_to=None):
     """How many sub-tasks the owner approved running at once. 1 unless they said more.
 
@@ -1790,6 +1968,18 @@ def on_pre_agent(payload, root, sdir, cfg):
     if cfg["brake_on_usage"] or cfg["warn_on_usage"]:
         v = usage.verdict(sdir, usage.config(sdir))
         if v["verdict"] == "STOP" and cfg["brake_on_usage"]:
+            # ⛔ ARM HERE TOO, BECAUSE THIS BRANCH RETURNS. The brake refuses first, so the
+            # auto-arm further down is unreachable at STOP - which is the moment it matters
+            # most. Measured by line order: the usage refusal returns before the plan check
+            # ever resolves a task folder. ⇒ Resolve it here and arm, then refuse.
+            # ⚠ It is a no-op unless there is a handoff worth waking up for; the refusal text
+            # below already tells the agent to write one when there is not.
+            try:
+                maybe_auto_arm(root, sdir, cfg,
+                               plan_for(root, cfg, tool_input.get("prompt") or "")[1],
+                               started)
+            except Exception as exc:
+                log(root, "AUTO-ARM-FAILED %r" % (exc,))
             log(root, "DENY(usage-stop pct=%s) %s" % (round(v.get("pct") or 0), desc))
             deny(event, "dispatch gate: %s Dispatching a sub-task is the most expensive "
                         "thing you can do right now, so it is refused until the window "
@@ -1882,6 +2072,27 @@ def on_pre_agent(payload, root, sdir, cfg):
                     "prompts be handed to another account."
              % (cfg["protocol_doc"], cfg["task_root"], cfg["plan_glob"]))
         return
+
+    # ⛔ AFTER the plan check, because that is what resolves `folder`, and before the slot
+    # claim, because a refused dispatch must not consume one.
+    try:
+        h = handoff_refusal(root, sdir, cfg, folder, started, log_to=root)
+    except Exception as exc:
+        # ⚠ Fail OPEN and say so. A precondition that crashes must not become a gate nobody
+        # can pass; the log line is what stops "no refusals" reading as "all clear".
+        log(root, "HANDOFF-CHECK-FAILED %r" % (exc,))
+        h = None
+    if h:
+        deny(event, h)
+        return
+
+    # ⭐ AFTER the handoff check, so it only ever arms for a handoff that would be usable,
+    # and BEFORE the dispatch proceeds, so the arming happens even if this is the last
+    # dispatch the window allows. ⚠ Forked and never awaited - see maybe_auto_arm().
+    try:
+        maybe_auto_arm(root, sdir, cfg, folder, started)
+    except Exception as exc:
+        log(root, "AUTO-ARM-FAILED %r" % (exc,))
 
     slots = approved_slots(root, cfg, started, folder, log_to=root)
     if not claim_slot(root, sdir, cfg, sid, slots, payload.get("tool_use_id"),

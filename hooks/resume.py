@@ -51,8 +51,11 @@ import dispatch_gate  # noqa: E402  - for the ONE definition of where task folde
 import usage  # noqa: E402
 
 TASK_NAME = "ClaudeDispatchGuardResume"
-HANDOFF = "HANDOFF.md"
-MIN_HANDOFF_CHARS = 200          # below this it is a placeholder, not a work order
+# ⭐ ONE definition, in the module this one already imports. The gate refuses a dispatch when
+# the handoff is missing or thin, and this file refuses to ARM against the same bar - two
+# copies of that number would be two chances for the two halves to disagree.
+HANDOFF = dispatch_gate.HANDOFF
+MIN_HANDOFF_CHARS = dispatch_gate.MIN_HANDOFF_CHARS
 # All three are overridable in config.json. Retrying is bounded by TIME, not by a
 # count: "keep trying for two hours, every twenty minutes" is a thing a person can
 # reason about, whereas "three attempts" hides how long that actually covers.
@@ -185,11 +188,36 @@ def origin_session_note(sdir, state):
 
 
 def reset_time(sdir, cfg):
-    """When the current window turns over, as epoch seconds, or None."""
+    """(epoch, which) - when the window that is ACTUALLY BLOCKING turns over, or (None, None).
+
+    ⛔ IT USED TO READ `five_hour` AND NOTHING ELSE, and that became a trap the moment the
+    brake learned to STOP on the seven-day window: the agent would be told to wrap up, arm a
+    resume against the FIVE-hour reset, wake three minutes after it, still be at STOP because
+    the WEEK is what is spent, retry every retry_every_min for retry_window_min, and then
+    announce failure. Two hours of scheduled retries against a window that does not reset for
+    days.
+
+    ⭐ SO IT ASKS THE VERDICT WHICH WINDOW IS DRIVING. verdict() already decides that - it has
+    to, to name the right one in its own text - and one answer to one question is the whole
+    point of asking it rather than re-deriving it here.
+
+    ⚠ AND THE ANSWER IS NOT "whichever resets later". A 7d window that resets BEFORE the
+    current 5h window ends is not a constraint at all: its percentage is about to become
+    zero, verdict() ignores it, and waiting days for it would be waiting for nothing. The
+    question is which window is blocking, not which clock is longer.
+    """
     data = usage.read_json(cfg["token_usage_file"], {}) or {}
-    five = data.get("five_hour") or {}
-    r = five.get("resets_at")
-    return r if isinstance(r, (int, float)) else None
+    v = usage.verdict(sdir, usage.config(sdir), data=data)
+    key = "seven_day" if v.get("driver") == "7d" else "five_hour"
+    win = data.get(key) or {}
+    r = win.get("resets_at")
+    if isinstance(r, (int, float)):
+        return r, ("7d" if key == "seven_day" else "5h")
+    # ⚠ The driver's own reset is missing - fall back to the five-hour one rather than
+    # refusing to arm at all, and say which was used. A resume at the wrong reset retries and
+    # gives up; no resume at all just never happens.
+    r = (data.get("five_hour") or {}).get("resets_at")
+    return (r, "5h") if isinstance(r, (int, float)) else (None, None)
 
 
 def find_handoff(task, sdir):
@@ -389,16 +417,31 @@ def do_arm(argv, sdir, cfg):
 
     path, folder = find_handoff(task, sdir)
     problem = check_handoff(path)
-    if problem:
+    # ⛔ THE SAME SWITCH THE GATE READS. With `require_handoff_past_soft` on - the default -
+    # a dispatch past the soft threshold is already refused without a handoff, so arming
+    # without one would be arming for a session that could not have got here. With it OFF the
+    # owner has said they accept the cost, and refusing to arm would leave them with the
+    # worst of both: no handoff AND no resume.
+    require = dispatch_gate.gate_config(dispatch_gate.repo_root(os.getcwd()), sdir).get(
+        "require_handoff_past_soft", True)
+    if problem and require:
         print("⛔ Cannot arm a resume: %s" % problem)
         print("   Expected: %s" % (path or "<task folder>/" + HANDOFF))
         print()
         print("   Write it FIRST, and write it to stand alone - the run that reads it has")
         print("   none of this session's context. State what is done, what is not, what")
         print("   was tried and failed, and the exact next step.")
+        print()
+        print("   ⚠ Or set require_handoff_past_soft: false, and the resume will wake with a")
+        print("     RECONSTRUCTION prompt instead - it rebuilds the state from progress.md,")
+        print("     git and the task folder, which costs a chunk of the new window.")
         return 2
+    if problem:
+        print("⚠ Arming WITHOUT a handoff: %s" % problem)
+        print("  require_handoff_past_soft is false, so the resume will wake with the")
+        print("  reconstruction prompt and rebuild the state from what is on disk.")
 
-    for w in handoff_warnings(path):
+    for w in (handoff_warnings(path) if not problem else ()):
         print("⚠ handoff: %s" % w)
 
     at = arg(argv, "--at")
@@ -414,13 +457,19 @@ def do_arm(argv, sdir, cfg):
         if when_epoch <= time.time():
             when_epoch += 86400
     else:
-        r = reset_time(sdir, cfg)
+        r, which = reset_time(sdir, cfg)
         if not r:
             print("⛔ No reset time available, so there is nothing to schedule against.")
             print("   Either usage data is missing (run install.py --status) or pass --at.")
             return 2
         armed_reset = r
         when_epoch = r + rcfg(sdir)["resume_offset_min"] * 60   # past the reset, not on it
+        # ⛔ SAY WHICH WINDOW, because a seven-day reset is DAYS away and a person who
+        # expected a three-hour wait needs to see that before they walk away from it.
+        if which == "7d":
+            print("⚠ Scheduling against the SEVEN-DAY reset, not the five-hour one: that is")
+            print("  the window currently at STOP, and waking at the 5h reset would find it")
+            print("  still blocked and retry until it gave up.")
 
     when = time.localtime(when_epoch)
     dry = "--dry-run" in argv
@@ -541,12 +590,56 @@ def do_run(sdir, cfg):
                  "Say in your result that you had to fall back to it, and why the handoff "
                  "was not enough."
                  % (transcript, os.path.getsize(transcript) / 1048576.0))
-    prompt = ("The usage window has reset, so treat usage as fresh. Read %s and continue "
-              "that work, following its instructions exactly.%s Append a '## Result %s' "
-              "section to %s describing what you did and anything still open. "
-              "Do not re-verify usage limits before starting - the stored numbers read "
-              "stale-high until a statusline renders."
-              % (path, extra, time.strftime("%Y-%m-%d %H:%M"), path))
+    when = time.strftime("%Y-%m-%d %H:%M")
+    # ⚠ `folder` is not in scope here - do_run() reads a recorded state, not the arm-time
+    # locals - so the task folder comes from what was recorded, and the repository from
+    # where os.chdir() has just put us.
+    task_dir = state.get("task") or (os.path.dirname(path) if path else ".")
+    repo = dispatch_gate.repo_root(os.getcwd())
+    if check_handoff(path):
+        # ⛔ NO HANDOFF, BECAUSE THE OWNER SWITCHED THE PRECONDITION OFF. So the run has to
+        # rebuild the state itself, and what it is told to read - and NOT to read - is the
+        # whole cost of this path.
+        #
+        # ⚠ THE OBVIOUS PROMPT IS THE EXPENSIVE ONE. "Check the progress and carry on" names
+        # no path, so the cheapest thing to read is the session transcript, which is the most
+        # expensive source there is - and it invites redoing work that is already committed.
+        # ⇒ The sources are named in order of cost, the transcript is forbidden outright,
+        # redoing finished work is forbidden, and writing the handoff is the FIRST action
+        # rather than the last, so the next cut-off is not identical to this one.
+        prompt = (
+            "The usage window has reset, so treat usage as fresh. ⛔ There is NO handoff for "
+            "this task: the previous session was cut off before it could write one, so "
+            "nothing on disk states what it was doing.\n\n"
+            "Reconstruct it from the CHEAPEST source that answers the question, and stop as "
+            "soon as you can act:\n"
+            "  1. %s - the gate records every dispatch and its outcome there.\n"
+            "  2. `git -C %s log --oneline -15` and `git -C %s status --short` - what "
+            "actually landed.\n"
+            "  3. the task folder %s - its prompts and scratch files are what the sub-agents "
+            "actually saw.\n"
+            "⚠ Do NOT read the session transcript. It is the most expensive source there is "
+            "and the last resort.\n\n"
+            "⛔ Do NOT redo work that is already committed, or already recorded as done. "
+            "Re-running finished work is the waste this reconstruction exists to avoid. When "
+            "you cannot tell whether something finished, check the artefact it would have "
+            "produced - never redo it to find out.\n\n"
+            "⭐ WRITE %s AS YOUR FIRST ACTION, before continuing, and keep it current as you "
+            "go. That file is the only thing that survives the next cut-off, and this prompt "
+            "exists because it did not exist last time.\n\n"
+            "Then continue the work. Append a '## Result %s' section to that file describing "
+            "what you did and anything still open, and SAY IN IT that this run started from "
+            "reconstruction rather than from a handoff. Do not re-verify usage limits before "
+            "starting - the stored numbers read stale-high until a statusline renders."
+            % (os.path.join(task_dir, "progress.md"), repo, repo, task_dir,
+               path or os.path.join(task_dir, HANDOFF), when))
+    else:
+        prompt = ("The usage window has reset, so treat usage as fresh. Read %s and continue "
+                  "that work, following its instructions exactly.%s Append a '## Result %s' "
+                  "section to %s describing what you did and anything still open. "
+                  "Do not re-verify usage limits before starting - the stored numbers read "
+                  "stale-high until a statusline renders."
+                  % (path, extra, when, path))
     log_line("RUN starting for %s (attempt %d)" % (path, attempts))
     try:
         r = subprocess.run(["claude", "-p", prompt], capture_output=True, timeout=3 * 3600)
@@ -672,7 +765,7 @@ def stale_alarm_note(sdir, cfg, state):
     if time.time() >= armed:
         return ("reset     : %s - already passed, so a moved stored value is normal now"
                 % time.strftime("%H:%M", time.localtime(armed)))
-    current = reset_time(sdir, cfg)
+    current, _which = reset_time(sdir, cfg)
     if current is None:
         return ("reset     : armed for %s; CANNOT COMPARE - no usage data on disk. Run "
                 "`usage.py --fetch-now` if the answer matters."

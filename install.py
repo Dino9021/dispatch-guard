@@ -513,6 +513,9 @@ def status():
             "keep_history": "debug.token_usage",
             "token_usage_history": "debug.token_usage",
             "limits_file": "token_usage_file",
+            "soft_pct": "soft_pct_5h (and soft_pct_7d, which is new)",
+            "hard_pct": "hard_pct_5h (and hard_pct_7d, which is new)",
+            "seven_day_binding_pct": "soft_pct_7d",
             "model_ceiling": "max_model_price",
             "require_skills": "require_dispatch_protocol / require_unattended_work",
         }
@@ -632,24 +635,36 @@ def status():
                  "FOR EVER (history_keep_days is %r)" % (days,) if forever
                  else "%g days (history_keep_days)" % days))
     else:
-        on, off = [], []
-        try:
-            import sys as _s
-            _s.path.insert(0, os.path.join(HERE, "hooks"))
-            import usage as _uu                                       # noqa: E402
-            effective = _uu.config(STATE_DIR).get("debug") or {}
-        except Exception:
-            effective = {}
-        for name in sorted(effective):
-            (on if effective[name] else off).append("debug." + name)
-        if on:
-            print("                      not created yet - nothing has been written since")
-            print("                      %s came on" % " and ".join(on))
-        elif off:
-            print("                      not created yet - %s %s off"
-                  % (" and ".join(off), "is" if len(off) == 1 else "are"))
-        else:
-            print("                      not created yet")
+        print("                      not created yet")
+
+    # ⛔ THE SWITCHES ARE NAMED ALWAYS, NOT ONLY WHEN THE LOG FOLDER IS MISSING. This used to
+    # live inside the `else` above, so a machine that HAD a logs directory - which is every
+    # machine that has ever fetched once - never saw which switches exist. That was the whole
+    # of a pending item: `debug.API_response_usage` was undiscoverable on an existing install,
+    # because seed_config() never overwrites a config.json and nothing else named the key, so
+    # README.md was the only place it appeared. ⇒ A switch nobody can find is a switch nobody
+    # has, and this is the screen people are told to read when something looks wrong.
+    #
+    # ⛔ READ THROUGH usage.config(), NEVER OFF THE RAW JSON. An untouched config carries no
+    # switch at all - both sit at their defaults, and one of those defaults is ON. Reporting
+    # from the file would call it off and send somebody hunting for a file being written.
+    on, off = [], []
+    try:
+        import sys as _s
+        _s.path.insert(0, os.path.join(HERE, "hooks"))
+        import usage as _uu                                       # noqa: E402
+        effective = _uu.config(STATE_DIR).get("debug") or {}
+    except Exception:
+        effective = {}
+    for name in sorted(effective):
+        (on if effective[name] else off).append(name)
+    if on or off:
+        print("debug switches      : %s"
+              % ", ".join(["%s = ON" % n for n in on] + ["%s = off" % n for n in off]))
+        print("                      set them under \"debug\" in %s"
+              % os.path.join(STATE_DIR, "config.json"))
+        print("                      what each one writes, and what it costs a day:")
+        print("                      %s" % os.path.join(HERE, "config.example.json"))
 
     try:
         r = subprocess.run([sys.executable, os.path.join(HERE, "hooks", "usage.py"),
