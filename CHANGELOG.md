@@ -33,6 +33,23 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.38.1
+
+- ⛔ **煞車不讀燃燒速度，而且這件事現在被釘住了。** 擁有者的指示：
+  「GO / PACE / STOP 派工或剎車都不參考這個值，先只畫圖顯示最近的燃燒速度就好。」
+  ⚠ 舊的 pin 只守住「推估」，而 `burnout_min` 是**第二條進得去的路** —— 它在 `verdict()` 裡
+  算、被回傳、還會寫一句話進文字。多一個 `if` 就會讓它變成煞車。
+- ⭐ **這個檢查是用「強迫」做的，不是用「讀」的。** 兩個數字都被推到最壞
+  （「1 分鐘後燒完」、「推估 999%」），而百分比離 `soft_pct_5h` 還有二十三點。
+  判定必須維持 **GO**。⚠ 檢查也斷言強迫**有到達**那兩個數字，否則它會因為根本沒跑到那條路
+  而假通過。
+- ⭐ **警告照樣發出**，這正是設計本身：一句話，不是一個決定。
+- ⚠ **整個燃燒計量條的研究擱置**，寫進 `Memory/notes/SHELVED-burn-meter.md`：
+  量到了什麼、哪兩個先前給出去的數字**被推翻**、哪些想法**已經否決不要再提**、
+  還有為什麼「先收 log 再決定」是划算的（歷史存的是原始讀數，換估算法不會讓資料失效）。
+
+---
+
 ## 0.38.0
 
 - ⭐ **燃燒速度改從「視窗自己的開頭」算起。** 視窗開始的那一刻必定是 0%，
@@ -933,6 +950,25 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.38.1
+
+- ⛔ **The brake does not read the burn rate, and that is now pinned.** The owner's
+  instruction: *"GO / PACE / STOP 派工或剎車都不參考這個值, 先只畫圖顯示最近的燃燒速度就好."*
+  ⚠ The existing pin guarded the projection only, and `burnout_min` is a **second way in** — it
+  is computed inside `verdict()`, returned, and writes a sentence into the text. One `if` would
+  silently make it a brake.
+- ⭐ **The check FORCES rather than reads.** Both figures are driven to their worst - "spent in
+  one minute" and "projected 999%" - at a percentage twenty-three points under `soft_pct_5h`,
+  and the verdict must stay **GO**. ⚠ It also asserts the forcing REACHED both figures, or it
+  would pass by never running the path at all.
+- ⭐ **It still warns**, which is the whole design: a sentence, never a decision.
+- ⚠ **The burn-meter work is SHELVED**, written up in `Memory/notes/SHELVED-burn-meter.md`:
+  what was measured, which two figures given to the owner are **refuted**, which ideas are
+  **rejected and should not be re-proposed**, and why collecting logs first is the good trade
+  (history rows are raw readings, so changing the estimator invalidates none of them).
 
 ---
 

@@ -3067,6 +3067,30 @@ def selftest():
     # ⭐ ...but it is still REPORTED, or switching it off would have hidden the figure the
     # owner wants to watch.
     assert _pv["burnout_min"] is not None, _pv
+
+    # ⛔ AND NEITHER BURN FIGURE MAY REACH THE WORD - the owner's instruction, 2026-08-29:
+    # "GO / PACE / STOP 派工或剎車都不參考這個值". The pin above covers the projection only,
+    # and burnout_min is a second way in: it is computed in verdict(), it is returned, and it
+    # writes a sentence into the text. One `if` on `early` would silently make it a brake.
+    # ⚠ FORCED, NOT READ. Both figures are driven to their worst - "spent in one minute" and
+    # "projected 999%" - at a percentage twenty-three points under soft_pct_5h. Reading the
+    # code proves what it says; forcing proves what it does.
+    _fb, _fp = burnout_min, _projection
+    globals()["burnout_min"] = lambda *a, **k: 1
+    globals()["_projection"] = lambda *a, **k: 999
+    try:
+        _forced = verdict(_pdir, _pcfg, data={"ts": int(_pnow * 1000),
+                                              "five_hour": {"used_percentage": 47,
+                                                            "resets_at": int(_presets)}})
+    finally:
+        globals()["burnout_min"], globals()["_projection"] = _fb, _fp
+    # The forcing must REACH the figures, or the check passes by never running the path.
+    assert _forced["burnout_min"] == 1 and _forced["projected_pct"] == 999, _forced
+    assert _forced["verdict"] == "GO" and _forced["exit"] == 0, (
+        "a burn figure moved the verdict - the brake must not read it. See the owner's "
+        "instruction in Memory/notes/SHELVED-burn-meter.md: %r" % (_forced,))
+    # ⭐ ...and it still WARNS, which is the whole design: a sentence, never a decision.
+    assert "SPENT in ~1 min" in _forced["text"], _forced["text"]
     shutil.rmtree(_pdir, ignore_errors=True)
 
     print("selftest OK")
