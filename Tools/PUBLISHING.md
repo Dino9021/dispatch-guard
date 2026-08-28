@@ -3,8 +3,8 @@
 **"更新 public repo" means exactly this:**
 
 ```bash
-python Tools/publish-public.py            # show the plan, change nothing
-python Tools/publish-public.py --push     # sync, commit, push
+python Tools/publish-public.py            # show the plan, then type `confirm` to publish
+python Tools/publish-public.py --push     # publish without asking: sync, commit, push
 ```
 
 Nothing else. No copying by hand, no working out what changed since the last version.

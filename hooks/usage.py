@@ -503,6 +503,26 @@ def token_note():
     return None
 
 
+def _snap_minute(epoch):
+    """A reset instant, snapped to the NEAREST whole minute.
+
+    ⛔ MEASURED IN REAL DATA, on two machines. The API stamps microseconds and they differ on
+    every response for the SAME window - and it does not even keep the same second: one
+    machine's history holds `19:10:00`, `19:10:00`, `19:09:59`, `19:10:00` for ONE window.
+    ⇒ Anything comparing reset instants for equality flaps, and every displayed clock is a
+    second out half the time.
+
+    ⚠ NEAREST, NOT ALWAYS UP. `19:09:59.7` and `19:10:00.2` are the same window and both must
+    land on `19:10:00`; rounding up would push the second to 19:11 - a whole minute wrong, in
+    the direction that makes the window look longer than it is.
+
+    ⚠ It assumes resets fall on a whole minute, which is what both machines show. A window
+    that genuinely reset at 19:10:30 would be reported half a minute early - the safe
+    direction, because it under-states the time left.
+    """
+    return int(round(float(epoch) / 60.0)) * 60
+
+
 def _iso_epoch(value):
     """ISO-8601 with an offset -> epoch seconds. Numbers pass through unstamp().
 
@@ -577,7 +597,7 @@ def _scoped_window(data):
             continue                     # present but not running - see the docstring
         out = {"label": name.strip(), "used_percentage": float(pct)}
         if resets:
-            out["resets_at"] = int(round(resets))
+            out["resets_at"] = _snap_minute(resets)
         return out
     return None
 
@@ -643,11 +663,10 @@ def _api_window(win, whole=None):
         # _write_record()'s "did a number actually move?" check and append a history row
         # on every single fetch. The reset instant is a wall-clock minute; sub-second
         # precision on it is noise that carries a bug.
-        # ⚠ ROUNDED, not truncated. Observed live: the same window came back as
-        # 11:00:00.203505Z once and 10:59:59.9xxZ later, and int() floors those to
-        # 1787742000 and 1787741999 - so the reset appeared to move by a second and the
-        # "did a number move?" check flapped. round() lands both on the same whole second.
-        out["resets_at"] = int(round(resets))
+        # ⚠ SNAPPED TO THE WHOLE MINUTE, not merely rounded to the second. Rounding to the
+        # second was the first fix and it was not enough: real history from another machine
+        # holds 19:10:00 and 19:09:59 for ONE window, so the flap survived. See _snap_minute.
+        out["resets_at"] = _snap_minute(resets)
     return out
 
 
@@ -953,7 +972,7 @@ def collect(sdir, cfg):
     _note_render(sdir, payload, record.get("five_hour") or {})
     # ⭐ ONE print PER ROW. Claude Code renders each line of this command's output as its own
     # row, so a second row needs nothing but a second print.
-    for _row in line_rows(record, note, cfg, payload):
+    for _row in line_rows(record, note, cfg, payload, burn=burn_triple(sdir, cfg, record)):
         print(_row)
     return 0
 
@@ -1381,7 +1400,7 @@ def _rewrite(prev_rows, lines, erase="\033[K"):
     return up + body, rows
 
 
-def _watch_line(stamp, data, v, note, cfg, idle=False):
+def _watch_line(stamp, data, v, note, cfg, idle=False, burn=None):
     """The row(s) `--watch` prints, fitted to the terminal ONCE. A list; pure, no I/O.
 
     ⛔ THE BUG THIS FUNCTION EXISTS FOR. `_line()` fits ITSELF to the terminal width - and
@@ -1417,7 +1436,8 @@ def _watch_line(stamp, data, v, note, cfg, idle=False):
     von, voff = _colour(v.get("pct") if isinstance(v.get("pct"), (int, float)) else 0, lcfg)
     head = "%s  " % stamp
     tail = "  %s%s%s  " % (von, word, voff)
-    windows, extras = _line_parts(data, note, lcfg, None, stale=False if idle else None)
+    windows, extras = _line_parts(data, note, lcfg, None,
+                                  stale=False if idle else None, burn=burn)
 
     return _rows(windows, extras, terminal_width(cfg), head, tail,
                  cfg.get("two_rows", True))
@@ -1566,6 +1586,46 @@ def _cut(text, width):
     return plain + (ANSI["reset"] if _STRIP_ANSI.search(text) else "")
 
 
+def _burn_part(burn, remain, rate, cfg, stale=False):
+    """`Burn ▓▓▓▓░░░░░░ 1.20%/m · 44m left` - how long the budget lasts, and how fast.
+
+    ⭐ IT ANSWERS ONE FORWARD-LOOKING QUESTION: can I keep spending? The bar is the budget's
+    life measured against the TIME LEFT IN THE WINDOW, so a full bar means "this window
+    resets before you run dry" and half a bar means "you get halfway". ⚠ It is a RATIO, not
+    a stock - unlike a health bar it goes back UP when the burn slows, because the thing it
+    measures is whether the two clocks cross, not how much is left in a tank.
+    ⛔ Deliberately NOT the historical rate profile, which was the first design. A sparkline
+    of past samples answers "how fast was I going", and the question is "how long have I
+    got" - and worse, history rows are written only when a number MOVES, so a quiet hour
+    does not draw a low bar, it draws nothing at all. The axis looked like time and was not.
+
+    ⛔ UNKNOWABLE IS NEVER DRAWN AS ZERO OR AS EMPTY. No history, one sample, under five
+    minutes of span, a flat or falling rate - all of them mean the rate cannot be computed,
+    and an empty bar in a column where empty means DANGER would read as the opposite. It
+    gets its own glyph and its own words.
+
+    ⚠ COLOUR IS INVERTED HERE and does not use _colour(). Everywhere else a HIGH percentage
+    is bad; here a high ratio is good, so the same thresholds would paint safety red.
+    """
+    if not cfg.get("colour", True):
+        on = off = ""
+    else:
+        on = off = None                        # decided below, once the state is known
+    if stale or burn is None or not remain:
+        # ⚠ `--` matches every other segment's "no usable number", and the dashes are a
+        # different glyph from an empty bar on purpose.
+        return "Burn %s %s" % ("─" * BAR_WIDTH, "--")
+    ratio = burn / float(remain)
+    filled = min(BAR_WIDTH, int(round(min(ratio, 1.0) * BAR_WIDTH)))
+    bar = BAR_FULL * filled + BAR_EMPTY * (BAR_WIDTH - filled)
+    if on is None:
+        key = "ok" if ratio >= 1 else ("alarm" if ratio < 0.5 else "warn")
+        on, off = ANSI[key], ANSI["reset"]
+    tail = "outlasts reset" if burn >= remain else "%s left" % duration(burn)
+    rate_s = "%.2f%%/m " % rate if rate else ""
+    return "Burn %s%s%s %s· %s" % (on, bar, off, rate_s, tail)
+
+
 def _fit(parts, width, keep=1):
     """Join `parts` with two spaces, dropping from the RIGHT until it fits `width`.
 
@@ -1581,7 +1641,7 @@ def _fit(parts, width, keep=1):
     return "  ".join(parts)
 
 
-def _line_parts(record, stale_note=None, cfg=None, payload=None, stale=None):
+def _line_parts(record, stale_note=None, cfg=None, payload=None, stale=None, burn=None):
     """(windows, extras) - every segment of the line, in falling order of worth.
 
     ⭐ SPLIT OUT SO A CALLER CAN PUT THEM ON TWO ROWS. `_line()` joins them into one and
@@ -1609,6 +1669,11 @@ def _line_parts(record, stale_note=None, cfg=None, payload=None, stale=None):
     sc = rec.get("scoped")
     if isinstance(sc, dict) and isinstance(sc.get("label"), str):
         parts.append(_window(sc["label"], sc, now, cfg, 7 * 86400, stale))
+    # ⭐ ON THE FIRST ROW, after the windows: it is a decision input like they are, not
+    # context like the model name. ⚠ Last of the four, so a narrow terminal drops it before
+    # any usage bar - the five-hour window is what the brake acts on.
+    if burn is not None and cfg.get("show_burn", True):
+        parts.append(_burn_part(burn[0], burn[1], burn[2], cfg, stale))
     extras = []
     if payload and cfg.get("show_context", True):
         # ⛔ ALWAYS DRAWN, from the first moment of a session. It used to appear only once
@@ -1644,7 +1709,7 @@ def _line_parts(record, stale_note=None, cfg=None, payload=None, stale=None):
     return parts, extras
 
 
-def line_rows(record, stale_note=None, cfg=None, payload=None, stale=None):
+def line_rows(record, stale_note=None, cfg=None, payload=None, stale=None, burn=None):
     """The statusline's row(s). ⭐ Claude Code prints one row per line of output.
 
     ⛔ MEASURED, not assumed, because this used to be capped at one row on a belief. The
@@ -1656,13 +1721,13 @@ def line_rows(record, stale_note=None, cfg=None, payload=None, stale=None):
     ⚠ `two_rows: false` returns to one packed row. A second row costs a row of the terminal
     above the input box, which on a narrow one is a row of conversation.
     """
-    windows, extras = _line_parts(record, stale_note, cfg, payload, stale)
+    windows, extras = _line_parts(record, stale_note, cfg, payload, stale, burn)
     cfg = cfg or {}
     return _rows(windows, extras, terminal_width(cfg),
                  two_rows=cfg.get("two_rows", True))
 
 
-def _line(record, stale_note=None, cfg=None, payload=None, stale=None):
+def _line(record, stale_note=None, cfg=None, payload=None, stale=None, burn=None):
     """One rendered line, trimmed from the right until it fits.
 
     ⛔ WRAPPING IS WHY THIS EXISTS. A status line that spills onto a second row does not
@@ -1676,7 +1741,7 @@ def _line(record, stale_note=None, cfg=None, payload=None, stale=None):
     it: nobody is spending, so the number cannot drift. ⛔ Left coupled, the idle line threw
     its percentages away and printed `--`, which is how the owner found it.
     """
-    windows, extras = _line_parts(record, stale_note, cfg, payload, stale)
+    windows, extras = _line_parts(record, stale_note, cfg, payload, stale, burn)
     return _fit(windows + extras, terminal_width(cfg))
 
 
@@ -1744,8 +1809,33 @@ def verdict(sdir, cfg, now=None, data=None):
         burn = burnout_min(sdir, cfg, pct, resets, now)
         early = burn is not None and burn < remain_min
         five_level = _window_level(pct, cfg["soft_pct_5h"], cfg["hard_pct_5h"])
-        if five_level is None and proj is not None and proj >= 100:
-            five_level = "PACE"
+        # ⛔ THE PROJECTION IS DISPLAY-ONLY FOR NOW. Switched off deliberately, kept here so
+        # turning it back on is uncommenting one line rather than reconstructing an argument.
+        #
+        # ⚠ WHY, MEASURED on a second machine's real history (12 rows, 2026-08-28): the
+        # verdict flipped GO→PACE→GO→PACE→GO in twelve minutes while the PERCENTAGE climbed
+        # smoothly from 40% to 52% - never within twenty points of soft_pct_5h. The boundary
+        # is `(100 - pct) / minutes_left`, so at 47% with 114 minutes left a swing of ONE
+        # HUNDREDTH of a percent per minute crosses it. Under bursty dispatch the rate swings
+        # far more than that between two samples.
+        #
+        # ⛔ AND SINCE 0.35.0 A PACE COSTS SOMETHING: it makes a current HANDOFF.md a
+        # precondition of dispatching. So a PACE that flickers for one sample blocks a
+        # dispatch that should have gone through, and the plugin's own rule - act on the
+        # WORD, never on raw percentages - is undermined by a word that is itself twitching.
+        #
+        # ⇒ WHAT TO ADD BEFORE RE-ENABLING, not just this line back:
+        #    1. HYSTERESIS. Enter PACE at proj >= 100, leave it only below 90. A single
+        #       threshold on a noisy input can only chatter.
+        #    2. A MINIMUM HISTORY. The rate is computed from whatever rows exist in this
+        #       window, and logging does not start when the window does - on that machine the
+        #       window opened at 14:10 and the first row is 16:49 at 35% already used. The
+        #       unlogged head can only ever be an average, and ignoring it made the logged
+        #       (busier) stretch stand for the whole window: 0.48 %/min against a
+        #       whole-window average of 0.22.
+        #
+        # if five_level is None and proj is not None and proj >= 100:
+        #     five_level = "PACE"
         five_level = _soften_near_reset(five_level, remain_min, cfg)
     burn_note = ("" if not early else
                  " ⛔ At the current rate the 5h window is SPENT in ~%d min - %d min BEFORE "
@@ -1790,9 +1880,10 @@ def verdict(sdir, cfg, now=None, data=None):
                 "start new heavy work or another dispatch wave."
                 % (round(pct7), duration(remain7), round(pct)))
     elif level == "PACE":
-        why = ("projected %d%% by reset" % proj) if (proj is not None and proj >= 100
-                                                     and pct < cfg["soft_pct_5h"]) else \
-              ("5h at %d%%" % round(pct))
+        # ⚠ `proj` can no longer be the REASON for a PACE - see the block above - so the
+        # wording is the percentage's. The projection is still reported, as a figure to read
+        # rather than a verdict to obey.
+        why = "5h at %d%%" % round(pct)
         text = ("PACE - %s, %d min left (resets %s). Finish what is in flight; do not start "
                 "new heavy work or another dispatch wave." % (why, remain_min, clock))
     elif five_over:
@@ -1875,8 +1966,28 @@ def _seven_day_note(seven, five_resets, now, cfg):
     return "7d %d%% - not near cap, ignore" % round(pct)
 
 
-def _burn_rate(sdir, cfg, resets, now):
-    """Percent per SECOND, from this window's history, or None if unknowable.
+def burn_triple(sdir, cfg, record, now=None):
+    """(minutes to 100%, minutes to reset, percent per minute), or None when unknowable.
+
+    ⭐ ONE call site for the display, so the bar and the verdict cannot disagree - they read
+    the same history through the same functions.
+    ⚠ MEASURED 2.47 ms on real history, against a statusline that renders once per
+    refresh_seconds (60 s by default). It reads at most the last two history files, which
+    history_keep_days bounds; a `--watch` at `--every 2` pays it every two seconds and that
+    is still nothing next to the render itself.
+    """
+    now = time.time() if now is None else now
+    five = (record or {}).get("five_hour") or {}
+    pct, resets = five.get("used_percentage"), five.get("resets_at")
+    if not isinstance(pct, (int, float)) or not resets or now >= resets:
+        return None
+    burn = burnout_min(sdir, cfg, pct, resets, now)
+    rate = _burn_rate(sdir, cfg, resets, now)
+    return burn, int((resets - now) / 60), (rate * 60 if rate else 0)
+
+
+def _burn_rate(sdir, cfg, resets, now, window_secs=5 * 3600):
+    """Percent per SECOND, across this window so far, or None if unknowable.
 
     ⭐ Split out so the projection and the burn-out time are computed from ONE sampling of
     one history. Two samplings would disagree at the edges and put a contradiction on one
@@ -1925,6 +2036,29 @@ def _burn_rate(sdir, cfg, resets, now):
             continue
         norm.append({"ts": at, "pct": r["pct"]})
     rows = norm
+    # ⭐ THE WINDOW'S OWN START IS A DATA POINT, AND IT IS FREE. A window opens at zero by
+    # definition, so `(resets - window_secs, 0)` is a reading nobody had to record.
+    #
+    # ⛔ WITHOUT IT THE BUSY TAIL STOOD FOR THE WHOLE WINDOW. Logging does not begin when the
+    # window does - a reinstall, a first run, a machine that was off. MEASURED on a second
+    # machine, 2026-08-28: the window opened at 14:10 and the first row is 16:49 with 35%
+    # ALREADY SPENT. Reading only the logged rows gave 0.48 %/min for a window whose true
+    # average was 0.22, because those rows happened to cover a busy stretch. ⇒ Anchoring
+    # folds the unlogged head back in at its average, which is the only thing knowable about
+    # a stretch nobody recorded.
+    #
+    # ⚠ IT IS A NO-OP WHEN LOGGING COVERED THE WINDOW. The first real row is then already
+    # near the open with a percentage near zero, so the anchor sits on top of it.
+    #
+    # ⛔ AND THE DIRECTION OF ERROR CHANGES, WHICH IS THE PART TO KNOW. Before, a late start
+    # OVER-stated the rate - the safe direction. Anchored, a window that sat idle for hours
+    # and then burst UNDER-states it, because the idle hours are averaged in. That is the
+    # dangerous direction, and it is accepted here for one reason: this figure no longer
+    # drives GO/PACE/STOP. It is a gauge to read. ⇒ If the projection is ever re-enabled as a
+    # verdict input, this anchor has to be revisited with it.
+    opened = resets - window_secs
+    if not rows or rows[0]["ts"] > opened:
+        rows = [{"ts": opened, "pct": 0.0}] + rows
     if len(rows) < 2:
         return None
     first, last = rows[0], rows[-1]
@@ -1961,9 +2095,10 @@ def burnout_min(sdir, cfg, pct, resets, now):
     "runs out after the reset" - a contradiction on one screen, which is worse than either
     number alone.
 
-    ⚠ None means "cannot be known", never "safe". No history (debug.token_usage off), fewer
-    than two rows in this window, under five minutes of span, or a flat-or-falling rate all
-    return None, and every caller must print something that says so rather than nothing.
+    ⚠ None means "cannot be known", never "safe". No history (debug.token_usage off), under
+    five minutes since the window OPENED, or a flat-or-falling rate all return None, and
+    every caller must print something that says so rather than nothing. ⭐ A single logged row
+    is enough since 0.38.0, because the window's own start is the second point.
     """
     rate = _burn_rate(sdir, cfg, resets, now)
     if rate is None or not isinstance(pct, (int, float)):
@@ -2101,21 +2236,24 @@ def watch(sdir, cfg, argv):
             if data.get("ts"):
                 age = (time.time() * 1000 - data["ts"]) / 60000.0
             v = verdict(sdir, cfg, data=data)           # same record, passed by value
+            idle = bool(idle_note)
+            # ⛔ WHILE IDLE, THE ONLY NOTE WORTH THE COLUMNS IS ONE THAT NEEDS ACTING ON.
+            # `2 min old` and `idle 15m` both restate what SLEEP already says - the line
+            # stopped moving because nobody is working - and a note that repeats the word
+            # beside it is a note people stop reading. ⇒ Only token_note() survives: an
+            # expiring OAuth token is the one thing that breaks while you are away, and being
+            # away is exactly when nobody is watching for it.
+            # ⚠ `reason` cannot appear while idle either: idle means no fetch was attempted,
+            # so there is no failure to report.
             note = None
-            # ⭐ WHILE IDLE THE AGE IS NOT A WARNING, it is the whole point of the line: it
-            # says how old the figure the reader is looking at is. So it is shown at any
-            # age, not only past stale_min, and `Sleep` beside it says why it stopped
-            # moving. ⛔ Outside idle the old rule stands - an age only appears once the
-            # number is old enough that showing it could mislead.
-            if age is not None and (idle_note or age > cfg["stale_min"]):
-                note = "%.0f min old" % age
-            if reason and (note or age is None):
-                note = "%s; %s" % (note, reason) if note else reason
+            if not idle:
+                if age is not None and age > cfg["stale_min"]:
+                    note = "%.0f min old" % age
+                if reason and (note or age is None):
+                    note = "%s; %s" % (note, reason) if note else reason
             tnote = token_note()          # early warning; see collect()
             if tnote:
                 note = "%s; %s" % (note, tnote) if note else tnote
-            if idle_note:
-                note = "%s; %s" % (note, idle_note) if note else idle_note
             # ⭐ ONE FUNCTION OWNS THE WHOLE LINE, INCLUDING ITS WIDTH. This used to assemble
             # the stamp, the body and the verdict word here - and _line() fitted only the
             # BODY, so the sixteen columns added around it overflowed the terminal and the
@@ -2124,7 +2262,6 @@ def watch(sdir, cfg, argv):
             # terminal parks its cursor on the last character - which renders as a box over
             # the "O" of GO. Those two spaces put it somewhere harmless; ERASE_TO_EOL still
             # clears whatever a longer previous line left behind.
-            idle = bool(idle_note)
             # ⛔ WHILE IDLE, DRAW ONCE AND THEN STOP - the owner's instruction, and it removes
             # the reported defect at its source instead of mitigating it. A line nothing is
             # rewriting cannot strand a row whatever its width, and an idle machine stops
@@ -2138,7 +2275,8 @@ def watch(sdir, cfg, argv):
                 time.sleep(every)
                 continue
             drawn_idle = idle
-            lines = _watch_line(time.strftime("%H:%M:%S"), data, v, note, cfg, idle=idle)
+            lines = _watch_line(time.strftime("%H:%M:%S"), data, v, note, cfg, idle=idle,
+                                burn=burn_triple(sdir, cfg, data))
             # ⛔ REWRITING MORE THAN ONE ROW NEEDS THE CURSOR MOVED BACK UP BY WHAT THE LAST
             # DRAW LEFT THERE. See _rewrite(): sizing that climb by the CURRENT draw walks
             # the cursor into the caller's own output the first time a second row appears.
@@ -2653,9 +2791,12 @@ def selftest():
                 _f.write(json.dumps({"at": stamp(_at), "pct": _pct,
                                      "resets_at": stamp(resets)}) + chr(10))
 
-    # 30 points in 30 minutes is 1%/min; from 55% there are 45 points left, so ~44-45 min.
-    _rows = [(_bnow - 1800, 25), (_bnow - 1, 55)]
-    _far = _bnow + 120 * 60
+    # ⚠ THE FIXTURE OPENS ITS WINDOW WHERE ITS FIRST ROW IS, at zero used, so the anchor is a
+    # no-op here and the arithmetic stays readable: 55 points in 55 minutes is 1 %/min, and
+    # from 55% there are 45 points left, so ~45 minutes. A fixture logged LATE would be
+    # measuring the anchor instead of the burn-out; the anchor gets its own check below.
+    _far = _bnow + 245 * 60                          # ⇒ the window opened 55 minutes ago
+    _rows = [(_far - 5 * 3600, 0), (_bnow - 1, 55)]
     _plant(_rows, _far)
     _b = burnout_min(_bt, _bcfg, 55, _far, _bnow)
     assert _b is not None and 40 <= _b <= 50, _b
@@ -2672,26 +2813,52 @@ def selftest():
 
     # ⛔ AND IT MUST STAY QUIET when the window resets first - the same rate, a nearer reset.
     _near = _bnow + 20 * 60
-    _plant(_rows, _near)
+    _plant([(_near - 5 * 3600, 0), (_bnow - 1, 55)], _near)
     _vn = verdict(_bt, _bcfg, data={"ts": int(_bnow * 1000),
                                     "five_hour": {"used_percentage": 55,
                                                   "resets_at": int(_near)}})
     assert _vn["burns_out_early"] is False, _vn
     assert "SPENT in ~" not in _vn["text"], _vn["text"]
 
-    # ⚠ THE THREE UNKNOWABLE CASES. Each returns None and none of them warns.
-    _plant([(_bnow - 1800, 55), (_bnow - 1, 55)], _far)          # flat: no rate
-    assert burnout_min(_bt, _bcfg, 55, _far, _bnow) is None
-    _plant([(_bnow - 1, 55)], _far)                              # one row: no span
-    assert burnout_min(_bt, _bcfg, 55, _far, _bnow) is None
-    _plant([(_bnow - 60, 25), (_bnow - 1, 55)], _far)            # under 5 min of span
-    assert burnout_min(_bt, _bcfg, 55, _far, _bnow) is None
+    # ⚠ THE UNKNOWABLE CASES. Each returns None and none of them warns.
+    # ⛔ "Flat" MEANS FLAT FROM THE WINDOW'S OPEN, not flat across the logged rows: two equal
+    # rows late in a window still describe a climb from zero, which is a rate.
+    _plant([(_bnow - 1800, 0), (_bnow - 1, 0)], _far)            # flat: no rate
+    assert burnout_min(_bt, _bcfg, 0, _far, _bnow) is None
+    _short = _bnow + 5 * 3600 - 60                               # opened 60 seconds ago
+    _plant([(_bnow - 1, 55)], _short)                            # under 5 min of span
+    assert burnout_min(_bt, _bcfg, 55, _short, _bnow) is None
     for _f in glob.glob(os.path.join(_blogs, "*.jsonl")):        # no history at all
         os.remove(_f)
     assert burnout_min(_bt, _bcfg, 55, _far, _bnow) is None
     # ...and a window already at 100% is not "unknowable", it is spent NOW.
     _plant(_rows, _far)
     assert burnout_min(_bt, _bcfg, 100, _far, _bnow) == 0
+
+    # ⭐ THE ANCHOR: THE WINDOW'S OWN START COUNTS. Logging does not begin when the window
+    # does - a reinstall, a first run, a machine that was off - and reading only the logged
+    # rows lets a busy tail stand for the whole window. MEASURED on a second machine: the
+    # window opened at 14:10, the first row is 16:49 with 35% ALREADY SPENT, and those rows
+    # gave 0.48 %/min for a window whose true average was 0.22.
+    # ⇒ Same last reading, logged late: the anchored rate must come out well UNDER what the
+    # logged segment alone says.
+    _aw = _bnow + 60 * 60                                        # opened 4 hours ago
+    _open = _aw - 5 * 3600
+    _plant([(_bnow - 1800, 35), (_bnow - 1, 52)], _aw)           # 17 points in 30 min
+    _ar = _burn_rate(_bt, _bcfg, _aw, _bnow) * 60
+    _seg = (52 - 35) / 30.0                                      # 0.567 %/min
+    assert _ar < _seg / 2, "the unlogged head was ignored: %.3f vs %.3f %%/min" % (_ar, _seg)
+    # ...and what it lands on is the whole-window average, the only thing knowable about a
+    # stretch nobody recorded.
+    assert abs(_ar - 52.0 / ((_bnow - _open) / 60.0)) < 0.01, _ar
+    # ⚠ AND A NO-OP WHERE LOGGING DID COVER THE WINDOW: the first row already sits at the
+    # open with nothing used, so the anchor lands on top of it.
+    _plant([(_open, 0), (_bnow - 1, 52)], _aw)
+    assert abs(_burn_rate(_bt, _bcfg, _aw, _bnow) * 60 - _ar) < 0.01
+    # ⭐ ONE LOGGED ROW IS NOW ENOUGH, which is the whole point: a machine that has just
+    # started logging still gets a rate, where before it got None.
+    _plant([(_bnow - 1, 52)], _aw)
+    assert abs(_burn_rate(_bt, _bcfg, _aw, _bnow) * 60 - _ar) < 0.01
     shutil.rmtree(_bt, ignore_errors=True)
 
     # ⛔ THE IN-PLACE REWRITE, AND THE ONE THING THAT MUST NOT BE BACKWARDS. The cursor climbs
@@ -2809,6 +2976,98 @@ def selftest():
     assert _verdict(0, 99)["verdict"] == "STOP"
     assert _verdict(0, 99, r7=_bnow2 + 12 * 60)["verdict"] == "GO", "7d resets first"
     shutil.rmtree(_bdir, ignore_errors=True)
+
+    # ⛔ THE BURN GAUGE. It answers ONE forward-looking question - can I keep spending - by
+    # measuring the budget's life against the TIME LEFT IN THE WINDOW. Full bar means the
+    # window resets before you run dry.
+    _bcfg2 = {"colour": True, "width": 200}
+    _full = _burn_part(188, 106, 0.38, _bcfg2)          # outlasts the reset
+    _half = _burn_part(80, 119, 0.60, _bcfg2)           # 67% of the time left
+    _dry = _burn_part(12, 130, 3.40, _bcfg2)            # 9%
+    assert "outlasts reset" in _full and BAR_EMPTY not in _STRIP_ANSI.sub("", _full), _full
+    assert "44m" not in _full and ANSI["ok"] in _full, _full
+    assert "left" in _half and ANSI["warn"] in _half, _half
+    assert ANSI["alarm"] in _dry, _dry
+    # ⚠ COLOUR IS INVERTED HERE, and _colour() must not be used: everywhere else a HIGH
+    # number is bad, so the shared thresholds would paint safety red. Pinned by asserting
+    # the FULL bar is ok-coloured, which _colour() would never do for a large value.
+    assert ANSI["alarm"] not in _full and ANSI["warn"] not in _full, _full
+
+    # ⛔ UNKNOWABLE IS NEVER AN EMPTY BAR AND NEVER A ZERO. In a column where empty means
+    # DANGER, drawing "no data" as empty says the opposite of the truth.
+    for _u in (_burn_part(None, 119, 0, _bcfg2),
+               _burn_part(188, 0, 0.38, _bcfg2),
+               _burn_part(188, 106, 0.38, _bcfg2, stale=True)):
+        assert BAR_EMPTY not in _u and BAR_FULL not in _u, _u
+        assert "0.00%/m" not in _u and "0m left" not in _u, _u
+        assert "--" in _u and _STRIP_ANSI.sub("", _u) == _u, _u
+
+    # ⭐ IT REACHES THE LINE, on the FIRST row, after the windows - it is a decision input
+    # like they are, not context like the model name.
+    _brec = {"ts": int(time.time() * 1000),
+             "five_hour": {"used_percentage": 29, "resets_at": int(time.time()) + 5900}}
+    _wins, _extras = _line_parts(_brec, None, _bcfg2, None, burn=(188, 106, 0.38))
+    assert any(w.startswith("Burn") for w in _wins), _wins
+    assert not any(x.startswith("Burn") for x in _extras), _extras
+    assert _wins[0].startswith("5h"), "the burn segment displaced the five-hour window"
+    # ...and it is the LAST of them, so a narrow terminal drops it before any usage bar.
+    assert _wins[-1].startswith("Burn"), _wins
+
+    # ⚠ Absent when there is nothing to show, and switchable.
+    assert not any(w.startswith("Burn")
+                   for w in _line_parts(_brec, None, _bcfg2, None, burn=None)[0])
+    assert not any(w.startswith("Burn") for w in _line_parts(
+        _brec, None, dict(_bcfg2, show_burn=False), None, burn=(188, 106, 0.38))[0])
+
+    # ⛔ AND burn_triple() MUST REFUSE A WINDOW THAT HAS ALREADY RESET, where the stored
+    # percentage reads stale-high and any rate computed from it is meaningless.
+    _past = {"five_hour": {"used_percentage": 97, "resets_at": int(time.time()) - 60}}
+    assert burn_triple(tempfile.gettempdir(), {}, _past) is None
+    assert burn_triple(tempfile.gettempdir(), {}, {}) is None
+
+    # ⛔ THE PROJECTION MUST NOT SET THE VERDICT. Switched off deliberately, and pinned here
+    # so switching it back on is a decision somebody makes on purpose rather than a line that
+    # creeps back.
+    #
+    # ⚠ WHAT IT DID, measured on a second machine's real history: the verdict flipped
+    # GO→PACE→GO→PACE→GO in twelve minutes while the PERCENTAGE climbed smoothly from 40% to
+    # 52%, never within twenty points of soft_pct_5h. The boundary is
+    # (100 - pct) / minutes_left, so at 47% with 114 minutes left a swing of one HUNDREDTH of
+    # a percent per minute crosses it - and under bursty dispatch the rate swings far more
+    # than that between two samples. Since 0.35.0 a PACE also makes a handoff a precondition
+    # of dispatching, so one flickering sample blocked a dispatch that should have gone
+    # through.
+    _pdir = tempfile.mkdtemp(prefix="dg-proj-")
+    _plogs = os.path.join(_pdir, "logs")
+    os.makedirs(_plogs)
+    _pcfg = {"history_dir": _plogs, "soft_pct_5h": 70, "hard_pct_5h": 85,
+             "soft_pct_7d": 95, "hard_pct_7d": 97, "near_reset_min": 20, "stale_min": 15,
+             "debug": {"token_usage": True}}
+    _pnow = time.time()
+    # ⚠ 47% SPENT IN THE FIRST HOUR OF THE WINDOW, which is what a projection over 100% takes
+    # once the rate is anchored at the window's open (0.38.0). The incident above happened at
+    # 114 minutes left, and that shape can no longer project over the line at all: 47% with
+    # 186 of 300 minutes gone is 0.25 %/min, and it projects to 76%. ⇒ Anchoring removed the
+    # exact reading that flipped the verdict; the pin stays anyway, because it guards the
+    # decision - display-only - and not that one reading.
+    _presets = _pnow + 240 * 60                      # ⇒ the window opened 60 minutes ago
+    with open(os.path.join(_plogs, HISTORY_PREFIX + "20200101-000000.jsonl"),
+              "w", encoding="utf-8") as _f:
+        for _t, _p in ((_pnow - 1800, 23.5), (_pnow - 1, 47)):
+            _f.write(json.dumps({"at": stamp(_t), "pct": _p,
+                                 "resets_at": stamp(_presets)}) + chr(10))
+    _pv = verdict(_pdir, _pcfg, data={"ts": int(_pnow * 1000),
+                                      "five_hour": {"used_percentage": 47,
+                                                    "resets_at": int(_presets)}})
+    assert _pv["projected_pct"] is not None and _pv["projected_pct"] >= 100, _pv
+    assert _pv["verdict"] == "GO", (
+        "the projection is setting the verdict again - it is display-only, and re-enabling "
+        "it needs hysteresis and a minimum history first. See the block in verdict(): %r"
+        % (_pv,))
+    # ⭐ ...but it is still REPORTED, or switching it off would have hidden the figure the
+    # owner wants to watch.
+    assert _pv["burnout_min"] is not None, _pv
+    shutil.rmtree(_pdir, ignore_errors=True)
 
     print("selftest OK")
     return 0

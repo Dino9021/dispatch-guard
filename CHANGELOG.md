@@ -33,6 +33,70 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.38.0
+
+- ⭐ **燃燒速度改從「視窗自己的開頭」算起。** 視窗開始的那一刻必定是 0%，
+  所以 `(reset − 5 小時, 0%)` 是一個**不需要任何人紀錄**的資料點。
+- ⛔ **不補的話，忙碌的後半段會代表整個視窗。** 紀錄不是從視窗開頭開始的 ——
+  重裝、第一次執行、機器關著都會少一段。實測（另一台機器，2026-08-28）：
+  視窗 **14:10** 開始，第一筆紀錄是 **16:49，當時已經用掉 35%**。
+  只讀有紀錄的部分算出 **0.48 %/分**，而整個視窗的真實平均是 **0.22 %/分**。
+- ⚠ **錯的方向也跟著換了，這是要知道的部分。** 以前紀錄開始得晚會**高估**速度（偏安全）；
+  補上錨點之後，一個「先閒置很久、然後爆發」的視窗會**低估**速度（偏危險）。
+  ⇒ 接受這個代價只有一個理由：**這個數字現在不影響 GO / PACE / STOP**，它只是給人看的儀表。
+  如果哪天推估要重新納入判定，這個錨點必須跟著重新檢討。
+- ⭐ **只有一筆紀錄也能算了**，因為第二個點是視窗的開頭。以前這種情況回傳「無法得知」。
+- ⚠ **實測這不是「一律變寬鬆」**：同一台機器 21:14 那一筆，
+  補上前段之後是 **149 分鐘見底**，只看有紀錄的部分是 154 分鐘 ——
+  沒紀錄的 11.7 分鐘裡燒掉 7%，比後面有紀錄的那段還快。
+
+---
+
+## 0.37.0
+
+- ⛔ **推估暫時不再影響 GO / PACE / STOP，改成純顯示。** 程式碼是**註解掉的，沒有刪**，
+  重新啟用只是把一行的註解拿掉。
+  ⚠ 原因是實測的：用另一台機器的真實歷史重播，判定在**十二分鐘內翻了三次**
+  （GO→PACE→GO→PACE→GO），而百分比一路平順從 **40% 爬到 52%**，
+  從頭到尾離 `soft_pct_5h` 70 還有二十幾個百分點。
+  ⇒ 臨界值是 `(100 − pct) ÷ 剩餘分鐘`，所以在 47%、剩 114 分的時候，
+  速度差**百分之一**就會跨過去 —— 而一波派工造成的速度變化遠大於此。
+- ⛔ **而且 0.35.0 之後 PACE 是有代價的**：它讓「當前的 HANDOFF.md」變成派工的前提。
+  ⇒ 一次因為抖動而閃現的 PACE，會擋掉一次本來該放行的派工，
+  而這個外掛自己的規則「看那個字，不要看百分比」，被一個**自己在抖的字**架空了。
+- ⭐ **重新啟用之前要補的兩件事，寫在程式碼註解裡**：
+  ⑴ **遲滯** —— 進 PACE 用 ≥100%，回 GO 要 <90%；單一門檻碰上會抖的輸入只會顫振。
+  ⑵ **最少歷史** —— 紀錄不是從視窗開頭開始的。那台機器視窗 14:10 開始、紀錄 16:49 才有，
+  當時已經用掉 35%。⇒ 忽略沒紀錄的前段，等於拿「比較忙的後半段」代表整個視窗：
+  **0.48 %/分 對上全視窗平均 0.22 %/分**。
+- ⭐ **燃燒計量條照常顯示**，會依情況變色 —— 這正是要觀察的東西。
+- ⛔ **重置時刻收斂到最近的整分。** 實測：同一個視窗的歷史裡同時有 `19:10:00` 和 `19:09:59`。
+  ⚠ 取「最近」而不是「一律進位」：`19:10:00.2` 進位會變成 19:11，整整差一分鐘，
+  而且是往「視窗看起來比較長」的方向錯。
+- ⭐ **閒置那一行只留需要動手的訊息。** `2 min old` 和 `idle 15m` 都在重複 `SLEEP`
+  已經說完的事；⚠ 只有 OAuth 快到期留下來 —— 那是唯一一個「你不在的時候會壞掉」的東西，
+  而你不在正是沒有人盯著它的時候。
+- ⚠ `/Debug/` 進入 gitignore：那是為了診斷從**別台機器**抓來的真實用量資料，
+  不該進入公開儲存庫，也不是這個儲存庫的狀態。
+
+---
+
+## 0.36.0
+
+- ⭐ **燃燒計量條，常駐在用量長條後面**：`Burn ▓▓▓░░░░░░ 1.20%/m · 44m left`。
+  ⇒ 它回答一個往前看的問題：**我還可以繼續燒嗎**。長條量的是「預算還能撐多久」相對於
+  「這個視窗還剩多久」—— **滿格 = 這個視窗會在你燒乾之前先重置**。
+  ⚠ 它是比值不是存量：慢下來會「回升」，因為它量的是兩個時鐘會不會交叉。
+- ⛔ **這一段的顏色是反的**，而且**不能**用 `colour_warn_pct` / `colour_alarm_pct`：
+  其他地方百分比高是壞事，這裡滿格是好事，共用門檻會把「安全」畫成紅色。
+- ⛔ **「算不出來」絕不畫成空長條或 0。** 在一個「空 = 危險」的欄位裡，
+  把「沒資料」畫成空的，說的是跟事實相反的話。它顯示 `───────── --`。
+- ⚠ **第一版設計是 sparkline，砍掉了**，因為它答錯問題：歷史只在「數字真的動了」才寫一行 ⇒
+  安靜一小時**不會**畫成低格，它**根本不會出現**。那個橫軸看起來像時間，其實不是。
+- ⚠ 成本實測 **2.47 毫秒**／次渲染，狀態列每 `refresh_seconds` 才畫一次。
+
+---
+
 ## 0.35.0
 
 - ⛔ **handoff 從「STOP 時要做的事」變成「派工的前提」。** 舊設計假設 agent 撞到 STOP 時
@@ -869,6 +933,81 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.38.0
+
+- ⭐ **The burn rate is measured from the window's OWN START.** A window opens at 0% by
+  definition, so `(reset − 5 hours, 0%)` is a reading **nobody had to record**.
+- ⛔ **Without it the busy tail stood for the whole window.** Logging does not begin when the
+  window does - a reinstall, a first run, a machine that was off. MEASURED on a second
+  machine, 2026-08-28: the window opened at **14:10** and the first row is **16:49, with 35%
+  already spent**. The logged rows alone gave **0.48 %/min** for a window whose true average
+  was **0.22 %/min**.
+- ⚠ **The direction of error changes, and that is the part to know.** Before, a late start
+  OVER-stated the rate - the safe direction. Anchored, a window that sat idle for hours and
+  then burst UNDER-states it. ⇒ That is accepted for one reason: **this figure no longer
+  drives GO / PACE / STOP**, it is a gauge to read. If the projection is ever re-enabled as a
+  verdict input, the anchor has to be revisited with it.
+- ⭐ **One logged row is now enough**, because the window's start is the second point. That
+  case used to return "cannot be known".
+- ⚠ **Measured: it is not uniformly softer.** On the same machine's 21:14 reading, anchoring
+  gives **149 minutes to empty** against 154 from the logged rows alone - 7% went in the 11.7
+  unlogged minutes, faster than the logged stretch that followed.
+
+---
+
+## 0.37.0
+
+- ⛔ **The projection no longer sets GO / PACE / STOP - display only, for now.** The code is
+  **commented out, not deleted**; re-enabling it is uncommenting one line.
+  ⚠ The reason is measured: replaying another machine's real history, the verdict flipped
+  **three times in twelve minutes** (GO→PACE→GO→PACE→GO) while the percentage climbed
+  smoothly from **40% to 52%**, never within twenty points of `soft_pct_5h`.
+  ⇒ The boundary is `(100 − pct) / minutes_left`, so at 47% with 114 minutes left a swing of
+  **one hundredth** of a percent per minute crosses it - and a dispatch wave moves the rate
+  far more than that.
+- ⛔ **And since 0.35.0 a PACE costs something**: it makes a current `HANDOFF.md` a
+  precondition of dispatching. ⇒ One flickering sample blocked a dispatch that should have
+  gone through, and this plugin's own rule - act on the WORD, never on raw percentages - was
+  undermined by a word that was itself twitching.
+- ⭐ **Two things to add before re-enabling, recorded in the code**: ⑴ **hysteresis** - enter
+  at ≥100%, leave only below 90%; a single threshold on a noisy input can only chatter.
+  ⑵ **a minimum history** - logging does not start when the window does. On that machine the
+  window opened at 14:10 and the first row is 16:49 with 35% already spent, so ignoring the
+  unlogged head made the busier logged stretch stand for the whole window: **0.48 %/min
+  against a whole-window average of 0.22**.
+- ⭐ **The burn gauge still renders and still changes colour** - that is the thing to watch.
+- ⛔ **Reset instants snap to the nearest whole minute.** Measured: one window's history holds
+  both `19:10:00` and `19:09:59`. ⚠ Nearest, not always up: rounding `19:10:00.2` up gives
+  19:11 - a whole minute wrong, in the direction that makes the window look longer.
+- ⭐ **The idle line keeps only what needs acting on.** `2 min old` and `idle 15m` both
+  restate what `SLEEP` already says; ⚠ only the OAuth warning survives - it is the one thing
+  that breaks while you are away, and being away is when nobody is watching for it.
+- ⚠ `/Debug/` is gitignored: real usage figures pulled off ANOTHER machine to diagnose
+  something here belong in neither a published repository nor this repo's state.
+
+---
+
+## 0.36.0
+
+- ⭐ **A burn gauge, permanently after the usage bars**: `Burn ▓▓▓░░░░░░ 1.20%/m · 44m left`.
+  ⇒ It answers one forward-looking question: **can I keep spending?** The bar measures the
+  budget's life against the TIME LEFT IN THE WINDOW — **a full bar means this window resets
+  before you run dry**. ⚠ It is a ratio, not a stock: unlike a health bar it goes back UP
+  when the burn slows, because what it measures is whether the two clocks cross.
+- ⛔ **Colour is inverted here** and must NOT use `colour_warn_pct` / `colour_alarm_pct`:
+  everywhere else a high percentage is bad, here a full bar is good, and the shared
+  thresholds would paint safety red.
+- ⛔ **Unknowable is never drawn as an empty bar or a zero.** In a column where empty means
+  DANGER, drawing "no data" as empty says the opposite of the truth. It renders
+  `───────── --`.
+- ⚠ **The first design was a sparkline and it was cut**, because it answered the wrong
+  question: history rows are written only when a number MOVES, so a quiet hour does not draw
+  a low bar — it draws nothing at all. The axis looked like time and was not.
+- ⚠ Cost, measured: **2.47 ms** per render on real history, against a statusline that draws
+  once per `refresh_seconds`.
 
 ---
 

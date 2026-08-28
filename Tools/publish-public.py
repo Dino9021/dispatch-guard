@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Publish the private repository's committed tree to the public GitHub snapshot.
 
-    python Tools/publish-public.py            # show the plan, change nothing
-    python Tools/publish-public.py --push     # do it: sync, commit, push
+    python Tools/publish-public.py            # show the plan, then ask for `confirm`
+    python Tools/publish-public.py --push     # do it without asking: sync, commit, push
 
 ⭐ WHAT THIS IS. The private repository is the only working copy and carries its full history
 plus `Memory/`. The public repository is a published SNAPSHOT: one commit per release, no
@@ -120,13 +120,15 @@ def main(argv):
     # identity - leaving a half-applied tree that the mirror's own idempotence then read as
     # "nothing to publish". A step that mutates before it knows it can finish turns one clear
     # failure into two confusing ones.
-    if "--push" in argv:
-        for key in ("user.name", "user.email"):
-            if not git(PUBLIC, "config", key)[1].strip():
-                who = git(PRIVATE, "config", key)[1].strip()
-                die("the public repository has no %s. Set it there, not globally:\n"
-                    "   git -C %s config %s \"%s\""
-                    % (key, PUBLIC, key, who or "you@example.com"))
+    # ⚠ ASKED ON EVERY RUN, not only under --push, since a run with no arguments can now
+    # publish once you type `confirm`. Discovering a missing identity AFTER the answer would
+    # put the failure on the far side of the consent, which is the one place it must never be.
+    for key in ("user.name", "user.email"):
+        if not git(PUBLIC, "config", key)[1].strip():
+            who = git(PRIVATE, "config", key)[1].strip()
+            die("the public repository has no %s. Set it there, not globally:\n"
+                "   git -C %s config %s \"%s\""
+                % (key, PUBLIC, key, who or "you@example.com"))
 
     sha = git(PRIVATE, "rev-parse", "--short", "HEAD")[1].strip()
     version = json.load(io.open(os.path.join(PRIVATE, ".claude-plugin", "plugin.json"),
@@ -229,8 +231,23 @@ def main(argv):
             print("\nnothing to publish - the snapshot already matches %s." % sha)
             return 0
         if not push:
-            print("\nnothing was changed. Re-run with --push to sync, commit and push.")
-            return 0
+            # ⛔ THE LIST COMES BEFORE THE QUESTION - the same shape as clean-dispatch-guard.ps1.
+            # The code that printed the plan above is the code about to carry it out, so what
+            # you approve is exactly what runs. Anything but `confirm` publishes nothing.
+            print()
+            print('Type  confirm  to publish exactly that. Anything else stops here.')
+            try:
+                answer = input('  ').strip()
+            except EOFError:
+                answer = ''        # ⚠ a closed or piped stdin is not consent
+            if answer.lower() != 'confirm':
+                print()
+                print('stopped - nothing was published.')
+                # ⚠ NOT 'nothing was changed'. The public .gitignore is written above, BEFORE
+                # this question, so that claim would be false on the one run where it matters.
+                if gitignore_added:
+                    print('  (the public .gitignore keeps the lines added above.)')
+                return 3
 
         for f in removed:
             os.remove(os.path.join(PUBLIC, f))
