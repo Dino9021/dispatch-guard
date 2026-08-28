@@ -46,25 +46,32 @@ Pick the cheapest model that can do the unit. `max_model_price` (default **5**) 
 sub-agent's model may cost in US dollars per million **input** tokens, and a dispatch above it
 is refused — so decide here, not after a refusal.
 
-| family | current model | $/M in | range across versions |
-|---|---|---|---|
-| `haiku` | claude-haiku-4-5 | 1 | 1 |
-| `sonnet` | claude-sonnet-5 | 2 | 2–3 |
-| `opus` | claude-opus-5 | 5 | 5–15 |
-| `fable` | claude-fable-5 | 10 | 10 |
+⭐ **The prices are deliberately NOT written into this file.** A table typed into a skill goes
+stale until somebody ships a plugin update, and this repository shipped exactly that defect —
+its typed-in table overcharged Claude Haiku 3.5 against the published price for months. The
+live table is parsed from Anthropic's published pricing page into `model_pricing.json` and
+refreshed in the background.
 
-⚠ A family is not one price. `claude-opus-4-0` is **15** — three times the current opus — so
-naming an old version costs more than naming the family. `mythos` is **10** and not selectable
-by alias.
+⇒ **It reaches you before you choose, two ways, with no lookup:**
 
-⛔ `best` resolves to **fable** ($10). `opusplan` resolves to opus. An `[1m]` suffix does not
-change the price. **Omitting `model` is always allowed** and inherits the session's model —
-that is the safe default, and it means there is always a legal dispatch.
+- the **session's opening context** names the families you may dispatch and the ones you may
+  not, with their current prices;
+- **rule 7 of the block prepended to every sub-task prompt** carries the same list, so an
+  agent that dispatches further is bound by the same numbers.
 
-⭐ Full table: `MODEL_PRICES` in `<plugin>/hooks/dispatch_gate.py`, documented in
-`<plugin>/config.example.json` under `max_model_price`. The numbers are the shipped model
-catalog's `pricing` field (`tier_<input>_<output>`) — not an estimate. When a new model ships,
-that table is what gets updated.
+To read the whole table yourself:
+`bash <plugin>/hooks/run.sh <plugin>/hooks/model_pricing.py --show`
+
+⚠ A family is not one price. Naming an **old version** can cost several times what naming the
+family costs — the retired opus is three times the current one. Prefer the bare family alias.
+
+⛔ `best` resolves to **fable**, the dearest selectable family. `opusplan` resolves to opus. An
+`[1m]` suffix does not change the price. `mythos` is priced but no session can select it by
+alias. **Omitting `model` is always allowed** and inherits the session's model — that is the
+safe default, and it means there is always a legal dispatch.
+
+⚠ If the opening context says no price table is readable, the ceiling is **not being enforced**
+that session. Do not report it as active.
 
 ## The six refusals
 

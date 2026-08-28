@@ -144,9 +144,21 @@ def read_json(path, fallback=None):
 
 # ⭐ How long a file in history_dir survives, in days. 0 keeps everything for ever.
 # ⚠ Thirty days of the debug dump is about 40 MB at the measured 1.2-1.4 MB a day, and
-# thirty days of limits-history is well under 30 MB. Both are small enough to keep and large
+# thirty days of token_usage_history is well under 30 MB. Both are small enough to keep and
 # enough to be worth bounding, which is why the default deletes rather than hoards.
 HISTORY_KEEP_DAYS_DEFAULT = 30
+
+# ⭐ EVERY DEBUG SWITCH AND ITS DEFAULT, in one place, because "what switches exist?" was
+# otherwise answerable only by reading config.example.json.
+# ⛔ The two defaults differ on purpose. token_usage_history writes two percentages a row -
+# 82 KB a day, MEASURED (132 bytes a row, about 640 readings, and only when a number
+# actually moved) - and it is what makes the burn PROJECTION work at all, so it is
+# ON. API_response_usage writes whole response bodies at 1.2-1.4 MB a day to answer a
+# question and then be switched off again, so it is OFF.
+DEBUG_DEFAULTS = {
+    "API_response_usage": False,
+    "token_usage_history": True,
+}
 
 
 def _days(value, default):
@@ -244,12 +256,18 @@ def config(sdir):
     cfg["limits_file"] = (disk.get("limits_file")
                           or os.path.join(sdir, "limits.json"))
     cfg["colour"] = disk.get("colour", disk.get("color", True))
-    # ⛔ OFF by default. limits-history.jsonl is a record of how much you used and when,
-    # kept indefinitely, and nobody asked for it - so it is opt-in. ⚠ The cost of leaving
-    # it off is that burn PROJECTION needs at least two samples of the same window, so
-    # without history the "projected to exceed by reset" half of PACE never fires; the
-    # soft and hard thresholds are unaffected.
-    cfg["keep_history"] = bool(disk.get("keep_history", False))
+    # ⭐ ON by default, and it did not use to be. token_usage_history-*.jsonl records how
+    # much was used and when - two percentages a row, nothing else. It is on because burn
+    # PROJECTION needs two samples of the same window, so with it off the "projected to
+    # exceed before the reset" half of PACE has never fired for anybody who did not go and
+    # switch it on. The soft and hard thresholds were always unaffected either way.
+    # ⚠ THE COST IS NOW BOUNDED, which is what changed: roughly a megabyte a day, and
+    # history_keep_days removes whole files after 30 days. Kept for ever, it was a record of
+    # a person's usage that nobody had asked for; kept for a month, it is what makes the
+    # projection work.
+    # ⛔ THE SWITCH IS `debug.token_usage_history` NOW, and it is set further down, once the
+    # debug block has been parsed. See the assignment there - putting it here would mean
+    # parsing that block twice, and the second copy is the one that drifts.
     cfg["history_dir"] = disk.get("history_dir")     # None -> <state dir>/logs
     # ⛔ HOW LONG THE FILES IN history_dir SURVIVE, and it is the only setting here that
     # DELETES something. 0 - or any value that is not a positive number - keeps them for
@@ -287,18 +305,38 @@ def config(sdir):
         # and used to mean the exact opposite - every switch off, with nothing anywhere
         # saying so. A person who wrote that would wait all day for a file that never
         # arrives, and the config would look right the whole time.
-        sys.stderr.write('usage.py: debug=%r is not an object or a list, so NO debug '
-                         'switch is on. Use {"API_response_usage": true}.%s'
-                         % (d, chr(10)))
+        # ⚠ "NO debug switch is on" WAS TRUE AND IS NOT ANY MORE. Once one switch defaults
+        # to ON, an unusable block means "every switch keeps its default", not "everything
+        # is off" - and saying the wrong one sends a person hunting for a file that is in
+        # fact being written. Found by a refuting pass.
+        sys.stderr.write('usage.py: debug=%r is not an object or a list, so it is IGNORED '
+                         'and every switch keeps its default. Use '
+                         '{"API_response_usage": true}.%s' % (d, chr(10)))
         d = {}
     # ⚠ VALUES ARE COERCED, and the string is the reason. JSON `false` arrives as a bool,
     # but a hand-edited config carries "false", "0" and "no" - every one of them TRUTHY in
     # Python, so the switch would come ON for somebody who wrote the word for off.
-    # ⛔ default=False, SPELLED OUT. An unrecognised value leaves the switch off: a typo must
-    # not enable a diagnostic that writes on every fetch. ⚠ Every value in this block is
-    # coerced to a bool, so a future switch needing a STRING (a level, a path) cannot live
-    # here as-is - it needs its own key, or this line needs to learn about it.
-    cfg["debug"] = {k: _truthy(v, False) for k, v in d.items()}
+    # ⛔ EACH SWITCH HAS ITS OWN DEFAULT, from DEBUG_DEFAULTS, and an unrecognised value
+    # falls back to that switch's default rather than to False. ⚠ A first version defaulted
+    # every value to False, which is wrong the moment one switch is on by default: an absent
+    # key then read as OFF and the default could never take effect.
+    # ⚠ Every value here is coerced to a bool, so a future switch needing a STRING (a level,
+    # a path) cannot live in this block as-is - it needs its own key.
+    cfg["debug"] = dict(DEBUG_DEFAULTS)
+    for key, value in d.items():
+        cfg["debug"][key] = _truthy(value, DEBUG_DEFAULTS.get(key, False))
+
+    # ⭐ THE HISTORY SWITCH, read from the block above so the list alias, the coercion and
+    # the warning all apply to it exactly once.
+    # ⛔ `keep_history` IS STILL READ. It is no longer documented, but an existing
+    # "keep_history": false must keep the history off: that is what its owner meant when
+    # they wrote it, and a rename must never quietly switch a setting back on. It applies
+    # only when debug.token_usage_history is ABSENT - an explicit new key wins.
+    cfg["keep_history"] = cfg["debug"]["token_usage_history"]
+    if "token_usage_history" not in d and disk.get("keep_history") is not None:
+        cfg["keep_history"] = _truthy(disk.get("keep_history"),
+                                      DEBUG_DEFAULTS["token_usage_history"])
+        cfg["debug"]["token_usage_history"] = cfg["keep_history"]
     cfg["show_context"] = bool(disk.get("show_context", True))
     cfg["show_model"] = bool(disk.get("show_model", True))
     cfg["width"] = disk.get("width")        # None -> detect
@@ -642,7 +680,7 @@ def _write_record(sdir, cfg, record, prev):
         # overlooked: they came off the statusline payload, which this path does not see.
         # Checked before accepting it - _projection() reads only `pct`, `at`/`ts` and
         # `resets_at`, so nothing computes on either field. They were context for a human
-        # reading the log, and history is off by default anyway. If a per-model breakdown
+        # reading the log. If a per-model breakdown
         # is ever wanted, it has to come from the payload in collect(), not from here.
         _append_history(sdir, cfg, record.get("five_hour") or {},
                         record.get("seven_day") or {})
@@ -841,12 +879,22 @@ def collect(sdir, cfg):
     return 0
 
 
-HISTORY_PREFIX = "limits-history-"
+HISTORY_PREFIX = "token_usage_history-"
+
+# ⛔ WHAT THE FILES USED TO BE CALLED, and it is not decoration. `limits` named the internal
+# variable, never the thing being recorded, so the files were renamed to say what they hold.
+# ⚠ ANYONE WHO ALREADY HAS limits-history-*.jsonl KEEPS IT. Those files are still READ by
+# _projection(), so an existing burn history keeps working, and still DELETED by
+# prune_logs(), so they expire instead of living for ever in a folder nothing manages any
+# more. Only the new prefix is ever written.
+# ⛔ Nothing renames a file on disk. Rewriting a record to satisfy a naming change is the
+# one thing worth less than the record itself.
+LEGACY_HISTORY_PREFIX = "limits-history-"
 
 # ⭐ The debug response dump's prefix - same directory, same rotation, different file.
-# ⛔ DELIBERATELY NOT limits-history-*.jsonl. History holds two percentages per row and is
-# PARSED by _projection(); this holds whole response bodies for questions nobody has asked
-# yet. One reader would choke on the other's lines, so they never share a file.
+# ⛔ DELIBERATELY NOT the history file. History holds two percentages per row and is PARSED
+# by _projection(); this holds whole response bodies for questions nobody has asked yet. One
+# reader would choke on the other's lines, so they never share a file.
 DEBUG_RESPONSE_PREFIX = "usage-response-"
 
 
@@ -868,7 +916,7 @@ def history_dir(sdir, cfg):
 
 
 def history_path(sdir, cfg, now=None, prefix=HISTORY_PREFIX):
-    """Today's history file: limits-history-<YYYYMMDD-HHMMSS>.jsonl
+    """Today's history file: token_usage_history-<YYYYMMDD-HHMMSS>.jsonl
 
     The stamp is when the FILE was started, in the same YYYYMMDD-HHMMSS form the task
     folders use, so one convention covers both. A new file begins at each local midnight:
@@ -903,6 +951,22 @@ def history_path(sdir, cfg, now=None, prefix=HISTORY_PREFIX):
                         + time.strftime("%Y%m%d-%H%M%S", time.localtime(now)) + ".jsonl")
 
 
+def _history_stamp(path):
+    """The YYYYMMDD-HHMMSS part of a history file name, whichever prefix it carries.
+
+    ⛔ THE PREFIX IS STRIPPED BY NAME, NOT BY SPLITTING ON A HYPHEN. `limits-history-` has a
+    hyphen inside it, so `split("-", 1)` leaves "history-20260828-..." and sorts the legacy
+    files under H instead of by date - which puts them after every new file no matter how
+    old they are, and _projection() reads the last two. Found by reading the sort key rather
+    than by a failing test, because with only new-prefix files present it looks correct.
+    """
+    name = os.path.basename(path)
+    for pref in (HISTORY_PREFIX, LEGACY_HISTORY_PREFIX):
+        if name.startswith(pref):
+            return name[len(pref):]
+    return name
+
+
 def prune_logs(sdir, cfg, now=None):
     """Remove whole log files older than history_keep_days. Returns how many went.
 
@@ -934,7 +998,10 @@ def prune_logs(sdir, cfg, now=None):
     cutoff = (time.time() if now is None else now) - days * 86400
     d = history_dir(sdir, cfg)
     removed = 0
-    for pref in (HISTORY_PREFIX, DEBUG_RESPONSE_PREFIX):
+    # ⛔ THE LEGACY PREFIX IS IN THIS LIST ON PURPOSE. Files written before the rename must
+    # still expire; leaving them out would strand them in a folder nothing manages any more,
+    # growing for ever while the setting that was supposed to bound them says 30 days.
+    for pref in (HISTORY_PREFIX, LEGACY_HISTORY_PREFIX, DEBUG_RESPONSE_PREFIX):
         for path in glob.glob(os.path.join(d, pref + "*.jsonl")):
             try:
                 if os.path.getmtime(path) < cutoff:
@@ -1473,14 +1540,21 @@ def _projection(sdir, cfg, pct, resets, now):
     ⚠ A LOWER BOUND. Under bursty multi-agent dispatch the real burn runs ahead of it,
     so the hard stop still rules regardless of what this says.
 
-    ⛔ Returns None when keep_history is off, which is the default. That is a real
+    ⛔ Returns None when the token-usage history is off. ⚠ It is ON by default now - it
+    used to be off, and this docstring used to say so. That is a real
     reduction in what PACE can catch, not a technicality - say so rather than letting a
     silently absent projection read as "nothing projected".
     """
     # Read the last two files: a 5h window can straddle midnight, and therefore two.
+    # ⛔ BOTH PREFIXES, so a history written before the rename keeps working. The rows are
+    # identical - only the file name changed - and sorting by name puts a day's
+    # token_usage_history file after the same day's limits-history one, so a machine that
+    # updated mid-day reads its own morning.
     rows = []
-    for path in sorted(glob.glob(os.path.join(history_dir(sdir, cfg),
-                                              HISTORY_PREFIX + "*.jsonl")))[-2:]:
+    hdir = history_dir(sdir, cfg)
+    paths = (glob.glob(os.path.join(hdir, HISTORY_PREFIX + "*.jsonl"))
+             + glob.glob(os.path.join(hdir, LEGACY_HISTORY_PREFIX + "*.jsonl")))
+    for path in sorted(paths, key=_history_stamp)[-2:]:
         try:
             with open(path, encoding="utf-8") as f:
                 rows += [json.loads(l) for l in f if l.strip()]
@@ -1916,9 +1990,11 @@ def selftest():
     logs = os.path.join(tmp2, "logs")
     os.makedirs(logs)
     now2 = time.time()
-    planted = {"limits-history-20200101-000000.jsonl": 60,     # ours, old
+    planted = {"token_usage_history-20200101-000000.jsonl": 60,   # ours, old
+               "limits-history-20200101-000000.jsonl": 60,     # ours, old, LEGACY name
                "usage-response-20200101-000000.jsonl": 60,     # ours, old
-               "limits-history-20990101-000000.jsonl": 1,      # ours, fresh
+               "token_usage_history-20990101-000000.jsonl": 1, # ours, fresh
+               "limits-history-20990101-000000.jsonl": 1,      # ours, fresh, LEGACY
                "not-ours.jsonl": 400,                          # NOT ours, old
                "notes.txt": 400}                               # NOT ours, old
 
@@ -1931,13 +2007,18 @@ def selftest():
 
     replant()
     cfg2 = {"history_dir": logs, "history_keep_days": 30}
-    assert prune_logs(tmp2, cfg2, now2) == 2, "expected exactly the two old OURS"
+    # ⚠ THREE: both history prefixes and the response dump, each with one old file.
+    assert prune_logs(tmp2, cfg2, now2) == 3, "expected exactly the three old OURS"
     left = set(os.listdir(logs))
     # ⛔ THE SAFETY ARGUMENT: history_dir is configurable and the docs suggest pointing it
     # at a synced folder, so anything without one of this plugin's two prefixes must
     # survive no matter how old it is. A blanket *.jsonl sweep would delete a stranger's
     # data, and nothing would ever report it.
     assert "not-ours.jsonl" in left and "notes.txt" in left, left
+    assert "token_usage_history-20990101-000000.jsonl" in left, left
+    assert "token_usage_history-20200101-000000.jsonl" not in left, left
+    # ⛔ THE LEGACY NAME EXPIRES TOO. Leaving it out of prune_logs() would strand every
+    # file written before the rename in a folder nothing manages any more.
     assert "limits-history-20990101-000000.jsonl" in left, left
     assert "limits-history-20200101-000000.jsonl" not in left, left
 
@@ -1956,19 +2037,59 @@ def selftest():
     # read it. Pinned here because the two readings are easy to confuse and one of them
     # deletes.
     replant()
-    assert prune_logs(tmp2, {"history_dir": logs, "history_keep_days": None}, now2) == 2
+    assert prune_logs(tmp2, {"history_dir": logs, "history_keep_days": None}, now2) == 3
 
     # ⭐ And the trigger: history_path() prunes ONLY when it mints a new day's name.
     replant()
     minted = history_path(tmp2, cfg2, now2)
     assert not os.path.exists(minted), "history_path must not create the file"
-    assert len(os.listdir(logs)) == 3, "minting a new name must prune"
+    assert len(os.listdir(logs)) == len(planted) - 3, "minting a new name must prune"
     replant()
     with open(minted, "w", encoding="utf-8") as f:
         f.write("x" + chr(10))
     same = history_path(tmp2, cfg2, now2)
     assert same == minted, (same, minted)
     assert len(os.listdir(logs)) == len(planted) + 1, "an existing day's file must NOT prune"
+
+    # ⛔ THE LEGACY HISTORY IS STILL READ. A rename that silently drops the old files takes
+    # a person's burn history with it, and _projection() answering None looks exactly like
+    # "not enough samples yet" - there is no error to notice. Measured: dropping the legacy
+    # glob left the whole suite green, so this exists because a mutant survived without it.
+    tmp3 = tempfile.mkdtemp(prefix="dg-legacy-")
+    logs3 = os.path.join(tmp3, "logs")
+    os.makedirs(logs3)
+    resets3 = int(time.time()) + 3600
+    rows3 = [{"at": stamp(time.time() - 1800), "pct": 10, "resets_at": stamp(resets3)},
+             {"at": stamp(time.time() - 60), "pct": 40, "resets_at": stamp(resets3)}]
+    legacy_file = os.path.join(logs3, LEGACY_HISTORY_PREFIX + "20200101-000000.jsonl")
+    with open(legacy_file, "w", encoding="utf-8") as f:
+        for row in rows3:
+            f.write(json.dumps(row) + chr(10))
+    cfg3 = {"history_dir": logs3, "keep_history": True}
+    proj = _projection(tmp3, cfg3, 40, resets3, time.time())
+    assert proj is not None and proj > 40, (
+        "a history under the OLD file name was not read: %r" % (proj,))
+    # ⚠ And the same rows under the NEW name must still work, or the read is only legacy.
+    os.rename(legacy_file, os.path.join(logs3, HISTORY_PREFIX + "20200101-000000.jsonl"))
+    assert _projection(tmp3, cfg3, 40, resets3, time.time()) == proj, "new name not read"
+
+    # ⛔ `keep_history: false` MUST STILL TURN THE HISTORY OFF. The switch was renamed into
+    # the debug block and its default flipped to ON, so a person who had deliberately
+    # switched it OFF would have it switched back on by an update - silently, since nothing
+    # reports a setting that stopped being read. Another mutant that survived without this.
+    tmp4 = tempfile.mkdtemp(prefix="dg-legacykey-")
+    for blob, want, why in (
+            ({}, True, "absent -> ON, the new default"),
+            ({"keep_history": False}, False, "legacy OFF must survive the rename"),
+            ({"keep_history": True}, True, "legacy ON"),
+            ({"debug": {"token_usage_history": False}}, False, "new key OFF"),
+            ({"keep_history": False, "debug": {"token_usage_history": True}}, True,
+             "an explicit new key beats the legacy one"),
+            ({"keep_history": True, "debug": {"token_usage_history": False}}, False,
+             "and beats it the other way too")):
+        with open(os.path.join(tmp4, "config.json"), "w", encoding="utf-8") as f:
+            json.dump(blob, f)
+        assert config(tmp4)["keep_history"] is want, "%s: %r" % (why, blob)
 
     print("selftest OK")
     return 0

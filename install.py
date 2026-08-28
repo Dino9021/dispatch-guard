@@ -175,19 +175,25 @@ _SEED_NOTE_ZH = (
 )
 
 
-def _docs_only(data):
-    """Keep the `_`-prefixed explanations, drop every real setting. Recurses one level.
+def _settable(data, prefix=""):
+    """Every real setting as a flat {"key": value} or {"block.key": value}.
 
-    ⚠ Nested blocks (`dispatch`, `resume`) get the same treatment. A block emptied of values
-    is kept rather than removed, because its explanations are the reason the file is worth
-    opening at all.
+    ⭐ WHAT IT IS FOR: comparing a person's config.json against config.example.json key by
+    key, so a value that was pinned before a default moved can be NAMED rather than merely
+    suspected. Both files have the same shape, so one flattener reads both.
+
+    ⚠ `_`-prefixed keys are documentation and are skipped - including inside a block, where
+    `dispatch` and `resume` carry nothing else until somebody sets something.
+    ⚠ One level of nesting is all this file has ever had.
     """
-    out = {"_README": _SEED_NOTE, "_README_zh": _SEED_NOTE_ZH}
-    for k, v in data.items():
+    out = {}
+    for k, v in (data or {}).items():
+        if k.startswith("_"):
+            continue
         if isinstance(v, dict):
-            out[k] = _docs_only(v) if not k.startswith("_") else v
-        elif k.startswith("_"):
-            out[k] = v
+            out.update(_settable(v, prefix + k + "."))
+        else:
+            out[prefix + k] = v
     return out
 
 
@@ -213,52 +219,31 @@ CONFIG_PATH = os.path.join(STATE_DIR, "config.json")
 
 
 def seed_config():
-    """Put a documented config.json where the code READS it. Returns the path, or None.
+    """Deliberately writes NOTHING. Returns None, always. config.json is the user's to make.
 
-    ⭐ WHY IT IS CREATED RATHER THAN LEFT TO A COPY-PASTE STEP. Every setting was documented
-    in `config.example.json`, which sits inside the plugin - a marketplace cache directory
-    with a version number in it, that the next update moves. So the file a person was told
-    to copy lived somewhere they could not find, and the file they were told to create did
-    not exist to be opened. Creating it removes both halves of that.
+    ⛔ THIS FUNCTION USED TO CREATE THE FILE, TWICE OVER, AND BOTH WAYS WERE WRONG.
+    Copying config.example.json whole PINNED every value: a machine seeded before a default
+    moved kept the old one for ever, silently, and it cost two reinstalls to work out why an
+    update "did nothing". Seeding only the `_`-prefixed explanations fixed the pinning and
+    produced a 55 KB file that documented every setting and showed not one of them, so the
+    obvious next question - "what is soft_pct actually SET to?" - still needed a second file.
 
-    ⭐ It is seeded FROM the example, comments and all, because an empty file with the right
-    name teaches nobody which keys exist. The `_key` entries beside each value are the whole
-    reason it is worth writing.
+    ⭐ NOT WRITING IT AT ALL HAS NEITHER PROBLEM. No file means nothing is pinned, ever; a
+    key that exists was typed by a person on purpose, so `--status` listing it is signal
+    rather than noise; and an update's new default reaches every machine that has not
+    deliberately overridden it.
 
-    ⛔ NEVER OVERWRITES. The file is the user's the moment it exists, and a re-run of the
-    installer - which is a routine thing after an update - must not discard their settings.
-    ⚠ Nor is it written when it cannot be read: see readable().
+    ⇒ HOW SOMEBODY LEARNS WHAT THEY CAN SET, since the file no longer teaches them:
+      - `config.example.json`, shipped inside the plugin, holds every key WITH its default;
+      - `install.py --status` prints the state directory, so the path to create is known;
+      - the README documents each setting in both languages.
+    ⚠ To change one thing, create `<state dir>/config.json` containing that one key. Every
+    other setting keeps following the plugin.
 
-    ⛔ IT SEEDS THE DOCUMENTATION, NEVER THE VALUES, and that is the whole of the design.
-    A written-out value PINS that setting for ever: the first version of this copied the
-    example verbatim, and when `auto_vscode_task` later changed default from false to true,
-    every machine seeded before that day kept the false - the update landed, the code default
-    moved, and nothing happened. Measured twice on one machine, and it cost two reinstalls to
-    find, because "the setting is in my config file" is invisible next to "the plugin has a
-    new default".
-
-    ⇒ So every real key is stripped and only the `_`-prefixed explanations remain. The file
-    still tells a person what exists and what each thing does; ⭐ adding a key becomes a
-    DELIBERATE pin rather than an accident of when they happened to install.
+    ⚠ The name and the signature are kept so callers and checks need no rewrite, and it
+    still returns None - which callers already treat as "nothing was created".
     """
-    if os.path.exists(CONFIG_PATH):
-        return None
-    example = os.path.join(HERE, "config.example.json")
-    try:
-        os.makedirs(STATE_DIR, exist_ok=True)
-        if os.path.exists(example):
-            with open(example, encoding="utf-8") as f:
-                data = json.load(f)               # a broken example must not be copied out
-            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                json.dump(_docs_only(data), f, indent=2, ensure_ascii=False)
-                f.write("\n")
-        else:
-            # ⚠ A copied folder may not carry the example. A bare defaults file is still
-            # better than nothing: it is at the right path, and it is valid.
-            save(CONFIG_PATH, {"_note": "defaults; see config.example.json in the plugin"})
-    except Exception:
-        return None
-    return CONFIG_PATH
+    return None
 
 
 def check_python():
@@ -468,29 +453,72 @@ def status():
     # ⭐ WHICH SETTINGS ARE PINNED, and why a new default may not have reached you. A value
     # in config.json always beats the code default, and there is no other way to see that
     # from outside: the plugin updates, the default moves, and nothing appears to happen.
-    pinned = []
+    # ⭐ COMPARED AGAINST config.example.json, NOT against DEFAULTS, and that is the whole
+    # reason this now catches anything. usage.DEFAULTS holds eleven thresholds; the settings
+    # a person actually changes - keep_history, history_dir, history_keep_days, every debug
+    # switch, colour, show_model - are read with `disk.get(key, default)` and appear in no
+    # DEFAULTS dict at all. So the old comparison could not name them even when pinned, and
+    # said "none" while a config pinned twenty things.
+    # ⛔ The example IS the defaults - measured 2026-08-28, its eleven threshold values are
+    # identical to usage.DEFAULTS, zero differences - and it ships beside this script. One
+    # source of truth, already present. ⚠ Should the two ever drift apart, that is reported
+    # too rather than silently trusted: see the DEFAULTS cross-check below.
+    pinned, drifted, example_bad = [], [], []
     try:
         import sys as _sys
         _sys.path.insert(0, os.path.join(HERE, "hooks"))
         import usage as _u, dispatch_gate as _g          # noqa: E402
         disk = load(CONFIG_PATH, {}) or {}
+        example = load(os.path.join(HERE, "config.example.json"), {}) or {}
+        want, have = _settable(example), _settable(disk)
+        for k in sorted(have):
+            pinned.append(k)
+            if k in want and have[k] != want[k]:
+                drifted.append("%s = %s   (the default is now %s)"
+                               % (k, json.dumps(have[k], ensure_ascii=False),
+                                  json.dumps(want[k], ensure_ascii=False)))
+        # ⛔ A KEY THE EXAMPLE NO LONGER HAS IS INVISIBLE TO THE LOOP ABOVE, and one of them
+        # matters more than anything the loop can find. `keep_history` was renamed into
+        # debug.token_usage_history and removed from the example, but it is still READ - so
+        # a config carrying "keep_history": false silently keeps the history off while the
+        # comparison reports "all still equal to the current default". ⚠ Found by a refuting
+        # pass: the net built to make pinning safe had a hole exactly where the pinning
+        # cancels a default. Renamed keys go here as they appear.
+        RENAMED = {"keep_history": "debug.token_usage_history"}
+        for old_key, new_key in RENAMED.items():
+            if old_key in have:
+                drifted.append("%s = %s   (renamed - it still works, but %s is the key now"
+                               ", and the default is %s)"
+                               % (old_key, json.dumps(have[old_key], ensure_ascii=False),
+                                  new_key,
+                                  json.dumps(want.get(new_key), ensure_ascii=False)))
+        # ⛔ The source of truth checked against the code, so "compare with the example"
+        # cannot quietly become "compare with something stale".
         for k, v in sorted(_u.DEFAULTS.items()):
-            if k in disk and disk[k] != v:
-                pinned.append("%s = %r (default %r)" % (k, disk[k], v))
+            if k in want and want[k] != v:
+                example_bad.append("%s: example %r, code %r" % (k, want[k], v))
         for k, v in sorted(_g.DEFAULTS.items()):
-            block = disk.get("dispatch") or {}
-            if k in block and block[k] != v:
-                pinned.append("dispatch.%s = %r (default %r)" % (k, block[k], v))
+            if ("dispatch." + k) in want and want["dispatch." + k] != v:
+                example_bad.append("dispatch.%s: example %r, code %r"
+                                   % (k, want["dispatch." + k], v))
     except Exception:
         pinned = None
     if pinned is None:
         print("pinned settings     : could not be read")
     elif not pinned:
         print("pinned settings     : none - every setting follows the plugin's default")
+    elif not drifted:
+        print("pinned settings     : %d, all still equal to the current default" % len(pinned))
     else:
-        print("pinned settings     : ⚠ %d, and these OVERRIDE any new default" % len(pinned))
-        for line in pinned:
+        print("pinned settings     : %d, and ⚠ %d NO LONGER MATCH THE DEFAULT"
+              % (len(pinned), len(drifted)))
+        for line in drifted:
             print("                      %s" % line)
+        print("                      ⭐ Delete a key to follow the plugin's default again.")
+    if example_bad:
+        print("                      ⛔ config.example.json disagrees with the code:")
+        for line in example_bad:
+            print("                        %s" % line)
     elsewhere = False
     if found and installed.get(found):
         rec = (installed[found][0].get("installPath") or "").replace("\\", "/").rstrip("/")
@@ -535,9 +563,13 @@ def status():
     # this "a logs/ folder under the state directory", which is true and gives a person
     # nothing they can paste into a file manager. A sentence in the documentation can only
     # ever name the default; this resolves `history_dir` and prints the result.
-    # ⚠ It usually does not exist, and that is not a fault: both switches that write here
-    # are off by default. "Not created yet, and here is which switch is off" is the honest
-    # answer to "where are my files?" - a path with no explanation is not.
+    # ⚠ When it does not exist, say WHICH switch is off rather than leaving a bare path.
+    # ⛔ THE SWITCHES ARE READ THROUGH usage.config(), NOT OFF THE RAW JSON. A refuting pass
+    # caught this reporting "keep_history and debug.API_response_usage are both off" on a
+    # machine whose history was ON: the raw file has no `keep_history` any more, the switch
+    # lives at debug.token_usage_history, and only config() knows the defaults, the list
+    # alias and the legacy fallback. A status line that contradicts the running code is
+    # worse than no status line.
     logs = cfg.get("history_dir") or os.path.join(STATE_DIR, "logs")
     logs = os.path.abspath(os.path.expanduser(logs))
     print("log files           : %s" % logs)
@@ -555,7 +587,8 @@ def status():
         print("                        paths above are not where your files are.")
     if os.path.isdir(logs):
         kept = [f for f in os.listdir(logs)
-                if f.startswith(("limits-history-", "usage-response-"))]
+                if f.startswith(("token_usage_history-", "limits-history-",
+                                 "usage-response-"))]
         total = 0
         for f in kept:
             try:
@@ -570,17 +603,24 @@ def status():
                  "FOR EVER (history_keep_days is %r)" % (days,) if forever
                  else "%g days (history_keep_days)" % days))
     else:
-        on = []
-        if cfg.get("keep_history"):
-            on.append("keep_history")
-        dbg = cfg.get("debug") or {}
-        if isinstance(dbg, list):
-            dbg = {k: True for k in dbg}
-        if isinstance(dbg, dict) and dbg.get("API_response_usage"):
-            on.append("debug.API_response_usage")
-        print("                      not created yet - %s"
-              % ("nothing written since %s was switched on" % " and ".join(on) if on
-                 else "keep_history and debug.API_response_usage are both off"))
+        on, off = [], []
+        try:
+            import sys as _s
+            _s.path.insert(0, os.path.join(HERE, "hooks"))
+            import usage as _uu                                       # noqa: E402
+            effective = _uu.config(STATE_DIR).get("debug") or {}
+        except Exception:
+            effective = {}
+        for name in sorted(effective):
+            (on if effective[name] else off).append("debug." + name)
+        if on:
+            print("                      not created yet - nothing has been written since")
+            print("                      %s came on" % " and ".join(on))
+        elif off:
+            print("                      not created yet - %s %s off"
+                  % (" and ".join(off), "is" if len(off) == 1 else "are"))
+        else:
+            print("                      not created yet")
 
     try:
         r = subprocess.run([sys.executable, os.path.join(HERE, "hooks", "usage.py"),
@@ -1106,13 +1146,21 @@ def statusline_install(argv):
     print("settings.json       : %s" % SETTINGS)
     print("state directory     : %s" % STATE_DIR)
     if check_only:
-        print("config.json         : %s" % ("already there" if os.path.exists(CONFIG_PATH)
-                                            else "would be created (--check: not written)"))
+        print("config.json         : %s" % ("yours, left alone"
+                                            if os.path.exists(CONFIG_PATH)
+                                            else "none - every setting follows the default"))
     else:
-        made = seed_config()
-        print("config.json         : %s" % (("created %s - every setting is explained "
-                                             "inside it" % made) if made
-                                            else "already there, not touched"))
+        # ⛔ NOTHING IS CREATED, deliberately - see seed_config(). No file means no value
+        # is pinned, so every future default reaches this machine.
+        seed_config()
+        if os.path.exists(CONFIG_PATH):
+            print("config.json         : yours, left alone - %s" % CONFIG_PATH)
+        else:
+            print("config.json         : none, and none is created - every setting")
+            print("                      follows the plugin's default.")
+            print("                      To change one, create %s" % CONFIG_PATH)
+            print("                      with just that key. See config.example.json in")
+            print("                      the plugin for every key and its default.")
 
     if "--uninstall" in argv:
         if not ours:

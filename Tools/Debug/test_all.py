@@ -29,6 +29,9 @@ from _debugpaths import HERE as DEBUG_DIR, REPO, fresh_scratch, repo_path  # noq
 # they exercise install.py against scratch directories - so they live under Tools/Debug.
 CHECKS = [
     ("dispatch gate", [repo_path("hooks", "dispatch_gate.py"), "--selftest"]),
+    # ⚠ Parses the COMMITTED fixture, never the network. A check that quietly needs the
+    # internet passes for the wrong reason on the day the page changes shape.
+    ("model pricing", [repo_path("hooks", "model_pricing.py"), "--selftest"]),
     ("usage",         [repo_path("hooks", "usage.py"), "--selftest"]),
     ("unattended",    [repo_path("hooks", "unattended.py"), "--selftest"]),
     ("install",       [os.path.join(DEBUG_DIR, "test_install.py")]),

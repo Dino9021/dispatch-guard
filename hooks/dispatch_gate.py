@@ -62,6 +62,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cmd_guards  # noqa: E402  - the silent-failure guards; see its docstring
+import model_pricing  # noqa: E402  - the published price table; see its docstring
 import usage  # noqa: E402  - same folder, stdlib-only, no install step
 
 # Candidate markers for "this is the repository root", tried in order.
@@ -103,9 +104,9 @@ DEFAULTS = {
     # out. A slot somebody else owns is never touched. Set false to keep the slot empty.
     "auto_statusline": True,
     # ⭐ THE MOST A SUB-AGENT'S MODEL MAY COST: US dollars per million INPUT tokens, compared
-    # against the catalog's published `pricing` tier (see MODEL_PRICES). 5 allows haiku ($1),
-    # sonnet ($2-3) and the current opus ($5); it refuses fable ($10) and the retired
-    # opus-4-0/4-1 ($15). null switches the check off.
+    # against the published base input price in model_pricing.json. 5 allows haiku, sonnet and
+    # the current opus; it refuses fable and the retired opus 4/4.1. null switches the check
+    # off.
     #
     # ⛔ A NUMBER RATHER THAN A MODEL NAME, and the reason is that a name goes stale while a
     # number does not. `"opus"` meant $15 in 2025 and means $5 now - so a ceiling written as a
@@ -118,6 +119,19 @@ DEFAULTS = {
     # ever meets as a refusal is a rule it tries to route around; Tools/Debug/test_guards.py
     # asserts the skill's table and this table have not drifted apart.
     "max_model_price": 5,
+    # ⭐ HOW OLD THE PRICE TABLE MAY GET before the gate forks a background refresh, in hours.
+    # ⚠ The refresh NEVER blocks anything: the session that notices the staleness keeps using
+    # the file it has, and the new numbers land for the next one. So a longer interval costs
+    # accuracy, never latency. 0 or null switches the refresh off and pins the table to
+    # whatever is on disk.
+    "model_price_hours": 24,
+    # ⛔ THE ONE SWITCH THAT STOPS THIS PLUGIN TALKING TO THE INTERNET. It did not, before
+    # this. Set false and nothing is ever fetched; the gate uses the seed that ships in the
+    # repository, which is a real table taken from the published page on the day it was cut.
+    "model_price_update": True,
+    # The page the table is parsed from. Overridable so a mirror or a pinned copy can be used;
+    # ⚠ whatever it points at must be that page's markdown, not an HTML rendering of it.
+    "model_price_url": model_pricing.SOURCE_URL,
 }
 
 # ⭐ ONE CONFIG READER, TWO FAMILIES. Merging the guard switches into DEFAULTS gives them
@@ -134,48 +148,93 @@ DEFAULTS.update(cmd_guards.GUARD_DEFAULTS)
 APPROVAL_FORMS = (r"平行\s*(\d{1,2})\b", r"\bN\s*=\s*(\d{1,2})\b",
                   r"\bparallel\s*[:=]?\s*(\d{1,2})\b")
 
-# ⭐ EVERY NUMBER HERE IS PUBLISHED DATA: the `pricing` field on each entry of the shipped
-# model catalog, which reads `tier_<input>_<output>` in US dollars per million tokens. Copied
-# verbatim, one row per model.
+# ⭐ THE PRICE TABLE IS A FILE NOW, NOT A LITERAL IN THIS MODULE. Every number comes from
+# Anthropic's published pricing page, parsed by hooks/model_pricing.py into
+# `model_pricing.json`, and refreshed in the background by keep_prices_fresh().
 #
-# ⛔ WHY PER MODEL AND NOT PER FAMILY, which is what this used to do. Because a family is not
-# one price. `claude-opus-4-0` is tier_15_75 and `claude-opus-5` is tier_5_25 - the same family,
-# THREE TIMES the input price - and `claude-sonnet-5` (tier_2_10) is CHEAPER than
-# `claude-sonnet-4-6` (tier_3_15). A family-level ladder calls those equal and is simply wrong
-# about the thing it claims to measure.
+# ⛔ IT USED TO BE TYPED IN HERE, and the table that replaced it caught the typed one being
+# wrong: this file priced Claude Haiku 3.5 at $1 when the published price is $0.80, because
+# that one row was reasoned from the harness's own weight function instead of read from the
+# page. ⇒ A table that cannot be checked against its source drifts silently, and it did.
 #
-# ⛔ AND WHY IT IS COPIED RATHER THAN INFERRED. The previous version gave `mythos` a weight of
-# 10 by reasoning from `advisor_rank`, in a file whose own comments said not to invent numbers.
-# The catalog's `pricing` field was there the whole time and needed no reasoning at all. The
-# number turned out to be right - claude-mythos-5 IS tier_10_50 - which is exactly what makes
-# the method the problem rather than the value.
+# ⚠ THE `pricing` FIELD INSIDE THE INSTALLED BINARY WAS THE OTHER CANDIDATE AND IT LOST.
+# Reading it means a machine that has not updated Claude Code prices models from an old
+# catalog - stale in a different place, not fresher. The published page is the only source
+# that does not depend on some local install being current.
 #
-# ⚠ HAIKU IS THE ONE EXCEPTION AND IT IS MARKED. Its catalog `pricing` is the opaque label
-# `haiku_45` / `haiku_35`, not a `tier_x_y` string, so those two rows come from the harness's
-# own weight function instead (`if(n.includes("haiku")) return 1`). Same source as before, and
-# the only rows here that are not the published tier.
-#
-# ⇒ To refresh: Memory/tasks/.../scratch/07-model-facts/probe_pricing.py prints this table.
-MODEL_PRICES = (
-    ("claude-opus-4-0", 15), ("claude-opus-4-1", 15),          # tier_15_75
-    ("claude-opus-4-5", 5), ("claude-opus-4-6", 5),            # tier_5_25
-    ("claude-opus-4-7", 5), ("claude-opus-4-8", 5),
-    ("claude-opus-5", 5),
-    ("claude-3-5-sonnet", 3), ("claude-3-7-sonnet", 3),        # tier_3_15
-    ("claude-sonnet-4-0", 3), ("claude-sonnet-4-5", 3),
-    ("claude-sonnet-4-6", 3),
-    ("claude-sonnet-5", 2),                                    # tier_2_10
-    ("claude-fable-5", 10), ("claude-mythos-5", 10),            # tier_10_50
-    ("claude-haiku-4-5", 1), ("claude-3-5-haiku", 1),          # ⚠ not tier_; see above
-)
+# ⇒ WHAT `FAMILY_LATEST` BECAME. The page publishes no "latest" flag, so model_pricing.py
+# derives it from the version in each display name and writes it into the file. `opus`
+# therefore resolves to whatever the page currently calls the newest opus - which is the whole
+# point, because `opus` meant $15 in 2025 and means $5 now.
+_DOC = None
 
-# ⭐ WHAT A BARE FAMILY ALIAS ACTUALLY GETS, from the catalog's `latest_per_family`. `opus`
-# resolves to claude-opus-5, so it is priced as claude-opus-5 - not as the most expensive opus
-# that ever existed. ⛔ `mythos` IS ABSENT ON PURPOSE: the selectable alias list in the binary
-# is ["sonnet","opus","haiku","fable",…], so a bare `mythos` is not a thing a session can ask
-# for. Its full model ID is priced above, and a bare `mythos` falls through to unrecognised.
-FAMILY_LATEST = (("fable", "claude-fable-5"), ("opus", "claude-opus-5"),
-                 ("sonnet", "claude-sonnet-5"), ("haiku", "claude-haiku-4-5"))
+
+def price_doc():
+    """(doc, where) for this process, loaded once. `(None, reason)` when nothing is readable.
+
+    ⚠ LAZY, NOT AT IMPORT. The test suite and `--selftest` import this module with a state
+    directory that is a temporary fixture and may not exist yet; loading at import time would
+    bind the table to whatever the state directory looked like before the test set it up.
+    """
+    global _DOC
+    if _DOC is None:
+        _DOC = model_pricing.load(usage.state_dir())
+    return _DOC
+
+
+def prices():
+    """model ID -> its row. `{}` when no table is readable; callers must fail OPEN on that."""
+    doc, _where = price_doc()
+    return (doc or {}).get("models") or {}
+
+
+def price_of(mid):
+    return (prices().get(mid) or {}).get("input")
+
+
+def family_latest():
+    """((family, newest model ID), ...) for the families a session may NAME, dearest first.
+
+    ⛔ SORTED BY PRICE, NOT BY THE FILE'S ORDER. Two callers depend on the order: the refusal
+    names `allowed[0]` as the best model still permitted, and the availableModels clamp takes
+    the most expensive usable family. Insertion order would make both answers depend on how
+    the page happened to be laid out that day.
+
+    ⛔ `mythos` IS PRICED BUT IS NOT HERE - see model_pricing.ALIAS_FAMILIES. It is on the
+    published page, so a full `claude-mythos-5` is priced correctly; but a bare `mythos` is not
+    an alias any session can select, and offering it as one would invent a dispatch that
+    cannot happen.
+    """
+    doc, _where = price_doc()
+    fams = (doc or {}).get("families") or {}
+    m = prices()
+    rows = [(f, fams[f]) for f in model_pricing.ALIAS_FAMILIES if fams.get(f) in m]
+    return tuple(sorted(rows, key=lambda r: -m[r[1]]["input"]))
+
+
+def price_sentence():
+    """`haiku $1, sonnet $2, opus $5, fable $10` - generated, for the sub-task prompt.
+
+    ⛔ THIS USED TO BE FOUR NUMBERS TYPED INTO `PREPEND`. Removing the table from this module
+    while leaving its numbers in the prompt template would have moved the drift rather than
+    ended it: the gate would refuse at one price while the prompt promised another.
+    """
+    m = prices()
+    rows = sorted(family_latest(), key=lambda r: m[r[1]]["input"])
+    return ", ".join("%s $%g" % (f, m[mid]["input"]) for f, mid in rows)
+
+
+def dearest():
+    """(model ID, price) of the most expensive model on the table, or (None, None).
+
+    ⭐ For the one example the sub-task prompt needs to carry: naming an old version can cost
+    MORE than naming the family. Sorted first so ties resolve the same way every run.
+    """
+    m = prices()
+    if not m:
+        return None, None
+    mid = max(sorted(m), key=lambda k: m[k]["input"])
+    return mid, m[mid]["input"]
 
 # ⛔ THE TRAP THAT DECIDES THE SHAPE OF THIS GUARD. The accepted alias list in the binary is
 # ["sonnet","opus","haiku","fable","best","sonnet[1m]","opus[1m]","fable[1m]","opusplan"] -
@@ -220,11 +279,11 @@ anything YOU dispatch in turn.
    full quality and do NOT self-throttle to save budget. Whether another wave goes out
    is the dispatcher's decision.
 7. CHOOSE THE MODEL BEFORE YOU DISPATCH, not after being refused. A sub-task's model may
-   cost at most ${max_model_price} per million INPUT tokens: haiku $1, sonnet $2, opus $5,
-   fable $10 - and `best` means fable. Naming an old version can cost MORE than naming the
-   family (claude-opus-4-0 is $15). Omitting `model` is always allowed and inherits the
-   model already in use, so there is always a legal dispatch. Full table and the reasoning:
-   `dispatch-protocol`.
+   cost at most ${max_model_price} per million INPUT tokens: {price_list} - and `best`
+   means fable. Naming an old version can cost MORE than naming the family ({dear_example}).
+   Omitting `model` is always allowed and inherits the model already in use, so there is
+   always a legal dispatch. These prices are read from Anthropic's published pricing page,
+   not from anybody's memory; the reasoning is in `dispatch-protocol`.
 8. SCRATCH FILES GO IN THE TASK FOLDER, AND YOU DO NOT DELETE THEM. Every intermediate
    file you write - probes, captured output, half-built scripts, fixtures - goes under
    {task_root}/<task>/scratch/<your-subtask>/, never the system temp directory and never
@@ -435,6 +494,85 @@ def keep_clock_running(sdir):
     return True
 
 
+# ⚠ TWO CLOCKS AGAIN, for the same reason CLOCK_MARK has two. `model_pricing.json` says when
+# the DATA was taken; this mark says when a child was last STARTED. A page that 404s or a
+# proxy that eats the request leaves the data old for ever, so without the second clock a
+# failing fetch would fork one process per session start until somebody noticed.
+PRICE_MARK = "model_prices.spawn"
+PRICE_RETRY = 900
+
+
+def prices_due(sdir, cfg, now=None):
+    """Is a price refresh due AND has one not just been started? Pure decision, no side effects.
+
+    ⛔ Split out from keep_prices_fresh() for the same reason clock_due() is split from
+    keep_clock_running(): the decision can then be CHECKED without spawning a process or
+    touching the network. ⚠ Two clocks, not one - `model_pricing.json` says when the DATA was
+    taken, PRICE_MARK says when a child was last STARTED. Only the second moves when a fetch
+    fails, so only the second can stop a failing fetch from being retried on every session.
+    """
+    now = time.time() if now is None else now
+    if not cfg.get("model_price_update", DEFAULTS["model_price_update"]):
+        return False
+    doc, _where = model_pricing.load(sdir)
+    if not model_pricing.due(doc, cfg.get("model_price_hours",
+                                          DEFAULTS["model_price_hours"]), now):
+        return False
+    try:
+        if now - os.path.getmtime(os.path.join(sdir, PRICE_MARK)) < PRICE_RETRY:
+            return False
+    except OSError:
+        pass
+    return True
+
+
+def keep_prices_fresh(sdir, cfg, now=None):
+    """Fork a detached price refresh when the table has aged past `model_price_hours`.
+
+    ⛔ IT NEVER WAITS, AND THE HOOK NEVER FETCHES. This is the whole reason the update lives
+    in a child: a synchronous HTTP call inside a hook would stall a tool call for as long as
+    the network took, and a slow proxy would be indistinguishable from a hung plugin. The
+    session that notices the staleness carries on with the table it already has; the new
+    numbers land for the next session.
+
+    ⚠ The child re-reads the file and decides for itself whether to fetch. This function
+    decides whether to FORK. Neither is allowed to assume the other got it right.
+
+    Returns True when it started a child.
+    """
+    now = time.time() if now is None else now
+    if not prices_due(sdir, cfg, now):
+        return False
+    mark = os.path.join(sdir, PRICE_MARK)
+    try:
+        os.makedirs(sdir, exist_ok=True)
+        with open(mark, "w") as f:
+            f.write(str(now))
+    # ⛔ NOT `except OSError`. A refresh is a convenience; nothing it can raise may be allowed
+    # to escape into main() and take enforcement down with it. See keep_clock_running().
+    except Exception:
+        return False
+
+    kw = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
+          "stderr": subprocess.DEVNULL, "cwd": sdir}
+    if os.name == "nt":
+        kw["creationflags"] = (getattr(subprocess, "DETACHED_PROCESS", 0x8)
+                               | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200))
+    else:
+        kw["start_new_session"] = True
+    try:
+        # ⚠ --dir is not optional, for the same reason as the usage child: model_pricing.py
+        # resolves its own state directory, so a child launched without it can write to a
+        # different directory than the one this function just judged stale.
+        subprocess.Popen([sys.executable, os.path.join(HERE, "model_pricing.py"),
+                          "--update", "--dir", sdir,
+                          "--url", cfg.get("model_price_url",
+                                           DEFAULTS["model_price_url"])], **kw)
+    except Exception:
+        return False
+    return True
+
+
 def runnable(script, root=False):
     """A command the model can actually RUN, not a bare path to a .py file.
 
@@ -565,9 +703,10 @@ def maybe_adopt_statusline(cfg):
     try:
         sys.path.insert(0, os.path.dirname(HERE))
         import install
-        # ⭐ Seeded here as well as in install.py, because a marketplace user may never run
-        # install.py at all - the hook is the whole installation now. It creates nothing
-        # when the file is already there.
+        # ⚠ KEPT AS A CALL THAT NOW DOES NOTHING, on purpose. seed_config() no longer
+        # writes config.json at all - see its docstring - and the call stays so that the
+        # decision lives in ONE place. A marketplace user may never run install.py, so if
+        # seeding ever comes back, this is the path that has to do it too.
         install.seed_config()
         cmd = install.adopt_statusline_if_empty()
     except Exception:
@@ -781,20 +920,26 @@ def model_price(raw):
     if name in MODEL_INHERIT:
         return "inherit", 0, True
     name = MODEL_ALIASES.get(name, name)
-    prices = dict(MODEL_PRICES)
+    table = prices()
     # ⛔ `mid in name` ONLY - never `name in mid`. The reverse would let the bare alias `opus`
     # match whichever opus ID happens to sort first, which after a longest-first sort is the
     # $15 one. A bare alias must fall through to the family branch below.
-    for mid, price in sorted(MODEL_PRICES, key=lambda row: -len(row[0])):
+    #
+    # ⭐ LONGEST ID FIRST is what makes the shortened IDs on the published page safe. The page
+    # lists "Claude Opus 4" ($15) and "Claude Opus 4.5" ($5), which become `claude-opus-4` and
+    # `claude-opus-4-5`; the first is a prefix of the second, so a shortest-first walk would
+    # price every 4.x opus at $15 and refuse work that is perfectly legal.
+    for mid in sorted(table, key=len, reverse=True):
         short = mid[7:] if mid.startswith("claude-") else mid
         if mid in name or short in name:
-            return mid, price, True
-    for family, latest in FAMILY_LATEST:
+            return mid, table[mid]["input"], True
+    latest_by_family = family_latest()
+    for family, latest in latest_by_family:
         if name == family:
-            return latest, prices[latest], True
-    for family, latest in FAMILY_LATEST:
+            return latest, table[latest]["input"], True
+    for family, latest in latest_by_family:
         if family in name:
-            return latest, prices[latest], False
+            return latest, table[latest]["input"], False
     return None, None, False
 
 
@@ -828,6 +973,17 @@ def model_refusal(tool_input, cfg, avail=None, log_to=None):
     of guard that gets the whole plugin uninstalled. It is logged instead.
     """
     limit = cfg.get("max_model_price", DEFAULTS["max_model_price"])
+    # ⛔ NO TABLE MEANS NO CHECK, LOUDLY. Neither the shipped seed nor the live copy could be
+    # read - a deleted file, a corrupted write, a state directory somebody chmod'd. Every
+    # model would price as unrecognised and every dispatch with a `model` would be refused,
+    # which is a cost guard bricking the work it exists to pace. ⇒ It fails OPEN and says so,
+    # the same rule the misconfigured ceiling below follows.
+    if not prices():
+        if log_to:
+            _doc, where = price_doc()
+            log(log_to, "MODEL-PRICE-TABLE-MISSING (%s) - check not applied. Run `%s --update`"
+                % (where, runnable("model_pricing.py")))
+        return None
     if limit is None or limit is False:
         # ⚠ Logged rather than silent, for the same reason as every other off switch: an
         # absent refusal must not be indistinguishable from a check that never ran.
@@ -851,8 +1007,7 @@ def model_refusal(tool_input, cfg, avail=None, log_to=None):
     # ⭐ CLAMP THE CEILING TO WHAT THE ACCOUNT CAN ACTUALLY USE. An `opus` ceiling on an
     # account restricted to sonnet is really a sonnet ceiling, and saying so out loud is the
     # difference between a limit the owner set and a limit they merely believe they set.
-    prices = dict(MODEL_PRICES)
-    usable = [(fam, prices[latest]) for fam, latest in FAMILY_LATEST
+    usable = [(fam, price_of(latest)) for fam, latest in family_latest()
               if family_available(fam, avail)]
     narrowed = None
     if usable and max(p for _f, p in usable) < cw:
@@ -882,9 +1037,10 @@ def model_refusal(tool_input, cfg, avail=None, log_to=None):
                 "it, and an unrecognised model is treated as ABOVE the limit rather than "
                 "below it (a new, more expensive model must not slip through silently). Known "
                 "families: %s. Dispatch with `%s`, or omit `model` to inherit this session's "
-                "model. The table is in `%s` (MODEL_PRICES) and in config.example.json."
-                % (raw, ", ".join(f for f, _l in FAMILY_LATEST), best_allowed,
-                   os.path.join("hooks", "dispatch_gate.py")))
+                "model. The table is `%s`, taken from %s - run `%s --show` to read it."
+                % (raw, ", ".join(f for f, _l in family_latest()), best_allowed,
+                   model_pricing.FILENAME, model_pricing.SOURCE_URL,
+                   runnable("model_pricing.py")))
     if price <= cw:
         return None
     # ⛔ REPORT THE EFFECTIVE LIMIT, NOT THE CONFIGURED ONE. Naming $5 while advising `sonnet`
@@ -903,6 +1059,66 @@ def model_refusal(tool_input, cfg, avail=None, log_to=None):
                label, price, float(price) / cw, best_allowed))
 
 
+def model_note(cfg, sdir, avail=None):
+    """One sentence naming the models this session may dispatch, for the OPENING context.
+
+    ⭐ THIS IS THE HALF THE HOOK CANNOT DO. A PreToolUse refusal arrives after the agent has
+    already chosen, written the prompt and spent the turn - and a rule an agent only ever
+    meets as a refusal is a rule it starts trying to route around. Saying it once, up front,
+    with the actual permitted families in it, costs one line and removes the retry loop.
+    ⇒ The hook is still there. It is the backstop, not the announcement.
+
+    ⚠ IT NAMES WHAT IS ALLOWED AND WHAT IS NOT. Listing only the permitted models reads as a
+    suggestion; naming the refused ones and their prices is what makes it a limit.
+
+    ⛔ AND IT APPLIES THE SAME `availableModels` CLAMP model_refusal() APPLIES. Without that
+    this function announces a model the gate then refuses - on an account restricted to
+    sonnet it would say "you may dispatch `opus`", the agent would dispatch opus, and the
+    refusal it was written to prevent arrives anyway. ⇒ An announcement that disagrees with
+    the enforcement is worse than no announcement: it teaches the agent the gate is unreliable.
+    """
+    doc, where = price_doc()
+    m = prices()
+    if not m:
+        return (" ⛔ NO MODEL PRICE TABLE IS READABLE (%s), so the sub-agent model ceiling is "
+                "NOT being enforced this session - do not report it as active. Run `%s "
+                "--update`." % (where, runnable("model_pricing.py")))
+    limit = cfg.get("max_model_price", DEFAULTS["max_model_price"])
+    if limit is None or limit is False:
+        return " ⚠ The sub-agent model ceiling is switched off (`max_model_price` is null)."
+    if isinstance(limit, bool):
+        cw = None
+    elif isinstance(limit, (int, float)):
+        cw = float(limit)
+    else:
+        cw = model_price(limit)[1]
+    if not cw or cw <= 0:
+        return ""
+    rows = [(f, mid) for f, mid in family_latest() if family_available(f, avail)]
+    narrowed = None
+    if rows and max(m[mid]["input"] for _f, mid in rows) < cw:
+        cw = max(m[mid]["input"] for _f, mid in rows)
+        narrowed = next(f for f, mid in rows if m[mid]["input"] == cw)
+    ok = ["`%s` $%g" % (f, m[mid]["input"]) for f, mid in reversed(rows)
+          if m[mid]["input"] <= cw]
+    no = ["`%s` $%g" % (f, m[mid]["input"]) for f, mid in rows if m[mid]["input"] > cw]
+    st = model_pricing.status(sdir)
+    # ⚠ A refresh that has been failing for a month looks exactly like one that never needed
+    # to run. Said out loud, and only when it actually failed.
+    warn = ("" if not st or st.get("ok") else
+            " ⚠ The last price refresh FAILED: %s" % str(st.get("reason", ""))[:140])
+    return (" ⭐ SUB-AGENT MODELS: `max_model_price` allows $%g per million input tokens%s, so "
+            "you may dispatch %s%s. Omitting `model` inherits this session's model and is "
+            "always allowed. Choose BEFORE you dispatch - the gate refuses the rest. Prices "
+            "%s (%s).%s"
+            % (cw,
+               (" (narrowed to `%s` by your `availableModels` allowlist)" % narrowed)
+               if narrowed else "",
+               ", ".join(ok) or "nothing on this table",
+               (" and NOT %s" % ", ".join(no)) if no else "",
+               model_pricing.age_line(doc), where, warn))
+
+
 def deny(event, reason, systemMessage=None):
     """Refuse the tool call. ⭐ Optionally say so on the USER's screen as well.
 
@@ -918,14 +1134,29 @@ def deny(event, reason, systemMessage=None):
     print(json.dumps(out, ensure_ascii=False))
 
 
+def prepend_head(cfg):
+    """The protocol block, with the live price table interpolated into rule 7.
+
+    ⚠ THE FALLBACK WORDING MATTERS. With no readable table there are no numbers to promise,
+    and inventing plausible ones here is exactly the failure this whole change removed. The
+    rule still states the ceiling - which is the owner's setting and is always known - and
+    points at the file instead of naming prices it cannot read.
+    """
+    mid, dear = dearest()
+    return PREPEND.format(
+        task_root=cfg["task_root"], plan_glob=cfg["plan_glob"],
+        protocol_doc=cfg["protocol_doc"],
+        max_model_price=cfg.get("max_model_price", DEFAULTS["max_model_price"]),
+        price_list=price_sentence() or ("the table in %s" % model_pricing.FILENAME),
+        dear_example=("%s is $%g" % (mid, dear)) if mid
+        else "an old version can be several times the family's current price")
+
+
 def allow_prepended(event, tool_input, cfg, note):
     prompt = tool_input.get("prompt")
     if not isinstance(prompt, str):
         return
-    head = PREPEND.format(task_root=cfg["task_root"], plan_glob=cfg["plan_glob"],
-                          protocol_doc=cfg["protocol_doc"],
-                          max_model_price=cfg.get("max_model_price",
-                                                  DEFAULTS["max_model_price"]))
+    head = prepend_head(cfg)
     if note:
         head += "!! %s\n\n" % note
     updated = dict(tool_input)
@@ -1371,6 +1602,11 @@ def on_session_start(payload, root, sdir, cfg):
     # ⭐ SAY IT UP FRONT. A rule an agent only meets as a refusal costs a wasted turn every
     # session, and this one refuses EVERY dispatch rather than nagging once - so stating it in
     # the opening line is the difference between one Skill call and a confused retry loop.
+    # ⛔ FORKED, NEVER AWAITED. See keep_prices_fresh(): this session keeps the table it has.
+    if keep_prices_fresh(sdir, cfg):
+        log(root, "MODEL-PRICE-REFRESH-FORKED")
+    model_line = model_note(cfg, sdir, avail=available_models(root))
+
     need = cmd_guards.required_skills(cfg)
     skills_line = ("" if not need else
                    " ⛔ BEFORE YOUR FIRST DISPATCH you must invoke %s - every dispatch is "
@@ -1394,13 +1630,13 @@ def on_session_start(payload, root, sdir, cfg):
             "sub-task prompt are written to %s/<YYYYMMDD-HHMMSS-task-name>/%s BEFORE any "
             "dispatch%s.%s %s Before "
             "dispatching a wave run `%s --verdict` for GO/PACE/STOP - never interpret the "
-            "raw numbers yourself.%s"
+            "raw numbers yourself.%s%s"
             % (cfg["protocol_doc"], cfg["task_root"], cfg["plan_glob"],
                (" - that folder already exists, so create the task folder inside it rather "
                 "than choosing a location") if task_root_ready else
                (" - and %s could NOT be created, so create it yourself before dispatching"
                 % cfg["task_root"]), skills_line, brake,
-               runnable("usage.py"), "".join(notes)))
+               runnable("usage.py"), model_line, "".join(notes)))
 
     # ⛔ THE ONES MARKED "TELL THE USER" NOW REACH THE USER. They were asking the MODEL to
     # relay them - which is advice a model weighs against its task, and this plugin's whole
@@ -1853,9 +2089,20 @@ def selftest():
         # ⚠ A bare family alias is priced as the model it actually resolves to, so `opus` is
         # claude-opus-5 at $5 - not as the most expensive opus that ever existed.
         assert model_price("opus") == ("claude-opus-5", 5, True), model_price("opus")
-        assert model_price("claude-opus-4-0") == ("claude-opus-4-0", 15, True)
+        # ⚠ The published page names it "Claude Opus 4", so the ID is `claude-opus-4` and it
+        # matches `claude-opus-4-0` as a prefix. Still $15, which is the number that matters.
+        assert model_price("claude-opus-4-0") == ("claude-opus-4", 15, True), \
+            model_price("claude-opus-4-0")
         # ...and an unseen version in a known family resolves, but is marked as an assumption.
         assert model_price("claude-opus-6") == ("claude-opus-5", 5, False)
+        # ⭐ THE NUMBERS COME FROM THE FILE. Pinned against model_pricing directly, so a table
+        # that silently stopped loading cannot leave these assertions passing on stale
+        # constants somebody re-typed into this module.
+        _doc, _where = price_doc()
+        assert _doc and _doc.get("source"), "no price table loaded: %s" % (_where,)
+        assert price_of("claude-opus-5") == _doc["models"]["claude-opus-5"]["input"]
+        # ⚠ The one row the old hand-typed table had WRONG. It said $1; the page says $0.80.
+        assert price_of("claude-3-5-haiku") == 0.8, price_of("claude-3-5-haiku")
         assert not model_refusal({"model": "fable"}, {"max_model_price": None}), "null must be off"
         assert not model_refusal({"model": "fable"}, {"max_model_price": "typo"}), "typo opens"
         assert not model_refusal({"model": "fable"}, {"max_model_price": 0}), "0 must be off"
@@ -1876,6 +2123,25 @@ def selftest():
         for entry in (["opus-4-5"], ["claude-opus-5"], ["opus"]):
             assert not model_refusal({"model": "opus"}, ceil, avail=entry), entry
         assert not model_refusal({"model": "opus"}, ceil, avail=None), "None means everything"
+        # ⛔ MUTATION CHECK ON THE FAIL-OPEN THAT MATTERS MOST. Take the table away and the
+        # ceiling must stop refusing rather than refuse everything: with no prices every model
+        # reads as unrecognised, and "unrecognised is refused" would brick every dispatch that
+        # names a model. A cost guard that bricks the work is a cost guard people uninstall.
+        global _DOC
+        _keep = _DOC
+        try:
+            _DOC = (None, "selftest: table removed")
+            assert not prices(), "the table did not actually go away"
+            assert model_refusal({"model": "fable"}, ceil) is None, \
+                "no table must fail OPEN, not refuse everything"
+            assert "NOT being enforced" in model_note(ceil, tempfile.gettempdir())
+            head = prepend_head({"task_root": "t", "plan_glob": "p", "protocol_doc": "d",
+                                 "max_model_price": 5})
+            assert "$1" not in head and "$10" not in head, \
+                "with no table the prompt must not invent prices: %s" % head[:600]
+        finally:
+            _DOC = _keep
+        assert prices(), "the table did not come back"
 
         # ⛔ THE WATCHER TASK, at VS Code's USER level. Isolated by pointing
         # vscode_user_dirs() at a temp directory: an earlier version of this block wrote to
@@ -2024,14 +2290,21 @@ def selftest():
     for token in ("SCRATCH FILES GO IN THE TASK FOLDER", "YOU DO NOT DELETE THEM",
                   "{task_root}/<task>/scratch/"):
         assert token in PREPEND, token
-    filled = PREPEND.format(task_root="Memory/tasks", plan_glob="prompts*.md",
-                            protocol_doc="PROTOCOL.md", max_model_price=5)
+    filled = prepend_head({"task_root": "Memory/tasks", "plan_glob": "prompts*.md",
+                           "protocol_doc": "PROTOCOL.md", "max_model_price": 5})
     # ⛔ THE MODEL RULE MUST REACH EVERY DEPTH TOO. A sub-agent that dispatches further never
     # read `dispatch-protocol`; this block is the only channel that binds it, and a rule an
     # agent meets only as a refusal is a rule it tries to route around.
     assert "CHOOSE THE MODEL BEFORE YOU DISPATCH" in filled, filled[:400]
     assert "$5 per million INPUT tokens" in filled, "the limit did not interpolate"
     assert "Memory/tasks/<task>/scratch/" in filled, filled[-600:]
+    # ⛔ AND THE PRICES IN IT MUST BE THE FILE'S, NOT FOUR NUMBERS TYPED INTO THE TEMPLATE.
+    # That is exactly the drift this change removed everywhere else; leaving it in the prompt
+    # would have the gate refusing at one price while the prompt promised another.
+    assert "haiku $%g" % price_of(dict(family_latest())["haiku"]) in filled, filled[:900]
+    assert "opus $%g" % price_of(dict(family_latest())["opus"]) in filled, filled[:900]
+    assert not re.search(r"haiku \$1, sonnet \$2, opus \$5, fable \$10", PREPEND), \
+        "the price list is hard-coded in PREPEND again"
 
     print("selftest OK")
     return 0

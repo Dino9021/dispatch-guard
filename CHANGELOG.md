@@ -33,6 +33,87 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.31.0
+
+- ⭐ **Model prices are read from Anthropic's published pricing page instead of being typed
+  into the source.** `hooks/model_pricing.py` parses
+  [the page's markdown](https://platform.claude.com/docs/en/about-claude/pricing.md) into
+  `model_pricing.json`, stamped with both an epoch and a readable
+  `YYYY-MM-DD HH:MM:SS` (UTC and local).
+- ⛔ **The hand-typed table was already wrong, and nothing said so.** It priced Claude
+  Haiku 3.5 at $1 per million input tokens; the published price is $0.80. That row was not
+  copied - it was reasoned from the harness's own weight function. ⇒ A table that cannot be
+  checked against its source drifts silently, and this one had.
+- ⛔ **The other candidate was rejected, correctly.** An earlier attempt read the `pricing`
+  field out of the installed Claude Code binary. ⚠ A machine that has not updated Claude
+  Code then prices models from an old catalog - not fresher, just stale somewhere else. The
+  published page is the only source that does not depend on a local install being current.
+- ⛔ **`GET /v1/models` has no pricing field.** It returns `id`, `capabilities`,
+  `created_at`, `display_name`, `max_input_tokens`, `max_tokens`, `type`. That is a gap in
+  the API, not in the search.
+- ⭐ **Refreshed in the background, never blocking.** Past `model_price_hours` (default 24)
+  the gate forks a detached child; the session that noticed keeps the table it has and the
+  new numbers land for the next one. ⛔ No hook ever makes a synchronous HTTP call - that
+  would make every tool call wait on the network, and a slow proxy would be
+  indistinguishable from a hung plugin.
+- ⛔ **A failure never empties the table.** A failed fetch, or a 200 whose table changed
+  shape and parsed to nothing, both keep the previous file. The attempt is recorded in
+  `model_pricing.status`, so a fetch that has been failing for a month cannot look like one
+  that never needed to run - the session's opening context says which.
+- ⛔ **`"model_price_update": false` is the switch that stops this plugin talking to the
+  internet.** Before this feature it never did. Off, it uses the seed table that ships in
+  the repository; the ceiling is still enforced, the numbers simply stop moving.
+- ⭐ **The ceiling reaches the agent BEFORE it dispatches.** (The owner's point: a rule an
+  agent only meets as a refusal is a rule it routes around.) The session's opening context
+  names the permitted families, the refused ones and their prices; rule 7 of the block
+  prepended to every sub-task prompt carries the same list, so an agent that dispatches
+  further is bound by it too.
+- ⛔ **Every price literal is gone from the skill and the prompt template**, leaving the
+  rule. ⚠ Keeping them would have moved the drift rather than ended it: the gate refusing
+  at one price while the prompt promised another. A check asserts no literal has crept
+  back, and that check is itself mutation-checked.
+- ⚠ **An unreadable table fails OPEN and is logged** (`MODEL-PRICE-TABLE-MISSING`). With no
+  table every model reads as unrecognised and would be refused - and a cost guard that
+  bricks the work is a cost guard people uninstall.
+
+---
+
+## 0.31.0
+
+- ⭐ **模型價格改成從 Anthropic 官方定價頁抓，不再手打在原始碼裡。**
+  `hooks/model_pricing.py` 解析
+  [官方定價頁的 markdown](https://platform.claude.com/docs/en/about-claude/pricing.md)
+  產生 `model_pricing.json`，裡面同時有 epoch 和 `YYYY-MM-DD HH:MM:SS`（UTC 與本地各一份）。
+- ⛔ **手打的那張表本來就已經錯了，而且沒有任何東西會說。**
+  它把 Claude Haiku 3.5 標成每百萬輸入 token $1；公告價是 $0.80。
+  那一列不是抄來的，是從 harness 的權重函式推出來的 ——
+  ⇒ 這正是「一張沒辦法跟來源對照的表會安靜地飄走」的實例。
+- ⛔ **另一條路被否決了，理由是對的。** 先前的做法是去讀已安裝的 Claude Code 執行檔裡的
+  `pricing` 欄位。⚠ 沒更新 Claude Code 的機器就會拿到舊目錄的價格 ——
+  那不是比較新，只是換一個地方過期。官方頁是唯一不依賴任何本機安裝是否夠新的來源。
+- ⛔ **`GET /v1/models` 沒有價格欄位。** 它回傳 `id`、`capabilities`、`created_at`、
+  `display_name`、`max_input_tokens`、`max_tokens`、`type`。這不是沒找到，是 API 就沒有。
+- ⭐ **背景更新，永遠不阻塞。** 超過 `model_price_hours`（預設 24）gate 會 fork 一個
+  detached 子行程；發現過期的那個 session 繼續用手上的表，新數字給下一個 session。
+  ⛔ hook 裡絕不做同步 HTTP —— 那會讓每一次工具呼叫都等網路，慢的 proxy 跟當掉的外掛
+  從椅子上看起來一模一樣。
+- ⛔ **失敗不會清空表。** 抓不到、或抓到 200 但表格改了形狀解析不出來，都保留舊檔。
+  最後一次嘗試寫進 `model_pricing.status`，所以「抓了一個月都失敗」不會看起來像
+  「本來就不需要抓」—— session 開場的 context 會講。
+- ⛔ **`"model_price_update": false` 是「不要連網」的開關。** 這個功能之前，這個外掛從不連網。
+  關掉之後用隨儲存庫出貨的種子表，上限照樣執行，只是數字不再變動。
+- ⭐ **上限在派工「之前」就告訴 agent。**（owner 的要求：只用 hook 擋，agent 只會想繞過。）
+  session 開場的 context 會寫出可以派哪些家族、不可以派哪些、以及目前價格；
+  每一份子任務提示詞前面那個區塊的第 7 條帶同一份清單，所以再往下派的 agent 也被綁住。
+- ⛔ **skill 和提示詞樣板裡的價格數字全部移除**，只留規則。
+  ⚠ 留著就是把飄移換個地方而已：gate 用一個價格拒絕、提示詞卻承諾另一個價格。
+  有一項檢查斷言兩邊都沒有再出現價格字面值，而且那個檢查本身有 mutation check。
+- ⚠ **讀不到價格表時 fail open 並記 log**（`MODEL-PRICE-TABLE-MISSING`）。
+  沒有表的話每個模型都會被判成「不認得」而被拒絕 —— 一個把工作鎖死的成本閘門，
+  就是一個會被解除安裝的成本閘門。
+
+---
+
 ## 0.22.0
 
 - ⛔ **兩支 skill 沒有都載入，就一律拒絕派工**（`require_skills`，預設兩支都要）。

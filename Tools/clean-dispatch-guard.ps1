@@ -167,8 +167,9 @@ Plan-Delete (Join-Path $claude 'plugins\cache\dispatch-guard')        'the insta
 Plan-Delete (Join-Path $claude 'plugins\marketplaces\dispatch-guard') 'the marketplace git clone (the SOURCE, never runs)'
 Plan-Delete (Join-Path $claude 'dispatch-guard') @'
 usage history, config.json, session stamps, clock.spawn, fetch.claim, renders.log,
-           resume.json, asked-vscode-task. ⛔ config.json is the one that matters: a version
-           before 0.11.0 pinned every value here, so new defaults never reach this machine
+           resume.json, asked-vscode-task, model_pricing.json + .status + model_prices.spawn.
+           ⛔ config.json is the one that matters: a version before 0.11.0 pinned every value
+           here, so new defaults never reach this machine
 '@
 
 Write-Host ""

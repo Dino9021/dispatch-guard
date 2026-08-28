@@ -143,33 +143,121 @@ def main():
     # verbatim, and the example once pinned dispatch.task_root to a path while the code
     # default was null - "choose the one this repository already uses". Writing that out
     # would have moved every repository that keeps task folders somewhere else.
-    with scratch_dir("seeded-config-pins-nothing") as tmp:
+    with scratch_dir("install-writes-no-config") as tmp:
         inst3 = load_install_module(tmp)
-        assert inst3.seed_config() == inst3.CONFIG_PATH, "config.json was not created"
-        with open(inst3.CONFIG_PATH, encoding="utf-8") as f:
-            seeded = json.load(f)
-        # ⛔ NOT ONE REAL KEY. A value written here PINS it: the first version copied the
-        # example verbatim, and when auto_vscode_task later changed default, every machine
-        # seeded before that day kept the old value and the update appeared to do nothing.
-        assert any(k.startswith("_") for k in seeded), "seeded without its explanations"
-        sys.path.insert(0, os.path.join(HERE, "hooks"))
-        import dispatch_gate as _gate                                    # noqa: E402
-        import usage as _usage                                           # noqa: E402
-        for k in _usage.DEFAULTS:
-            assert k not in seeded, "seeded PINS %s" % k
-        for k in _gate.DEFAULTS:
-            assert k not in (seeded.get("dispatch") or {}), "seeded PINS dispatch.%s" % k
-        # ⚠ ...while every explanation survives, or the file is not worth opening.
-        assert sum(1 for k in seeded if k.startswith("_")) > 20, "explanations were lost"
-        assert any(k.startswith("_") for k in (seeded.get("dispatch") or {})), "block emptied"
-        # ⛔ And it never overwrites: the file is the user's the moment it exists.
+        # ⛔ NOTHING IS CREATED, and that is the third design this has had. Copying the
+        # example whole PINNED every value - a machine set up before a default moved kept
+        # the old one silently, and it cost two reinstalls to find. Seeding only the
+        # explanations fixed the pinning and left a 55 KB file that documented every setting
+        # and showed not one of them. Writing nothing has neither problem: no file means no
+        # pin, and a key that exists was typed on purpose.
+        assert inst3.seed_config() is None, "seed_config created something"
+        assert not os.path.exists(inst3.CONFIG_PATH), "config.json was written anyway"
+
+        # ⛔ An existing file is still the user's. Nothing here may touch it.
+        os.makedirs(os.path.dirname(inst3.CONFIG_PATH), exist_ok=True)
         with open(inst3.CONFIG_PATH, "w", encoding="utf-8") as f:
             f.write('{"mine": true}')
-        assert inst3.seed_config() is None, "seed_config offered to overwrite"
+        assert inst3.seed_config() is None
         with open(inst3.CONFIG_PATH, encoding="utf-8") as f:
             assert json.load(f) == {"mine": True}, "it overwrote the user's config"
 
+        sys.path.insert(0, os.path.join(HERE, "hooks"))
+        import dispatch_gate as _gate                                    # noqa: E402
+        import usage as _usage                                           # noqa: E402
+        with open(os.path.join(HERE, "config.example.json"), encoding="utf-8") as f:
+            example = json.load(f)
+        # ⛔ The example must not disagree with the code: --status compares a person's config
+        # against the EXAMPLE, so a stale example would report drift that is not there and
+        # miss drift that is.
+        for k, v in _usage.DEFAULTS.items():
+            if k in example:
+                assert example[k] == v, "example %s=%r but code default is %r" % (
+                    k, example[k], v)
+        for k, v in _gate.DEFAULTS.items():
+            block = example.get("dispatch") or {}
+            if k in block:
+                assert block[k] == v, "example dispatch.%s=%r but code says %r" % (
+                    k, block[k], v)
+        # ⛔ keep_history MUST NOT BE IN THE EXAMPLE. It is still read for compatibility, and
+        # anyone copying the example by hand would otherwise pin "keep_history": false and
+        # silently cancel debug.token_usage_history's whole point of being on by default.
+        assert "keep_history" not in example, "the example would pin the legacy OFF switch"
+        assert (example.get("debug") or {}).get("token_usage_history") is True, example.get("debug")
+
+        # ⛔ THE DRIFT CHECK, RUN THROUGH `install.py --status` ITSELF, because it is what
+        # makes a hand-written config survivable and it fails SILENTLY: a comparison that
+        # stops comparing simply reports "all match" for ever.
+        # ⚠ A FIRST VERSION CALLED _settable() AND COMPARED THE DICTS HERE - a
+        # re-implementation, not the shipped code. Measured: breaking the real comparison
+        # left the whole suite green.
+        stale = {"soft_pct": _usage.DEFAULTS["soft_pct"] + 7,
+                 "debug": {"token_usage_history": False}}
+        with open(inst3.CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(stale, f)
+        out = _status_text(tmp)
+        assert "NO LONGER MATCH THE DEFAULT" in out, out[:1500]
+        assert "soft_pct = %d" % stale["soft_pct"] in out, out[:1500]
+        assert "debug.token_usage_history = false" in out, out[:1500]
+
+        # ⛔ AND THE RENAMED KEY, which the comparison above CANNOT see: keep_history was
+        # deleted from the example, so a config carrying it matches nothing and used to be
+        # reported as "all still equal to the current default" - while silently keeping the
+        # history off. That is the one pin that cancels a default, so it is named specially.
+        with open(inst3.CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump({"keep_history": False}, f)
+        out = _status_text(tmp)
+        assert "keep_history = false" in out, out[:1500]
+        assert "renamed" in out, out[:1500]
+
+        # ⚠ ...and a config that matches the defaults must report NOTHING, or it is noise.
+        with open(inst3.CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump({"soft_pct": _usage.DEFAULTS["soft_pct"]}, f)
+        out = _status_text(tmp)
+        assert "NO LONGER MATCH" not in out, out[:1500]
+        assert "all still equal to the current default" in out, out[:1500]
+
+        # ⛔ THE 'log files' LINE MUST REPORT THE EFFECTIVE SWITCHES, not the raw JSON. A
+        # refuting pass caught it printing "keep_history and debug.API_response_usage are
+        # both off" on a machine whose history was ON: the raw file has no `keep_history`,
+        # the switch is debug.token_usage_history, and only usage.config() knows the
+        # defaults, the list alias and the legacy fallback. A status line that contradicts
+        # the running code sends a person hunting for a file that is being written.
+        with open(inst3.CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump({}, f)                       # empty: every switch at its default
+        out = _status_text(tmp)
+        assert "debug.token_usage_history came on" in out, out[:2000]
+        assert "keep_history and debug.API_response_usage are both off" not in out, out[:2000]
+        # ...and switching it off must be reported as off, or the line is just a constant.
+        with open(inst3.CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump({"debug": {"token_usage_history": False}}, f)
+        out = _status_text(tmp)
+        assert "came on" not in out, out[:2000]
+        assert "debug.token_usage_history" in out and "off" in out, out[:2000]
+
     print("ok - --check neither wrote nor removed anything, and said so")
+
+
+def _status_text(tmp):
+    """`install.py --status` output, captured, with every path pointed at `tmp`.
+
+    ⛔ THE SHIPPED FUNCTION IS CALLED, not a copy of what it is believed to do. A check that
+    re-implements the comparison it is checking passes while the real one is broken -
+    measured on this very block, where breaking install.py's drift comparison left the whole
+    suite green.
+    ⚠ status() makes no network request: the verdict it shells out for reads limits.json and
+    never fetches.
+    """
+    import contextlib
+    import io as _io
+    mod = load_install_module(tmp)
+    buf = _io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            mod.status()
+    except SystemExit:
+        pass
+    return buf.getvalue()
 
 
 def load_install_module(tmp=None):

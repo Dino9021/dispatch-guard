@@ -26,8 +26,10 @@ import contextlib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _debugpaths import fresh_scratch, repo_path, scratch_dir  # noqa: E402
@@ -539,53 +541,167 @@ def case_require_skills(gate, sdir, root):
 
 
 def case_skill_price_table(gate):
-    """⛔ THE SKILL'S PRICE TABLE MUST NOT DRIFT FROM THE CODE'S.
+    """⛔ THE SKILL AND THE PROMPT MUST CARRY NO PRICE LITERALS AT ALL.
 
-    The owner's point, and it is the right one: a model rule that only exists as a REFUSAL is
-    a rule an agent routes around, so `dispatch-protocol` now carries the table and the limit
-    and an agent reads them before it chooses. ⇒ That creates a second copy of numbers that
-    already live in `MODEL_PRICES`, and a documented table that quietly disagrees with the
-    enforced one is worse than no table: the agent complies with the document and is refused
-    anyway. This repository shipped exactly that defect in `unattended-work` §19, which is why
-    this is a check and not a promise to remember.
+    They used to carry a four-row table, and the check here asserted it matched
+    `MODEL_PRICES` in the gate. That was the right check for a table typed into the code.
+    It is the WRONG one now: the prices are refreshed in the background from Anthropic's
+    published page, so any number frozen into a skill or a prompt template goes stale the
+    moment a model is repriced - and it goes stale SILENTLY, which is the failure this whole
+    change removed. ⇒ The rule lives in the skill; the numbers live in model_pricing.json and
+    are interpolated at run time.
 
-    Every row is verified through `model_price()` - the function the gate actually decides
-    with - rather than against a second literal table here, which would just move the drift.
+    ⚠ The old table was not hypothetical about drifting. It priced Claude Haiku 3.5 at $1;
+    the published price is $0.80.
     """
     import re
-    ROW = re.compile(r"^\|\s*`([a-z]+)`\s*\|\s*(claude-[a-z0-9-]+)\s*\|\s*(\d+)\s*\|"
-                     r"\s*([0-9– -]+?)\s*\|", re.M)
-    prices = dict(gate.MODEL_PRICES)
+    PRICE = re.compile(r"\$\s?\d+(?:\.\d+)?\b")
+    # ⭐ The DEFAULT CEILING is not a price literal in this sense - it is the config value, and
+    # the skill has to state it. Everything else that looks like money is drift.
     default = gate.DEFAULTS["max_model_price"]
+    allowed = {"$%s" % default, "$%s" % float(default)}
     for name in ("SKILL.md", "SKILL.zh-TW.md"):
         path = repo_path("skills", "dispatch-protocol", name)
         with open(path, encoding="utf-8") as f:
             text = f.read()
-        rows = ROW.findall(text)
-        assert len(rows) == len(gate.FAMILY_LATEST), \
-            "%s has %d price rows, the code has %d families" % (path, len(rows),
-                                                                len(gate.FAMILY_LATEST))
-        for family, current, dollars, spread in rows:
-            label, price, exact = gate.model_price(family)
-            assert (label, price, exact) == (current, int(dollars), True), \
-                "%s: row %r says %s at $%s, model_price says %r" % (
-                    path, family, current, dollars, (label, price, exact))
-            # The range column's top must be the dearest model in that family, or the table
-            # understates what naming an old version costs - the trap that made this per-model.
-            highest = max(p for mid, p in gate.MODEL_PRICES if family in mid)
-            top = int(re.findall(r"\d+", spread)[-1])
-            assert top == highest, \
-                "%s: %r range tops out at %d, the dearest %s model is $%d" % (
-                    path, family, top, family, highest)
-        # ...and the default limit in the prose must be the default in the code.
+        found = [m for m in PRICE.findall(text) if m.replace(" ", "") not in allowed]
+        assert not found, ("%s still hard-codes model prices %r - they belong in "
+                           "model_pricing.json, which refreshes; a number here does not"
+                           % (path, sorted(set(found))))
+        # ...and the default limit in the prose must still be the default in the code.
         assert re.search(r"\*\*%s\*\*" % default, text), \
             "%s does not state the default limit (%r)" % (path, default)
         assert "max_model_price" in text, "%s does not name the config key" % path
-        # ⭐ AND IT MUST SAY WHERE THE FULL TABLE IS. A four-row summary that does not point at
-        # the authority sends the reader to guess when a model is missing from it.
-        assert "MODEL_PRICES" in text and "config.example.json" in text, \
-            "%s does not say where the full table lives" % path
-    print("ok - the skill's price table agrees with the code that enforces it")
+        # ⭐ AND IT MUST SAY WHERE THE LIVE TABLE IS. A rule with no numbers that also does not
+        # say where the numbers are is a rule the reader has to guess at.
+        assert "model_pricing" in text, "%s does not say where the live table lives" % path
+
+    # ⛔ THE PROMPT TEMPLATE TOO. PREPEND reaches every sub-agent at every depth, and it is
+    # where the four numbers used to be typed. A literal there would have the gate refusing at
+    # one price while the prompt promised another.
+    assert not PRICE.search(gate.PREPEND), \
+        "PREPEND hard-codes a price again: %r" % PRICE.findall(gate.PREPEND)
+    assert "{price_list}" in gate.PREPEND, "rule 7 no longer interpolates the live table"
+
+    # ⚠ MUTATION CHECK: the assertion must actually fire on a table that IS hard-coded.
+    # Without it the regex could be wrong and every assertion above would pass on nothing.
+    assert PRICE.search("haiku $1, sonnet $2, opus $5, fable $10"), \
+        "the price detector does not detect prices"
+    print("ok - the skill and the prompt carry the rule, not frozen prices")
+
+
+def case_price_refresh(gate, sdir):
+    """⛔ THE REFRESH MUST NEVER BLOCK, MUST NEVER ERASE, AND MUST NEVER GO SILENT.
+
+    Three separate failures, one case:
+
+    - a fetch inside a hook would stall every tool call, so the decision to refresh is split
+      out from the fork and only the DECISION is tested here - nothing spawns a process;
+    - a page that returns 200 with a reshaped table parses to nothing, and writing that would
+      wipe every price the gate owns;
+    - a fetch that has been failing for a month looks exactly like one that never needed to
+      run, unless the attempt is recorded somewhere the gate can read.
+
+    ⚠ NO NETWORK. Everything here runs against `file://` URLs over the committed fixture, so
+    the check means the same thing on a machine with no route out. A test that quietly needs
+    the internet passes for the wrong reason on the day the parser breaks.
+    """
+    import pathlib
+    import model_pricing as mp
+
+    root = repo_path("Tools", "Debug", "fixtures", "pricing.md")
+    good = pathlib.Path(root).as_uri()
+    live = os.path.join(sdir, mp.FILENAME)
+    for junk in (live, os.path.join(sdir, mp.STATUS), os.path.join(sdir, gate.PRICE_MARK)):
+        if os.path.exists(junk):
+            os.remove(junk)
+
+    # 1. A good fetch writes the table, stamps it, and records that it worked.
+    reason = mp.update(sdir, good)
+    assert reason.startswith("MODEL-PRICE-UPDATED"), reason
+    doc = mp.read(live)
+    assert doc and doc["models"]["claude-opus-5"]["input"] == 5, doc
+    assert doc["source"] == good and doc["fetched_at"] > 0, doc
+    # ⭐ The owner asked for a HUMAN-READABLE time as well as a timestamp. Both, exactly.
+    assert re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC$", doc["fetched_at_utc"]), doc
+    assert re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4}$",
+                    doc["fetched_at_local"]), doc
+    st = mp.status(sdir)
+    assert st and st["ok"], st
+
+    # 2. ⛔ A FETCH THAT FAILS KEEPS THE TABLE AND SAYS SO. This is the branch that would
+    # otherwise leave a machine with no prices at all.
+    before = mp.read(live)
+    reason = mp.update(sdir, pathlib.Path(sdir).joinpath("no-such-page.md").as_uri())
+    assert reason.startswith("MODEL-PRICE-FETCH-FAILED"), reason
+    assert mp.read(live) == before, "a failed fetch overwrote the table"
+    st = mp.status(sdir)
+    assert st and not st["ok"] and "FETCH-FAILED" in st["reason"], st
+
+    # 3. ⛔ AND SO DOES A FETCH THAT SUCCEEDS BUT PARSES TO NOTHING - the likelier future
+    # failure, because the page will still return 200 on the day its table changes shape.
+    empty = os.path.join(sdir, "reshaped.md")
+    with open(empty, "w", encoding="utf-8") as f:
+        f.write("# Pricing\n\nWe have moved this table.\n")
+    reason = mp.update(sdir, pathlib.Path(empty).as_uri())
+    assert reason.startswith("MODEL-PRICE-PARSE-FAILED"), reason
+    assert mp.read(live) == before, "a reshaped page erased the table"
+
+    # 4. The refresh DECISION. ⚠ prices_due() only decides; nothing here forks.
+    cfg = dict(gate.DEFAULTS)
+    now = time.time()
+    os.remove(os.path.join(sdir, gate.PRICE_MARK)) if os.path.exists(
+        os.path.join(sdir, gate.PRICE_MARK)) else None
+    assert not gate.prices_due(sdir, cfg, now), "a table written seconds ago is not due"
+    # ⚠ AGEING THE LIVE FILE IS NOT ENOUGH, and finding that out is worth a comment. load()
+    # prefers whichever copy has the newer `fetched_at`, so a live copy back-dated by 25 h
+    # loses to the seed that ships in the repository - and the seed is fresh, so nothing is
+    # due. That is the CORRECT behaviour (the newest table wins), which is why the interval is
+    # driven from the clock here instead of by falsifying the file.
+    old = dict(before)
+    old["fetched_at"] = int(now - 25 * 3600)
+    mp.write(old, live)
+    assert not gate.prices_due(sdir, cfg, now), \
+        "a back-dated live copy must lose to a newer seed, not trigger a refresh"
+    mp.write(before, live)
+    later = now + 25 * 3600
+    assert gate.prices_due(sdir, cfg, later), "a 25 h old table must be due at 24 h"
+    assert not gate.prices_due(sdir, cfg, now + 23 * 3600), "23 h must not be due"
+    now = later
+    # ⛔ MUTATION CHECK ON THE OFF SWITCH. It is the one thing that stops this plugin talking
+    # to the internet, and an off switch that does not switch anything off is worse than none.
+    off = dict(cfg)
+    off["model_price_update"] = False
+    assert not gate.prices_due(sdir, off, now), "model_price_update=false still refreshed"
+    # ⛔ AND ON THE RETRY FLOOR. Without it, a page that 404s forks one child per session for
+    # ever - and the table stays old, so the first clock never stops saying "due".
+    # ⚠ The floor reads the mark's MTIME, not its contents, so the mtime is what has to move.
+    # Writing `now` into the file and leaving the mtime at the real clock tests nothing.
+    with open(os.path.join(sdir, gate.PRICE_MARK), "w") as f:
+        f.write(str(now))
+    os.utime(os.path.join(sdir, gate.PRICE_MARK), (now, now))
+    assert not gate.prices_due(sdir, cfg, now), "the retry floor did not hold"
+    assert gate.prices_due(sdir, cfg, now + gate.PRICE_RETRY + 1), "the floor never expires"
+    # ⚠ 0 hours means the owner pinned the table. Not "refresh constantly".
+    pinned = dict(cfg)
+    pinned["model_price_hours"] = 0
+    os.remove(os.path.join(sdir, gate.PRICE_MARK))
+    assert not gate.prices_due(sdir, pinned, now), "0 hours must pin, not spin"
+
+    # 5. ⭐ THE SESSION IS TOLD BEFORE IT DISPATCHES. That is the half a PreToolUse refusal
+    # cannot do, and it is why this feature exists at all.
+    note = gate.model_note({"max_model_price": 5}, sdir)
+    assert "SUB-AGENT MODELS" in note and "`opus`" in note, note
+    assert "`fable`" in note and "NOT" in note, "the note must name what is REFUSED too"
+    # ⛔ AND IT MUST APPLY THE SAME availableModels CLAMP THE REFUSAL APPLIES. Announcing a
+    # model the gate then refuses reproduces the exact refusal-first experience this line
+    # exists to remove, and teaches the agent that the gate is unreliable.
+    clamped = gate.model_note({"max_model_price": 5}, sdir, avail=["sonnet", "haiku"])
+    assert "narrowed to `sonnet`" in clamped, clamped
+    assert "`opus`" not in clamped, "the note offered a model availableModels forbids"
+    assert "allows $2 per million" in clamped, clamped
+    os.remove(live)
+    print("ok - price refresh decides without fetching, keeps the table on failure, records why")
 
 
 def case_model_price_limit(gate, sdir, root):
@@ -830,6 +946,7 @@ def main():
         case_unattended_first(gate, sdir, root)
         case_require_skills(gate, sdir, root)
         case_skill_price_table(gate)
+        case_price_refresh(gate, sdir)
         case_model_price_limit(gate, sdir, root)
         case_unpushed(gate, sdir, root)
         # ⚠ Last: it moves the fixture's branch, and the cases above assume `master`.

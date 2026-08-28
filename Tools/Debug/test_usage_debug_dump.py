@@ -203,7 +203,10 @@ def case_off(mod):
     with scratch_dir("switch-off") as sdir:
         write_config(sdir, {"keep_history": False})
         cfg = mod.config(sdir)
-        assert cfg["debug"] == {}, cfg["debug"]
+        # ⚠ THE SWITCH, NOT THE WHOLE BLOCK. cfg["debug"] always carries every known
+        # switch with its own default now, so comparing the dict whole breaks the day
+        # a second switch is added - which is exactly what happened.
+        assert cfg["debug"]["API_response_usage"] is False, cfg["debug"]
         assert_no_dump_yet(sdir)
         got, calls = run_fetch(mod, sdir, cfg, RESPONSE)
         assert calls == 1, "urlopen was not the fake one: %r" % calls
@@ -219,7 +222,7 @@ def case_on(mod):
     with scratch_dir("switch-on") as sdir:
         write_config(sdir, {"debug": {"API_response_usage": True}})
         cfg = mod.config(sdir)
-        assert cfg["debug"] == {"API_response_usage": True}, cfg["debug"]
+        assert cfg["debug"]["API_response_usage"] is True, cfg["debug"]
         assert_no_dump_yet(sdir)
         got, calls = run_fetch(mod, sdir, cfg, RESPONSE)
         assert calls == 1, "urlopen was not the fake one: %r" % calls
@@ -230,8 +233,8 @@ def case_on(mod):
         name = os.path.basename(files[0])
         assert name.startswith("usage-response-"), name
         # ⛔ SEPARATE FROM THE HISTORY FILE. A response body appended into
-        # limits-history-*.jsonl would break _projection()'s reader.
-        assert not glob.glob(os.path.join(sdir, "logs", "limits-history-*.jsonl")), (
+        # the token-usage history file would break _projection()'s reader.
+        assert not glob.glob(os.path.join(sdir, "logs", "token_usage_history-*.jsonl")), (
             "the dump landed in the history file")
 
         rows = dumped(sdir)
@@ -289,7 +292,7 @@ def case_list_alias(mod):
     with scratch_dir("list-alias") as sdir:
         write_config(sdir, {"debug": ["API_response_usage"]})
         cfg = mod.config(sdir)
-        assert cfg["debug"] == {"API_response_usage": True}, cfg["debug"]
+        assert cfg["debug"]["API_response_usage"] is True, cfg["debug"]
         assert_no_dump_yet(sdir)
         got, calls = run_fetch(mod, sdir, cfg, RESPONSE)
         assert calls == 1, calls

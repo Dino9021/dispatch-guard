@@ -64,6 +64,19 @@ skill 是模型看了描述之後**自己決定**要不要用；文件是模型*
 | ⚠ 有更舊的 commit 沒推，會提醒 | 只提醒，不拒絕 |
 | ⛔ 拒絕**模型太貴**的子代理派工 | `max_model_price`，預設 **5**（每百萬輸入 token 美元） |
 
+⭐ **價格從 Anthropic 官方定價頁抓，不是手打的。**
+`hooks/model_pricing.py` 把
+[官方定價頁](https://platform.claude.com/docs/en/about-claude/pricing.md)
+的 markdown 解析成 `model_pricing.json`，裡面同時記錄 epoch 與 `YYYY-MM-DD HH:MM:SS` 兩種時間。
+超過 `model_price_hours`（預設 24）就在**背景**更新 —— ⚠ 它永遠不會卡住任何一次工具呼叫，
+發現過期的那個 session 繼續用手上的表，新數字給下一個 session 用。
+
+⛔ **這是這個外掛唯一一次對外連線。** 在此之前它從不連網。
+不想連就在 config 設 `"model_price_update": false` —— 上限照樣執行，
+用的是隨儲存庫出貨的種子表（切版本那天從官方頁抓下來的真資料），只是數字不再變動。
+⭐ **上限在派工「之前」就會告訴 agent**：session 開場的 context
+會寫出可以派哪些家族、不可以派哪些，以及目前的價格。hook 是後備，不是通知管道。
+
 ⛔ **這一組全部是「規則已經寫下來、也被讀過、然後照樣被違反」才存在的。**
 2026-08-27 一個 session 裡違反了四條，其中兩條的違反者就是那天早上寫下它們的那個 agent。
 最刺的一條：規則寫「每次 commit 前先確認在哪個分支」，agent **真的跑了那個指令** ——
@@ -77,7 +90,7 @@ skill 是模型看了描述之後**自己決定**要不要用；文件是模型*
 誠實列出的缺口、以及續跑怎麼運作。
 ⭐ **這份文件只描述現在的行為。** 什麼時候變的、為什麼變，在 **[CHANGELOG.md](CHANGELOG.md)**。
 
-⭐ **要驗證這份 repo：`python Tools/Debug/test_all.py`。** 它跑完五項檢查並回傳一個結束碼。
+⭐ **要驗證這份 repo：`python Tools/Debug/test_all.py`。** 它跑完八項檢查並回傳一個結束碼。
 ⚠ 每一項都只針對「已經真的發生過、而且是安靜的」那種 bug —— 不是為了覆蓋率。
 它們不碰 `~/.claude`、不花 API 額度、也不會建立排程工作。
 ⭐ **產生的每一個檔案都關在 `Tools/Debug/scratch/`**（已 gitignore，而且跑完不刪 ——
@@ -975,17 +988,23 @@ reset     : ⛔ STALE - armed for 22:18 but the stored reset is now 00:18,
 
 ## 設定
 
-⭐ **`~/.claude/dispatch-guard/config.json` 會自動幫你建好，你直接改它就行。**
-安裝腳本會建，hook 也會建（外掛使用者可能根本不會去跑安裝腳本），內容就是
-`config.example.json` —— **每一個設定值旁邊都有中英文說明**。
-⛔ **已經存在就絕對不覆蓋。** 更新之後重跑安裝是常態，不能因此丟掉你的設定。
+⛔ **`config.json` 不會被建立，一個字都不會寫。** 安裝腳本不建，hook 也不建。
+沒有這個檔案，就表示每一個設定都跟隨外掛的預設值 —— 包括以後版本改掉的新預設值。
 
-⭐ **那個檔案只有「說明」，沒有任何值。** 這是刻意的：寫在裡面的值會被**釘住**，
-以後版本改了預設值也到不了你這裡。只加你真的想固定的那幾個，刪掉一個 key 就回到跟隨預設值。
+⭐ **要改哪一個，就自己建 `~/.claude/dispatch-guard/config.json`，裡面只寫那一個 key。**
+其他設定繼續跟隨預設。想知道有哪些 key、預設值是什麼，看外掛裡的 `config.example.json` ——
+每一個 key 都在，而且旁邊有中英文說明。路徑不確定就跑 `python install.py --status`，
+它會印出狀態目錄。
 
-⛔ **這不是理論，是實測到的。** 0.9.0 到 0.11.0 之間種子檔照抄範例（含所有值），
-於是 `auto_vscode_task` 改預設之後，所有先前安裝的機器都還是舊的 —— 更新了、預設變了、什麼都沒發生。
-⭐ **想看自己釘住了什麼：`install.py --status` 的 `pinned settings` 那一行。**
+⛔ **為什麼不幫你建。** 寫在那個檔案裡的值會被**釘住**：以後版本改了預設值，你收不到。
+⚠ **這不是理論，是實測到的。** 0.9.0 到 0.11.0 之間種子檔照抄範例（含所有值），於是
+`auto_vscode_task` 改預設之後，所有先前安裝的機器都還是舊的 —— 更新了、預設變了、什麼都沒發生，
+花了兩次重裝才找出原因。後來改成「只種說明、不種值」，釘住的問題解決了，卻留下一個 55 KB、
+解釋了每一個設定卻一個值都看不到的檔案。**不建立**兩個問題都沒有。
+
+⛔ **已經存在的 `config.json` 絕對不會被覆蓋。** 它從存在的那一刻起就是你的。
+⭐ **想看自己釘住了什麼、以及哪些已經跟不上新預設值：`install.py --status` 的
+`pinned settings` 那一行** —— 它會逐一列出跟目前預設值不一樣的鍵，包括被改名的舊鍵。
 
 想換掉整個狀態目錄，用 `--dir <路徑>` 或環境變數 `$CLAUDE_DISPATCH_DIR`。
 專案也可以自己帶一份 `<repo>/.claude/dispatch-guard.json`，它對 `dispatch.*` 那組設定有最終決定權。
@@ -996,7 +1015,7 @@ reset     : ⛔ STALE - armed for 22:18 but the stored reset is now 00:18,
 ⭐ **設 0 就永久保留** —— 那是這個鍵存在之前的行為。
 ⚠ **`null` 不是「永久」** —— `null` 的意思是「用預設值」，跟 `history_dir` 的 `null` 一樣，所以它跟
 不寫這個鍵一樣會在 30 天時刪。要永久保留只有 `0`。
-⛔ **只刪整個檔案，而且只刪這個外掛自己的檔案** —— `limits-history-*.jsonl` 和
+⛔ **只刪整個檔案，而且只刪這個外掛自己的檔案** —— `token_usage_history-*.jsonl`（含舊名 `limits-history-*.jsonl`）和
 `usage-response-*.jsonl`。單一檔案永遠不會被砍掉前半段，因為那會留下一份「看起來完整、其實不是」的
 紀錄。`history_dir` 可以指到放著別人檔案的資料夾，所以全面清掃是不做的。
 ⚠ 讀不成正數的值（一個詞、空字串、`true`、負數）一律當成「全部保留」，不會退回 30 天然後開始刪。
@@ -1024,15 +1043,17 @@ token 來自 `$ANTHROPIC_TOKEN`。位置 0 是 `null` 則代表憑證檔裡沒�
 1 也一定是 null：沒有東西可以拿來對照。
 ⚠ `organizationUuid` 認的是**組織**，不是座位。同一個組織裡的多個座位共用同一個值。
 ⚠ **並行寫入會掉行。** 實測：四個 process 同時 append，240 行裡掉了 14 到 26 行（約 6–11%）；兩個
-process 同時寫也會掉。沒有例外、沒有損壞、沒有任何跡象。`keep_history` 是同樣的機制。
+process 同時寫也會掉。沒有例外、沒有損壞、沒有任何跡象。token-usage 歷史檔是同樣的機制。
 ⛔ 「只開一個 session 就不會掉」是錯的 —— `dispatch_gate.py` 自己會另外跑 `usage.py`，所以一個
 session 也可能同時有兩個寫入者。要保證一行都不漏，這個檔案格式目前做不到。
 ⭐ 陣列寫法也接受：`"debug": ["API_response_usage"]` 等同 `{"API_response_usage": true}`。
 ⚠ `"debug": true` 不會打開任何開關 —— 它會關掉全部，並在 stderr 說明原因。
 
-**用量歷史紀錄**（`keep_history`，預設關閉）會寫到 `history_dir` —
+**Token 用量歷史**（`debug.token_usage_history`，⭐ **預設開啟**）會寫到 `history_dir` —
 預設是 **`~/.claude/dispatch-guard/logs/`**（狀態目錄下的 `logs/` 資料夾）— 檔名是
-`limits-history-<YYYYMMDD-HHMMSS>.jsonl`，每個本地日一個檔，**單一檔案永遠不會被裁切**：
+`token_usage_history-<YYYYMMDD-HHMMSS>.jsonl`，每個本地日一個檔，**單一檔案永遠不會被裁切**：
+⚠ 它以前叫 `keep_history` 而且預設關閉。舊的 `keep_history` 仍然會被讀，`keep_history: false` 一樣會把它關掉；舊檔名的檔案也照樣被讀取和清理，不會變成孤兒。
+⭐ **為什麼改成預設開**：燃燒率推估需要同一個視窗的兩個樣本，所以在此之前，PACE 裡「照這個速度到重置前會用完」那一半，對沒有手動開啟的人從來沒有運作過。**實測：一行 132 位元組、一天大約 640 次讀數，所以大約一天 82 KB**，`history_keep_days` 保留的 30 天合計 2.4 MB —— 而且那是上限，因為只有數字真的動了才會寫一行。
 
 ```json
 {"at": "2026-08-26 13:29:31", "pct": 74.0, "resets_at": "2026-08-26 14:09:31",
@@ -2333,21 +2354,29 @@ good and leaves a marker **the next Claude session reads out loud**.
 
 ## Configuration
 
-⭐ **`~/.claude/dispatch-guard/config.json` is created for you — edit it in place.** The
-install script writes it, and so does the hook, because a marketplace user may never run the
-script at all. Its contents are `config.example.json`, so **every key carries its own
-explanation**, in both languages, right beside the value.
-⛔ **An existing file is never overwritten.** Re-running the installer is routine after an
-update and must not discard somebody's settings.
+⛔ **`config.json` is never created — not one byte.** The install script does not write it
+and neither does the hook. No file means every setting follows the plugin's default, including
+the defaults a later version changes.
 
-⭐ **The file carries the explanations and NOT ONE VALUE.** That is deliberate: a value
-written there is **pinned**, so a later version's new default never reaches you. Add only the
-keys you actually want to fix; delete a key to follow the default again.
+⭐ **To change one thing, create `~/.claude/dispatch-guard/config.json` yourself with just
+that key.** Everything else keeps following the default. For the list of keys and what each
+one defaults to, read `config.example.json` inside the plugin — every key is there with its
+value and an explanation in both languages. Not sure of the path? `python install.py --status`
+prints the state directory.
 
-⛔ **Measured, not theoretical.** Between 0.9.0 and 0.11.0 the seed copied the example verbatim,
-values included — so when `auto_vscode_task` changed default, every machine installed before
-that day kept the old one: the update landed, the default moved, nothing happened.
-⭐ **To see what you have pinned: the `pinned settings` line in `install.py --status`.**
+⛔ **Why it is not created for you.** A value written in that file is **pinned**: a later
+version's new default never reaches you.
+⚠ **Measured, not theoretical.** Between 0.9.0 and 0.11.0 the seed copied the example
+verbatim, values included — so when `auto_vscode_task` changed default, every machine
+installed before that day kept the old one: the update landed, the default moved, nothing
+happened, and it cost two reinstalls to find. Seeding only the explanations fixed the pinning
+and left a 55 KB file that explained every setting while showing not one of its values.
+**Creating nothing has neither problem.**
+
+⛔ **An existing `config.json` is never overwritten.** It is yours from the moment it exists.
+⭐ **To see what you have pinned, and which pins no longer match: the `pinned settings` line
+in `install.py --status`** — it names every key that differs from the current default,
+including keys that have since been renamed.
 
 Override the whole state directory with `--dir <path>` or `$CLAUDE_DISPATCH_DIR`. A project may
 also carry `<repo>/.claude/dispatch-guard.json`, which wins for the `dispatch.*` keys.
@@ -2359,7 +2388,7 @@ than that is deleted whole.
 ⭐ **Use `0` to keep everything for ever** — that is what this plugin did before the key existed.
 ⚠ **`null` is NOT for ever.** `null` means "use the default", exactly as it does for
 `history_dir`, so it deletes at 30 days just like leaving the key out. Only `0` keeps everything.
-⛔ **Whole files only, and only this plugin's own** — `limits-history-*.jsonl` and
+⛔ **Whole files only, and only this plugin's own** — `token_usage_history-*.jsonl` (and `limits-history-*.jsonl`, the name it used to have) and
 `usage-response-*.jsonl`. A single file is never trimmed, because a half-trimmed record looks
 complete and is not; and `history_dir` can be pointed at a folder holding somebody else's files,
 so there is no blanket sweep.
@@ -2397,17 +2426,26 @@ against.
 organisation share it.
 ⚠ **Concurrent writers lose lines.** Measured: four processes appending at once dropped 14 and
 26 lines out of 240 (roughly 6–11%); two processes lose lines as well. No exception, no
-corruption, no sign anywhere. `keep_history` works the same way.
+corruption, no sign anywhere. The token-usage history works the same way.
 ⛔ "Run one session and nothing is lost" is **wrong** — `dispatch_gate.py` runs `usage.py` of
 its own accord, so one session can still have two writers. This file format cannot promise a
 gap-free sequence.
 ⭐ A list is an alias: `"debug": ["API_response_usage"]` means `{"API_response_usage": true}`.
 ⚠ `"debug": true` switches nothing on — it switches everything off and says why on stderr.
 
-**Usage history** (`keep_history`, off by default) is written to `history_dir` — by default
+**Token usage history** (`debug.token_usage_history`, ⭐ **on by default**) is written to
+`history_dir` — by default
 **`~/.claude/dispatch-guard/logs/`**, the `logs/` folder under the state directory — as
-`limits-history-<YYYYMMDD-HHMMSS>.jsonl`, one file per local day, and **no single file is ever
-trimmed**:
+`token_usage_history-<YYYYMMDD-HHMMSS>.jsonl`, one file per local day, and **no single file
+is ever trimmed**:
+⚠ It used to be called `keep_history` and used to be off. An existing `keep_history` is still
+read and `keep_history: false` still turns it off; files under the old name are still read and
+still pruned, so nothing is orphaned.
+⭐ **Why it is on now**: the burn projection needs two samples of the same window, so the
+"projected to run out before the reset" half of PACE had never fired for anyone who did not go
+and switch it on. **Measured: 132 bytes a row, about 640 readings a day, so roughly 82 KB a
+day** and 2.4 MB across the 30 days `history_keep_days` keeps — and that is a ceiling, since a
+row is written only when a number actually moved.
 
 ```json
 {"at": "2026-08-26 13:29:31", "pct": 74.0, "resets_at": "2026-08-26 14:09:31",
