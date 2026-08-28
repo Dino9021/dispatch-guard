@@ -33,6 +33,22 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.39.2
+
+- ⛔ **「已過期」那一句也拿掉了。** 擁有者的指示:「『已過期』也不顯示」。
+  `token_note()` 整個刪除,兩個顯示端 —— CLI 狀態列和 watcher —— 都不再回報 OAuth token。
+- ⭐ **到期時間還是會讀,那一半不能跟著刪。** `fetch()` 靠它拒絕在一個「從檔案上就看得出
+  已經死掉」的 token 上,花掉端點只允許的五次呼叫其中一次。
+- ⚠ **仍然有一句 OAuth 到得了畫面,而且是刻意留的。** 那是 `fetch()` 的失敗理由,走一般的
+  失敗回報路徑,而且**只有在存下來的數字也過期之後**才出現 —— 那一刻畫面上的數字就是錯的,
+  這時候安靜下來,正好就是這個外掛到處在拒絕的「有自信的錯答案」。要連這一句也不要,說一聲。
+- ⭐ **檢查用突變殺過。** 把 `token_note()` 放回去 →
+  `token_note() is back - the bar must not report an OAuth token`。
+  ⚠ 釘的是「符號」而不是「畫出來的那一行」:狀態列和 watcher 各自組自己的 note,
+  對其中一行做文字斷言,看不到另一行。
+
+---
+
 ## 0.39.1
 
 - ⛔ **OAuth 倒數那一行不再顯示。** 擁有者的指示:「OAuth 那行不要顯示」。
@@ -1021,6 +1037,26 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.39.2
+
+- ⛔ **The EXPIRED sentence is gone too.** The owner's instruction: *"「已過期」也不顯示"*.
+  `token_note()` is deleted, so neither display — the CLI statusline nor the watcher —
+  reports an OAuth token any more.
+- ⭐ **The expiry is still read, and that half must not go with it.** `fetch()` uses it to
+  refuse to spend one of the endpoint's five calls on a token the credentials file already
+  shows is dead.
+- ⚠ **One OAuth sentence can still reach the display, deliberately.** It is `fetch()`'s
+  failure reason, arriving by the ordinary failure-reporting route, and **only once the
+  stored number has also gone stale** — the moment the figures on screen are wrong. Going
+  quiet there is exactly the confident wrong answer this plugin refuses everywhere else.
+  Say so if you want that one gone as well.
+- ⭐ **The check is mutation-killed.** Put `token_note()` back →
+  `token_note() is back - the bar must not report an OAuth token`. ⚠ Pinned by the SYMBOL
+  rather than by a rendered line: the statusline and the watcher build their notes
+  separately, so a text assertion on one cannot see the other.
 
 ---
 

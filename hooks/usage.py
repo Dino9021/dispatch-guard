@@ -413,7 +413,7 @@ FETCH_TIMEOUT = 5
 #
 # ⚠ And the recovery onWatch uses is not available here: it answers a 429 by refreshing
 # the OAuth token to mint a fresh window. See _token_and_expiry() for why this file
-# must not - and token_note(), which gets the same warning for free by READING the expiry.
+# must not - and fetch(), which refuses to spend a call on a token that file shows is dead.
 FETCH_FLOOR_SECONDS = 120
 
 # ⭐ Randomness is ADDED to every interval - never subtracted, so the effective wait is
@@ -491,33 +491,16 @@ def _token_and_expiry():
     return token, expires
 
 
-def token_note():
-    """Says the token is DEAD, or None. Makes no request.
-
-    ⛔ THE COUNTDOWN IS GONE - the owner's instruction, 2026-08-29: "OAuth 那行不要顯示".
-    It used to warn for the last ten minutes of the token's life, and that warning FIXES
-    ITSELF: whichever Claude client is running rotates the token about five minutes before
-    it expires, so the ordinary case was a line that appeared on the bar, was read, needed
-    nothing, and vanished on its own. A note people learn to ignore costs the notes beside
-    it their credibility.
-
-    ⭐ WHAT SURVIVES IS THE ONE THAT DOES NOT HEAL. An expired token stops the fetch, so
-    every figure on the line reads `--`, and this sentence is the only thing on screen that
-    says why. Removing it too would leave an empty bar explaining nothing.
-
-    ⚠ It still costs no request. A 401 also reports an expired token, but it reports it too
-    late to act on and spends one of the five calls the endpoint allows to do it; the expiry
-    is sitting in the credentials file and is free to read.
-    """
-    _, expires = _token_and_expiry()
-    if expires is None:
-        return None
-    if expires - time.time() <= 0:
-        # ⚠ SHORT ON PURPOSE. This is appended inside a status line, and a sentence here is
-        # what pushed that line past the terminal width - which wrapped it, which stranded a
-        # row that `\r` could never reach.
-        return "OAuth token EXPIRED - open a session"
-    return None
+# ⛔ token_note() IS GONE, AND IT IS NOT COMING BACK BY ACCIDENT. The owner removed it in two
+# steps on 2026-08-29 - first the ten-minute countdown ("OAuth 那行不要顯示"), then the
+# expired form ("「已過期」也不顯示") - so nothing on the bar reports an OAuth token any more.
+#
+# ⚠ THE EXPIRY IS STILL READ, and that half must not be removed with it: fetch() refuses to
+# spend one of the five calls on a token it can already see is dead, and returns that as its
+# `reason`. See _token_and_expiry(), which fetch() calls for the token anyway.
+# ⇒ So one OAuth sentence can still reach the display, by the ordinary failure-reason route
+# and only once the stored number has gone stale. That is not this note returning; it is the
+# line saying why the figures on it stopped, which is the one moment it must not stay quiet.
 
 
 def _snap_minute(epoch):
@@ -980,11 +963,14 @@ def collect(sdir, cfg):
     note = _age_note(record, cfg)
     if note and reason:
         note = "%s; %s" % (note, reason)
-    # ⭐ Shown WHETHER OR NOT the data is stale, unlike a fetch failure. It is actionable
-    # and it is early: by the time a 401 appears the numbers have already stopped.
-    tnote = token_note()
-    if tnote:
-        note = "%s; %s" % (note, tnote) if note else tnote
+    # ⛔ NO OAUTH NOTE HERE ANY MORE - the owner's instruction, 2026-08-29, first the
+    # countdown and then the expired form: "「已過期」也不顯示". The bar carries numbers and
+    # the reasons the numbers stopped; it is not where a token is reported.
+    # ⚠ ONE OAUTH SENTENCE STILL REACHES THIS LINE, and deliberately. fetch() refuses to
+    # spend a call on a token it can see is dead and returns that as its `reason`, which
+    # arrives above - but only once the stored number has ALSO gone stale, which is the
+    # moment the figures on screen are wrong. Suppressing it there would leave the display
+    # confidently showing a number that stopped moving.
 
     _note_render(sdir, payload, record.get("five_hour") or {})
     # ⭐ ONE print PER ROW. Claude Code renders each line of this command's output as its own
@@ -1715,7 +1701,8 @@ def _line_parts(record, stale_note=None, cfg=None, payload=None, stale=None, bur
                           % (on, _bar(cpct, BAR_WIDTH + 1), round(cpct), off))
     # ⛔ THE NOTE OUTRANKS THE MODEL NAME, and it used to be the other way round. Parts are
     # dropped from the RIGHT when they do not fit, so with the model last a narrow display
-    # kept the label "Opus 5" and threw away "OAuth token EXPIRED". ⇒ A warning beats a
+    # kept the label "Opus 5" and threw away "OAuth token EXPIRED" - that particular note is
+    # gone now, but "12 min old" and a fetch failure still arrive here. ⇒ A warning beats a
     # caption: the note says something is wrong, the model name says what was already known.
     if stale_note:
         extras.append("(%s)" % stale_note)
@@ -2210,7 +2197,9 @@ def should_fetch(sdir, cfg, now=None):
         return True, None
     if idle <= limit:
         return True, None
-    # ⚠ Short, for the same reason as token_note(): it is appended inside a status line.
+    # ⚠ Short on purpose: it is appended inside a status line, and a sentence here is what
+    # pushed that line past the terminal width - which wrapped it, which stranded a row `\r`
+    # could never reach.
     return False, "idle %s" % duration(idle)
 
 
@@ -2296,12 +2285,11 @@ def watch(sdir, cfg, argv):
                 age = (time.time() * 1000 - data["ts"]) / 60000.0
             v = verdict(sdir, cfg, data=data)           # same record, passed by value
             idle = bool(idle_note)
-            # ⛔ WHILE IDLE, THE ONLY NOTE WORTH THE COLUMNS IS ONE THAT NEEDS ACTING ON.
-            # `2 min old` and `idle 15m` both restate what SLEEP already says - the line
-            # stopped moving because nobody is working - and a note that repeats the word
-            # beside it is a note people stop reading. ⇒ Only token_note() survives: an
-            # expiring OAuth token is the one thing that breaks while you are away, and being
-            # away is exactly when nobody is watching for it.
+            # ⛔ WHILE IDLE THIS LINE CARRIES NO NOTE AT ALL. `2 min old` and `idle 15m` both
+            # restate what SLEEP already says - the line stopped moving because nobody is
+            # working - and a note that repeats the word beside it is a note people stop
+            # reading. The OAuth warning used to be the one exception; the owner removed it
+            # (2026-08-29), so nothing survives here now.
             # ⚠ `reason` cannot appear while idle either: idle means no fetch was attempted,
             # so there is no failure to report.
             note = None
@@ -2310,9 +2298,6 @@ def watch(sdir, cfg, argv):
                     note = "%.0f min old" % age
                 if reason and (note or age is None):
                     note = "%s; %s" % (note, reason) if note else reason
-            tnote = token_note()          # early warning; see collect()
-            if tnote:
-                note = "%s; %s" % (note, tnote) if note else tnote
             # ⭐ ONE FUNCTION OWNS THE WHOLE LINE, INCLUDING ITS WIDTH. This used to assemble
             # the stamp, the body and the verdict word here - and _line() fitted only the
             # BODY, so the sixteen columns added around it overflowed the terminal and the
@@ -2466,8 +2451,9 @@ def selftest():
     _cfg["fetch_seconds_jitter"] = -60
     assert _interval(_cfg) >= FETCH_FLOOR_SECONDS, "a negative jitter subtracted"
 
-    # The token expiry is read, not discovered from a 401. A dead token must not cost one
-    # of the five calls, and a warning must appear BEFORE it dies rather than after.
+    # The token expiry is read, not discovered from a 401: a dead token must not cost one of
+    # the five calls. ⛔ AND IT REACHES NO DISPLAY. The owner removed the OAuth note from the
+    # bar in two steps on 2026-08-29 - the countdown, then the expired form.
     _saved_env = os.environ.pop("ANTHROPIC_TOKEN", None)
     _saved_reader = read_json
 
@@ -2477,18 +2463,16 @@ def selftest():
             {"claudeAiOauth": {"accessToken": "sk-x", "expiresAt": exp}}
             if path.endswith(".credentials.json") else _saved_reader(path, fallback))
     try:
-        globals()["read_json"] = _fake(8 * 3600)
-        assert token_note() is None, "a healthy token must not warn"
-        # ⛔ NOT ONE MINUTE BEFORE IT DIES EITHER - the owner removed the countdown, and a
-        # LIVE token must put nothing on the bar however little life it has left. ⚠ Sixty
-        # seconds is inside every window the old warning used, so a countdown put back by
-        # any route fails here rather than passing on a lucky threshold.
-        globals()["read_json"] = _fake(60)
-        assert token_note() is None, "a live token warned: the countdown is back"
+        # ⛔ NO OAUTH NOTE ON THE BAR, IN ANY TOKEN STATE. ⚠ Pinned by the SYMBOL, not by
+        # rendering one line: the note is re-added under its own name whenever somebody puts
+        # it back, and a text assertion on one rendered line cannot see the other display -
+        # the statusline and the watcher build their notes separately.
+        assert "token_note" not in globals(), \
+            "token_note() is back - the bar must not report an OAuth token"
         globals()["read_json"] = _fake(-60)
-        assert "EXPIRED" in (token_note() or ""), "an expired token must say so"
-        # ⛔ AND IT MUST NOT SPEND A CALL TO FIND THAT OUT. ⚠ Checked by counting requests,
-        # NOT by reading the message: a real 401 reply also says "expired", so an assertion
+        # ⛔ THE EXPIRY IS STILL READ, AND MUST NOT SPEND A CALL TO FIND OUT. ⚠ Checked by
+        # counting requests, NOT by reading the message: a real 401 reply also says
+        # "expired", so an assertion
         # on the text alone cannot tell "never asked" from "asked and was refused" - it
         # passed against a build with this guard removed, and made a live request doing it.
         called = []
