@@ -1427,18 +1427,23 @@ def _redraw(lines, erase="\033[K"):
     row lower than the arithmetic believed before the second draw ever ran, and no amount of
     fixing the arithmetic reaches that.
 
-    ⭐ AN ABSOLUTE HOME CANNOT BE WRONG. `\033[H` is row 1, column 1 of the screen - not a
-    displacement from anywhere - so it does not matter what moved the cursor, how wide the
-    rows were, or how many were drawn last time. ⚠ It is legitimate ONLY because the watcher
-    cleared the screen at startup and redraws all of it every time; a program sharing a
-    terminal must never do this.
+    ⛔ AND HOMING ALONE WAS NOT ENOUGH EITHER, which is why this clears first. The bytes were
+    CAPTURED, not assumed - `\033[2J\033[H\033[?7l` once, then `\033[H\r<row>\033[K\n\r<row>
+    \033[K\033[J` per draw, no stray output and no relative move anywhere in the stream - and
+    the owner's panel still stranded a row. ⇒ Where that terminal puts `\033[H` is not what
+    this process believes, and after four attempts the useful move is to stop depending on
+    the answer rather than to keep guessing it.
 
-    ⭐ `\033[J` AT THE END erases from the cursor to the bottom of the screen, which is what
-    makes a shrinking draw safe without counting anything. The old code padded with blank
-    rows to do this, and the padding had to know the previous height.
+    ⭐ CLEARING EVERY DRAW CANNOT STRAND ANYTHING, because there is nothing left to strand:
+    the screen holds only what this draw put there. ⚠ It costs a full repaint every
+    `--every` seconds, which for two rows on a thirty-second interval is nothing anybody can
+    see; a watcher redrawing many rows at speed would need the careful version back.
+
+    ⚠ It is legitimate ONLY because the watcher owns its terminal - a dedicated panel whose
+    entire content is this line. A program sharing a terminal must never do this.
     """
     body = "\n".join("\r" + one + erase for one in lines)
-    return "\033[H" + body + "\033[J"
+    return "\033[2J\033[H" + body
 
 
 def _watch_line(stamp, data, v, note, cfg, idle=False, burn=None):
@@ -3199,16 +3204,19 @@ def selftest():
     # the cursor was already a row lower than any arithmetic believed. ⇒ No climb at all.
     # ⚠ The bytes are asserted rather than the intent: "homed" and "homed one row too far"
     # produce the same shape and different screens.
-    assert _redraw(["a"], "<K>") == "\033[H\ra<K>\033[J", _redraw(["a"], "<K>")
-    assert _redraw(["a", "b"], "<K>") == "\033[H\ra<K>\n\rb<K>\033[J", _redraw(["a", "b"], "<K>")
+    # ⛔ AND IT CLEARS FIRST, EVERY TIME. Homing alone was emitted correctly - the byte stream
+    # was captured and carried no stray output and no relative move - and the owner's panel
+    # stranded a row regardless. A screen wiped before each draw has nothing left to strand.
+    assert _redraw(["a"], "<K>") == "\033[2J\033[H\ra<K>", _redraw(["a"], "<K>")
+    assert _redraw(["a", "b"], "<K>") == "\033[2J\033[H\ra<K>\n\rb<K>", _redraw(["a", "b"], "<K>")
     # ⛔ NO RELATIVE MOVE MAY SURVIVE ANYWHERE IN IT. One `\033[1A` left behind is the whole
     # defect back, and it would look like a cosmetic difference in a diff.
     for _n_rows in (1, 2, 3):
         assert "\033[1A" not in _redraw(["x"] * _n_rows, "<K>"), _n_rows
-    # ⚠ SHRINKING NEEDS NO COUNTING. `\033[J` clears from the cursor to the bottom, so a draw
-    # with fewer rows than the last cannot leave one behind - the old code padded with blanks
-    # instead, and the padding had to know the previous height.
-    assert _redraw(["a", "b"], "<K>").endswith("\033[J")
+    # ⚠ SHRINKING NEEDS NO COUNTING EITHER: the clear removes the previous draw entirely, so
+    # a draw with fewer rows cannot leave one behind. The first version padded with blank
+    # rows, and the padding had to know the previous height.
+    assert _redraw(["a", "b"], "<K>").startswith("\033[2J")
 
     # ⭐ TWO ROWS ARE A SETTING, AND BOTH SURFACES OBEY IT. The statusline was capped at one
     # row on a BELIEF, not a limit: the documentation says "each `echo` or `print` statement

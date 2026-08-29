@@ -33,6 +33,26 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.42.1
+
+- ⛔ **`[H` 也不夠,而這次是把位元組錄下來才知道的。** 擁有者確認跑的是 `0.42.0`
+  (PID 31008),畫面照樣卡一行。⇒ 把 watcher 寫到 stdout 的**每一個位元組**攔下來看:
+  ```
+  <ESC>[2J<ESC>[H<ESC>[?7l              ← 開場
+  <ESC>[H<CR>第一列<ESC>[K<LF><CR>第二列<ESC>[K<ESC>[J   ← 每次重畫
+  ```
+  **沒有雜訊、沒有任何相對移動、順序完全正確。** ⇒ 程式送出去的是對的,
+  是那個終端機把 `[H` 放在跟這個行程認知不同的地方。
+- ⭐ **所以不再依賴「原點在哪裡」:每一次重畫之前,整個畫面清掉。** 清過的畫面上只剩這一次
+  畫的東西,**沒有東西可以被卡住** —— 不管終端機怎麼想。
+  ⚠ 代價是每 `--every` 秒整頁重畫一次;兩列、三十秒一次,沒有人看得出來。
+  要是哪天 watcher 變成很多列又畫很快,那個小心翼翼的版本才需要回來。
+- ⚠ **我仍然不知道那個終端機為什麼不把 `[H` 當成第 1 列。** 這一版不是回答那個問題,
+  是讓那個問題不再重要 —— 連猜四次之後,這比再猜第五次有用。
+  突變殺過:把每次的清畫面拿掉 → `AssertionError('[Ha<K>')`。
+
+---
+
 ## 0.42.0
 
 - ⛔ **不再「往上爬」。第四次,而且這次是拿到證據才動手的。** 擁有者的截圖配上行程清單:
@@ -48,7 +68,8 @@ GATE-ERROR NameError("name 'now' is not defined")
 - ⭐ **結尾的 `[J` 讓「變少」也不用數。** 從游標清到畫面底部,所以列數變少不可能留下舊的;
   舊的做法是用空白列去補,而那要知道上次有幾列。
 - ⛔ **舊的 `_rewrite()` 整個刪掉了**,連同它追蹤的 `rows` 變數 —— 留著一個沒人呼叫的相對移動,
-  下次就會有人把它接回去。突變殺過:把 `[1A` 放回去 → `AssertionError('[1Aa<K>')`。
+  下次就會有人把它接回去。突變殺過:把 `[1A` 放回去 → `AssertionError('[1A
+a<K>')`。
 - ⚠ **前三次(0.41.3 清畫面、0.41.4 固定列數、0.41.5 關折行)都留著,而且都不是白做** ——
   每一個都真的修掉一種殘影,只是都不是擁有者遇到的那一種。
 
@@ -1337,6 +1358,29 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.42.1
+
+- ⛔ **`[H` was not enough either, and this time the bytes were CAPTURED to find out.**
+  The owner confirmed `0.42.0` was running (PID 31008) and the panel still stranded a row.
+  ⇒ Every byte the watcher writes to stdout was recorded:
+  ```
+  <ESC>[2J<ESC>[H<ESC>[?7l                              opening
+  <ESC>[H<CR>row1<ESC>[K<LF><CR>row2<ESC>[K<ESC>[J      each draw
+  ```
+  **No stray output, no relative move anywhere, order exactly right.** ⇒ What this process
+  sends is correct; where that terminal puts `[H` is not what it believes.
+- ⭐ **So it stops depending on where home is: the screen is cleared before EVERY draw.** A
+  cleared screen holds only what this draw put there, so there is nothing left to strand,
+  whatever the terminal thinks. ⚠ It costs a full repaint every `--every` seconds - two rows
+  on a thirty-second interval, which nobody can see. A watcher redrawing many rows at speed
+  would need the careful version back.
+- ⚠ **Why that terminal does not treat `[H` as row 1 is still unknown.** This release does
+  not answer that question; it makes the answer stop mattering - which after four guesses is
+  worth more than a fifth. Mutation-checked: drop the per-draw clear and
+  `AssertionError('[Ha<K>')` fires.
+
+---
+
 ## 0.42.0
 
 - ⛔ **No more climbing. Fourth attempt, and the first one made from evidence.** The owner's
@@ -1357,7 +1401,8 @@ GATE-ERROR NameError("name 'now' is not defined")
   know the previous height.
 - ⛔ **`_rewrite()` is deleted outright**, along with the `rows` counter it needed. Leaving an
   uncalled relative move in the file is how it comes back. Mutation-checked: put `[1A`
-  back and `AssertionError('[1Aa<K>')` fires.
+  back and `AssertionError('[1A
+a<K>')` fires.
 - ⚠ **The three earlier fixes stay, and none was wasted** — the startup clear (0.41.3), the
   fixed row count (0.41.4) and wrapping off (0.41.5) each remove a real way to strand a row.
   None of them was the owner's.
