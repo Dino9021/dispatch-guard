@@ -33,6 +33,174 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.41.0
+
+- ⭐ **`outlasts reset` 改成一律顯示時間。** 擁有者的指示:「文字敘述佔欄寬又不容易理解」。
+  現在永遠是 `11h-52m left` —— 照現在速度撞到 100% 還要多久。
+  ⚠ **這個時間可以比視窗剩餘時間還長,而那是正確的**:剩 `4h-24m` 就重置、燒完要 `11h-52m`,
+  就代表你花不完。「重置先到」這件事**那條滿的 bar 本來就在講**,不需要再用字說一次。
+- ⭐ **watcher 現在顯示完最後一條用量條就換行,`Burn` 自己佔一列。** 也是擁有者的指示,
+  而且它順便補掉 0.40.7 量到的洞:面板窄於 141 欄時 `Burn` 會被無聲丟掉,於是「沒有 Burn」
+  同時代表「沒資料」和「你面板太窄」,畫面上分不出來。給它一列之後,它永遠都在。
+  ```
+  09:35:01  5h ░┃░░░░░░░░ 5% 4h-24m  7d ▓▓▓▓┃▓░░░░ 51% 4d-1h-24m  Fable ▓▓▓░┃░░░░░ 31% 4d-1h-24m  GO
+            Burn ▓▓▓▓▓▓▓▓▓ 0.13%/m · 11h-52m left
+  ```
+- ⛔ **CLI 狀態列完全沒動,這是擁有者指定的。** Claude Code 只給狀態列一列,第二列會被丟掉。
+  換行是 `_watch_line()` 傳 `always_split` 進去的,`_line()` 不傳 —— 檢查兩邊都釘住了。
+- ⚠ **原地重繪兩列是本來就支援的。** `_rewrite()` 按**上一次畫了幾列**往上爬(不是這一次),
+  那個方向性早就是量出來並且釘住的。實跑 `--watch --every 3` 確認過,兩列穩定更新。
+- ⭐ **只在「真的有 Burn 可以搬」的時候才強制換行。** 無條件換行會把 note 和模型名也推到
+  第二列,那沒人要求過,而且既有檢查釘住了。突變殺過:把 `always_split=split` 改成 `False`
+  → 檢查立刻失敗,錯誤訊息就是那條擠在一起的單列。
+
+---
+
+## 0.40.8
+
+- ⭐ **`outlasts reset` 現在有解釋了。** README 之前把這句話印在範例裡,卻從來沒說它是什麼意思 ——
+  擁有者只好開口問,那就是這份文件缺了一塊的量測結果。
+  ⇒ 它在**比兩個時鐘誰先到**:「照現在速度燒到 100% 還要多久」對上「這個 5 小時視窗還多久歸零」。
+  `outlasts reset` = 重置先到,你花不完;`1h-20m left` = 燒完先到。
+- ⭐ **那條 bar 是那個比值,不是存量。** 所以它會**往上跑** —— 慢下來 bar 就變長。
+  顏色也是反的:滿是綠、短是紅,跟其他段落的「數字越高越糟」相反。
+- ⚠ 順手把 `%/m` 說清楚:那是**最近 30 分鐘**的每分鐘燒掉幾 %,不是整個視窗的平均。
+
+---
+
+## 0.40.7
+
+- ⭐ **「Burn 不見了」有答案了,而且是量出來的:終端機不夠寬。** 擁有者的 watcher 上完全
+  沒有 `Burn` 這一段。⛔ 資料是好的 —— 同一時刻 `burn_triple()` 回
+  `(579, 282, 0.167)`,`_line_parts()` 也確實把 `Burn ▓▓▓▓▓▓▓▓▓ 0.17%/m · outlasts reset`
+  放進第一列。把寬度從 100 掃到 190:**141 欄以下就不畫**。那一行有 Burn 是 141 欄,
+  沒有是 100 欄,VS Code 下方面板常常只有 110～130。
+- ⚠ **這是刻意的行為,不是 bug。** `Burn` 是四段裡的最後一段,終端機不夠寬時第一個被丟掉,
+  丟掉的永遠不會是用量條 —— 煞車看的是那些。selftest 早就釘住這件事了。
+  ⛔ **但它被丟掉的時候畫面什麼都不說**,而「沒有 Burn」有兩種完全不同的意思:
+  `Burn ───────── --` 是「還沒有資料」,整段不見是「終端機太窄」。README 現在把這兩種
+  並排寫出來,因為看畫面分不出來。
+- ⭐ **沒有改任何程式碼。** 版面規則是刻意的而且有測試釘著;缺的是一句話,不是一個功能。
+
+---
+
+## 0.40.6
+
+- ⭐ **安裝那一節重寫成兩條路,而且都只有步驟。** 擁有者的指示:最上面先給一段
+  「複製貼上就全部做完」的指令,再給介面選單的做法,兩邊都不要解釋,想看的人自己往下翻。
+  ⇒ `## 安裝` 現在是 **A. 一段貼完** 和 **B. 用介面選單一步一步做**,底下原本那些長篇
+  說明整段保留,改名成 `## 說明區 —— 上面每一步在做什麼`。
+- ⭐ **A 那一段包含 `task.allowAutomaticTasks`,而且結尾就是驗收。** 從
+  `claude plugin marketplace add` 一路到 `install.py --status`,四件事一次做完:
+  外掛、CLI 狀態列、VS Code 工作、自動工作的權限。
+  ⛔ 開頭第一行寫的是「**在開 VS Code 之前跑完**」—— 這樣就贏了 0.40.4 量到的那場賽跑。
+- ⭐ **貼的那幾行是照著跑過才寫進去的**,不是照抄舊段落:實際執行到
+  `resolved installPath = ...0.40.0` 和 `OVERALL : everything is live`。
+- ⚠ **B 那一段誠實說「只有第 1 步沒有選單」** —— 外掛只能從 CLI 裝。把它寫出來,
+  比讓人在選單裡找一個不存在的東西好。
+
+---
+
+## 0.40.5
+
+- ⭐ **兩台機器的快照都到齊了,「賽跑」這個結論被證實,而且同步和信任兩個嫌疑都排除了。**
+  ⛔ 關鍵是**起點一模一樣**:第一次開啟之前,`tasks.json` 在**兩台**都是 `(no such file)`。
+  ⇒ 「那台好的是靠 Settings Sync 早就拿到檔案」是錯的 —— 它也沒有。
+
+  | | 視窗開啟 | hook 寫出工作檔 | 差 | 結果 |
+  |---|---|---|---|---|
+  | 好的那台 | `08:59:19` | `08:59:41` | **22 秒** | ✅ 自己起來(`watch.alive` 08:59:56) |
+  | 壞的那台 | `08:43:20` | `08:43:55` | **35 秒** | ⛔ 什麼都沒有 |
+
+  ⇒ 差 **13 秒**。同一個機制、同一個起點,只有 session 啟動快慢不同。
+- ⚠ **README 裡那個「8 秒 vs 35 秒」是舉例,不是量出來的,已經換成上面這組真數字。**
+  一個看起來像測量值的舉例,就是這個 repo 到處在拒絕的東西。
+- ⛔ **`.gitignore` 的快照規則太窄。** 原本只擋 `vscode-snapshots/`,而第二台機器的快照
+  是用**自己的名字**進來的(`-working`)—— 第一次比對就會把別人的機器 commit 出去。
+  改成 `Tools/Debug/vscode-snapshots*/`,並用 `git check-ignore -v` 驗過。
+
+---
+
+## 0.40.4
+
+- ⛔ **0.40.3 講得太滿,這一版推翻它。** 那一版說「寫出這個工作的那一次開啟,永遠跑不到它」——
+  **「永遠」是錯的。** 實驗 D:乾淨的 VS Code,啟動時**故意不放** `tasks.json`,
+  等 log 印出 `RunAutomaticTasks: Trying to run tasks.` **之後**才把檔案丟進去:
+  ```
+  08:58:04.671  Trying to run tasks.
+  08:58:04.682  taskNames=[]                                   ← 找不到
+  08:58:05.444  updated taskNames=["Claude Usage Watcher"]     ← 跑了
+  ```
+  ⇒ VS Code 找不到自動工作時會**再等 10 秒**,檔案在那 10 秒內出現就**會**跑。
+  ⭐ 正確的說法是「一場**賽跑**」,不是「不可能」。
+- ⭐ **這也解釋了為什麼有的機器裝完開起來就好,有的不會** —— 差別只是那個 session
+  在視窗開啟後幾秒才啟動。實測一台:視窗 `08:43:20` 開,hook 在 `08:43:55` 才寫檔,
+  **35 秒,輸了 25 秒**。另一台贏了,就「沒問題」。
+- ⭐ **要必贏,就在開 VS Code 之前先在終端機跑一次安裝腳本。** 檔案先在,就沒有賽跑。
+  README 和 `--status` 兩邊的說法都改掉了。
+
+---
+
+## 0.40.3
+
+- ⛔ **真正的原因找到了,而且不是 0.40.2 說的那個。** 擁有者拍了三份快照,差異只有一個:
+  **第一次開啟的時候,`tasks.json` 根本還不存在**(`(no such file)`),第一次開完才有它。
+  而第一次和第二次之間,那個檔案**一個位元都沒變** —— 差別只是「它已經在了」。
+  ⇒ 使用者層級的工作檔一樣是 session 寫出來的,而 session 在視窗開起來**之後**才啟動,
+  所以**寫出這個工作的那一次開啟,永遠跑不到它**。第二次就正常,之後每個專案都正常。
+- ⚠ **0.40.2 講的 workspace trust 是真的機制,但不是這次的原因。** 那三個隔離實驗沒有錯 ——
+  信任關掉的資料夾確實會安靜地不跑 —— 只是擁有者的機器上,擋住的是「檔案還不存在」。
+  兩個都留著:`--status` 現在**先講**這個常見的,trace log 那一套留給「不是這個」的時候。
+- ⭐ **README 的說法改正了。** 它本來說使用者層級的檔案解決了「第一次開啟」的問題。
+  它解決的是**第二個以後的每一個專案**;安裝完的那一次它救不了,原因跟舊版一模一樣。
+  現在寫清楚了,並且給了涵蓋那一次的方法:**開 VS Code 之前**先在終端機跑一次安裝腳本。
+
+---
+
+## 0.40.2
+
+- ⭐ **量出來了:擋住自動啟動的是 WORKSPACE TRUST。** 三次隔離實驗,每次只動一個變因,
+  用 `--user-data-dir` 開乾淨的 VS Code,`--log trace` 讀它自己的判斷:
+  | 實驗 | 信任 | 擴充套件 | log 裡的結果 |
+  |---|---|---|---|
+  | A | 關閉 | 無 | `taskNames=["Claude Usage Watcher"]` ✔ 跑了 |
+  | B | 關閉 | **全部真的擴充套件** | `taskNames=["Claude Usage Watcher"]` ✔ 跑了 |
+  | C | **預設(開啟)** | 無 | ⛔ **一行 `RunAutomaticTasks` 都沒有** |
+  ⇒ 擴充套件拖慢啟動**不是**原因(B 推翻了它);資料夾沒被信任才是,而且它在
+  `RunAutomaticTasks` 印出第一行 trace **之前**就 return,所以連 log 都是空的。
+- ⛔ **上一版教的看 log 方法是錯的,改掉了。** `Developer: Set Log Level...` 是**來不及的** ——
+  自動工作的判斷發生在視窗啟動當中,事後調等級,log 一樣是空的(實測:`renderer.log` 全是
+  `[info]`)。正確作法:**關掉所有 VS Code 視窗**,再用 `code --log trace <資料夾>` 開。
+- ⭐ **新工具 `Tools/Debug/vscode_snapshot.py`。** 擁有者問的正是對的問題 ——
+  「第一次開不會、第二次開會」是一個**差異**,單看一次讀數答不出來。它把決定這件事的
+  五個地方(含三個沒人能用編輯器打開的 SQLite)倒成純文字,`--diff` 比兩份快照。
+  ⚠ 快照要在 **VS Code 關掉**的時候拍。⛔ 快照內容是那台機器開過的每一個資料夾路徑,
+  所以進了 `.gitignore`,不會被 commit 出去。
+- ⭐ **它自己有 selftest,而且進了 `test_all.py`(11/11)。** 因為一個壞掉的比對會印
+  `no difference` —— 那也正好是「機器沒變」的正確答案,看不出來。selftest 種一個已知的
+  改動,沒被報出來就失敗。
+
+---
+
+## 0.40.1
+
+- ⛔ **`--status` 把「舊名字的工作」報成「沒有工作」。** 改名落地那個小時就發生了:
+  畫面上寫 `⛔ NOT in tasks.json / No usage terminal will open`,而那個工作就在那裡,
+  一樣是 `runOn: folderOpen`,一樣會開終端機。現在它有自己的一句話 ——
+  「在,但是舊名字」,而且說清楚那不是「不會開」,是「移除工作的程式碼搆不到它」。
+  ⭐ 突變殺過:把那個分支關掉 → `an old-label task did not report as an old-label task`。
+- ⭐ **自動啟動失敗的時候,現在說得出「怎麼看到原因」。** 從 VS Code 1.135.0 出貨的
+  workbench bundle 讀出來的:`RunAutomaticTasks` 在**找工作之前**就把自己的
+  `_hasRunTasks` 立起來,找不到就等 `onDidChangeTaskConfig` **10 秒**,等不到就
+  **整個視窗放棄**;資料夾還沒被信任時則是**安靜地 return**(而 `Tasks: Run Task`
+  是會跳信任視窗的)。⛔ 兩種放棄都只寫在 **Trace** 等級的 log 裡,別的地方一個字都沒有 ——
+  所以 `--status` 現在直接給那一串:`Developer: Set Log Level...` → Trace → 重開 →
+  `window1/renderer.log` 搜 `RunAutomaticTasks`。
+- ⚠ **這個版本沒有讓自動啟動變得比較會成功。** 那是 VS Code 那一邊的競態,外掛動不了。
+  它只是把「什麼都沒發生」變成「看得到是哪一條分支」。
+
+---
+
 ## 0.40.0
 
 - ⭐ **工作改名為 `Claude Usage Watcher`。** 擁有者的指示。VS Code 的 Run Task 清單、
@@ -1053,6 +1221,206 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.41.0
+
+- ⭐ **`outlasts reset` is replaced by a time, always.** The owner's instruction: the words cost
+  columns and made the reader translate a phrase into a number anyway. It now always reads
+  `11h-52m left` — when the burn-out lands at the current rate.
+  ⚠ **That time can exceed what the window has left, and that is correct**: resets in `4h-24m`,
+  burns out in `11h-52m` means you cannot spend it all. "The reset arrives first" is what the
+  full bar was already saying; it did not need saying twice.
+- ⭐ **The watcher now breaks after the last usage window and gives `Burn` a row of its own.**
+  Also the owner's instruction, and it closes the hole measured in 0.40.7: under 141 columns the
+  gauge was silently dropped, so "no Burn" meant either "no data" or "your panel is narrow" with
+  nothing on screen to tell them apart. With a row of its own it is always there.
+  ```
+  09:35:01  5h ░┃░░░░░░░░ 5% 4h-24m  7d ▓▓▓▓┃▓░░░░ 51% 4d-1h-24m  Fable ▓▓▓░┃░░░░░ 31% 4d-1h-24m  GO
+            Burn ▓▓▓▓▓▓▓▓▓ 0.13%/m · 11h-52m left
+  ```
+- ⛔ **The CLI statusline is untouched, as the owner specified.** Claude Code renders one row and
+  a second would be thrown away. The break is `always_split`, passed by `_watch_line()` and not
+  by `_line()` — both sides are pinned by checks.
+- ⚠ **Redrawing two rows in place was already supported.** `_rewrite()` climbs by what the
+  PREVIOUS draw put on screen, not by what this one will, and that direction was measured and
+  pinned long before this. Confirmed by running `--watch --every 3`: two rows update cleanly.
+- ⭐ **The split is forced only when there is a Burn segment to move.** Forcing it always would
+  push the note and the model onto a second row on a wide terminal, which nobody asked for and
+  which the existing checks pin. Mutation-checked: change `always_split=split` to `False` and the
+  new check fails, printing the crammed single row it is there to prevent.
+
+---
+
+## 0.40.8
+
+- ⭐ **`outlasts reset` is explained now.** The README printed those words in an example and
+  never said what they meant — the owner had to ask, which is the measurement of a hole in the
+  documentation. ⇒ It **races two clocks**: "how long until 100% at this rate" against "how long
+  until this five-hour window goes back to zero". `outlasts reset` = the reset arrives first and
+  you cannot spend it all; `1h-20m left` = burn-out arrives first.
+- ⭐ **The bar is that ratio, not a stock.** Which is why it goes back **up** — slow down and it
+  grows. Its colour is inverted too: full is green, short is red, the opposite of every other
+  segment where a high number is bad.
+- ⚠ And `%/m` is spelled out: percent burned per minute over the **last 30 minutes**, not an
+  average of the whole window.
+
+---
+
+## 0.40.7
+
+- ⭐ **"The Burn segment is missing" has an answer, and it was measured: the terminal is too
+  narrow.** The owner's watcher showed no `Burn` at all. ⛔ The data was fine — at that same
+  moment `burn_triple()` returned `(579, 282, 0.167)` and `_line_parts()` did put
+  `Burn ▓▓▓▓▓▓▓▓▓ 0.17%/m · outlasts reset` on the first row. Sweeping the width from 100 to
+  190: **below 141 columns it is not drawn.** That line is 141 columns with Burn and 100
+  without, and VS Code's bottom panel is often 110–130.
+- ⚠ **This is deliberate, not a bug.** `Burn` is the last of the four segments and the first
+  sacrificed on a narrow terminal — never a usage bar, because the bars are what the brake acts
+  on. The selftest already pins that. ⛔ **But nothing says it was dropped**, and "no Burn" has
+  two entirely different meanings: `Burn ───────── --` is "no data yet", an absent segment is
+  "too narrow". The README now puts the two side by side, because the screen cannot tell them
+  apart.
+- ⭐ **No code changed.** The layout rule is deliberate and pinned by a test; what was missing
+  was a sentence, not a feature.
+
+---
+
+## 0.40.6
+
+- ⭐ **The install section is rewritten as two routes, both steps only.** The owner's
+  instruction: lead with one paste that does everything, then the menu route, and explain
+  neither — point at the prose below and let whoever wants it go and read it. ⇒ `## Install`
+  is now **A. One paste** and **B. Through the menus**, and every long passage that was there
+  is kept below, renamed to `## Reference — what each of those steps does`.
+- ⭐ **Route A includes `task.allowAutomaticTasks`, and ends on its own check.** From
+  `claude plugin marketplace add` through to `install.py --status`: the plugin, the CLI
+  statusline, the VS Code task and the automatic-task permission, in one paste.
+  ⛔ Its first line is **run it before opening VS Code** — which wins the race 0.40.4 measured.
+- ⭐ **Those lines were RUN before being written down**, not copied from the old section:
+  `resolved installPath = ...0.40.0` and `OVERALL : everything is live`.
+- ⚠ **Route B says plainly that only step 1 has no menu** — the plugin installs from the CLI.
+  Saying so beats sending somebody hunting through menus for something that is not there.
+
+---
+
+## 0.40.5
+
+- ⭐ **Snapshots from BOTH machines confirm the race, and clear Settings Sync and workspace
+  trust at the same time.** ⛔ What settles it is the identical starting state: before the
+  first open, `tasks.json` read `(no such file)` on **both**. ⇒ "the good machine already had
+  the file from sync" is false — it did not have it either.
+
+  | | window opened | hook wrote the task file | gap | outcome |
+  |---|---|---|---|---|
+  | the one that works | `08:59:19` | `08:59:41` | **22 s** | ✅ started (`watch.alive` 08:59:56) |
+  | the one that does not | `08:43:20` | `08:43:55` | **35 s** | ⛔ nothing |
+
+  ⇒ Thirteen seconds. Same mechanism, same starting state, only session-start latency differs.
+- ⚠ **The "8 seconds versus 35" in the README was an illustration, not a measurement, and is
+  replaced by the pair above.** An illustration that reads as a measurement is exactly what
+  this repository refuses everywhere else.
+- ⛔ **The `.gitignore` snapshot rule was too narrow.** It matched only `vscode-snapshots/`,
+  while a second machine's snapshots arrive under a name of their own (`-working`) — the
+  first comparison would have committed somebody else's machine. Now
+  `Tools/Debug/vscode-snapshots*/`, verified with `git check-ignore -v`.
+
+---
+
+## 0.40.4
+
+- ⛔ **0.40.3 overstated it, and this release refutes it.** It said the open that creates the
+  task "can never run it" — **never is wrong.** Probe D: a clean VS Code launched with
+  **no** `tasks.json`, the file dropped in only **after** the log printed
+  `RunAutomaticTasks: Trying to run tasks.`:
+  ```
+  08:58:04.671  Trying to run tasks.
+  08:58:04.682  taskNames=[]                                   <- nothing found
+  08:58:05.444  updated taskNames=["Claude Usage Watcher"]     <- it ran
+  ```
+  ⇒ Finding no automatic task, VS Code waits a further **10 seconds**, and a file that
+  appears inside them **does** run. ⭐ The honest word is **race**, not impossible.
+- ⭐ **That also explains why one machine just works after installing and another does not** —
+  the only difference is how many seconds after the window the session starts. Measured on
+  one: window at `08:43:20`, the hook wrote at `08:43:55` — **35 seconds, losing by 25**.
+  A machine that starts its session in eight wins, and reports no problem at all.
+- ⭐ **To win it every time, run the install script from a terminal before opening VS Code.**
+  With the file already there no race is run. Both the README and `--status` now say this.
+
+---
+
+## 0.40.3
+
+- ⛔ **The actual cause, and it is not what 0.40.2 said.** The owner took three snapshots and
+  the difference is one thing: **on the first open `tasks.json` did not exist yet**
+  (`(no such file)`); it is there after that open. And between the first and second open
+  **that file does not change at all** — the only difference is that it is already there.
+  ⇒ The user-level task file is written by a session too, and a session starts *after* the
+  window is up, so **the open that creates the task can never run it**. The second works, and
+  every project after that works.
+- ⚠ **The workspace-trust finding in 0.40.2 is a real mechanism but not this cause.** Those
+  three isolated runs were not wrong — an untrusted folder does silently skip the task — it
+  simply was not what bit here. Both are kept: `--status` now leads with the common case and
+  keeps the trace-log recipe for when it is *not* that.
+- ⭐ **The README claim is corrected.** It said the user-level file solved the FIRST open. It
+  solves every project from the second one onward; the launch right after installing it
+  cannot cover, for exactly the reason the per-project file could not. That is now stated,
+  along with the way to cover it: run the install script from a terminal **before** opening
+  VS Code.
+
+---
+
+## 0.40.2
+
+- ⭐ **Measured: what blocks the automatic start is WORKSPACE TRUST.** Three isolated runs,
+  one variable each, a clean VS Code via `--user-data-dir` and `--log trace` to read its own
+  decision:
+  | run | trust | extensions | what the log said |
+  |---|---|---|---|
+  | A | disabled | none | `taskNames=["Claude Usage Watcher"]` — it ran |
+  | B | disabled | **the real extension set** | `taskNames=["Claude Usage Watcher"]` — it ran |
+  | C | **default (on)** | none | ⛔ **not one `RunAutomaticTasks` line** |
+  ⇒ Extensions slowing startup is **not** the cause — B refutes it. An untrusted folder is,
+  and it returns **before** `RunAutomaticTasks` prints its first trace, which is why even
+  the log is empty.
+- ⛔ **The log recipe shipped in 0.40.1 was wrong and is corrected.** `Developer: Set Log
+  Level...` is **too late**: the automatic-task decision is taken while the window starts, so
+  raising the level afterwards leaves the log empty (measured — `renderer.log` held nothing
+  but `[info]`). The right form is: close EVERY window, then `code --log trace <folder>`.
+- ⭐ **New tool, `Tools/Debug/vscode_snapshot.py`.** The owner asked the right question:
+  "first open does nothing, second one works" is a claim about a DIFFERENCE, and no single
+  reading answers it. It dumps the five places that decide this — three of them SQLite
+  databases no editor opens — as plain text, and `--diff` compares two snapshots. ⚠ Take
+  them with VS Code CLOSED. ⛔ A snapshot lists every folder that machine has ever opened, so
+  it is in `.gitignore` and never committed.
+- ⭐ **It carries its own selftest, wired into `test_all.py` (11/11).** A broken comparison
+  prints `no difference` — which is also the honest answer on an unchanged machine, and the
+  two cannot be told apart by looking. The selftest plants a known change and fails if it is
+  not reported.
+
+---
+
+## 0.40.1
+
+- ⛔ **`--status` reported a task under an OLD NAME as no task at all.** It happened the
+  hour the rename landed: the screen said `⛔ NOT in tasks.json / No usage terminal will
+  open` about a task sitting right there, still `runOn: folderOpen`, still opening a
+  terminal. It now gets its own sentence — present, but under the old name — and says what
+  is actually wrong with that: nothing which removes tasks by the current name can reach it.
+  ⭐ Mutation-checked: disable the branch → `an old-label task did not report as an
+  old-label task`.
+- ⭐ **When the automatic start fails, it can now say how to SEE why.** Read from VS Code
+  1.135.0's shipped workbench bundle: `RunAutomaticTasks` sets its own `_hasRunTasks` flag
+  **before** it looks for tasks; finding none it waits **10 seconds** for
+  `onDidChangeTaskConfig` and then gives up **for that whole window**; and when the folder
+  is not yet trusted it returns **in silence** — while `Tasks: Run Task` asks for trust
+  instead. ⛔ Both give-ups are logged at **Trace** and nowhere else, so `--status` now
+  hands over the recipe: `Developer: Set Log Level...` → Trace → restart →
+  `window1/renderer.log`, search `RunAutomaticTasks`.
+- ⚠ **This release does not make the automatic start more likely to work.** That race lives
+  inside VS Code and no plugin can reach it. It only turns "nothing happened" into "here is
+  the branch it took".
 
 ---
 

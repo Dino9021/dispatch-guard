@@ -347,6 +347,33 @@ def main():
             assert "token_usage = ON" not in out, "%s: %s" % (where, out[:2000])
             assert "token_usage = off" in out, "%s: %s" % (where, out[:2000])
 
+    # ⛔ A TASK UNDER AN OLD LABEL MUST NOT REPORT AS ABSENT. `--status` matched the current
+    # label exactly, so the hour the rename landed it printed "NOT in tasks.json / No usage
+    # terminal will open" about a task that was sitting right there, still runOn:folderOpen,
+    # still opening a terminal. Seen for real. ⚠ vscode_user_dirs() reads APPDATA, so it is
+    # replaced here - without that this check reads the machine it runs on.
+    with scratch_dir("status-sees-the-old-label") as tmp:
+        vsdir = os.path.join(tmp, "vscode-user")
+        os.makedirs(vsdir)
+        mod = load_install_module(tmp)
+        mod.vscode_user_dirs = lambda: [vsdir]
+        with open(os.path.join(vsdir, "tasks.json"), "w", encoding="utf-8") as f:
+            json.dump({"version": "2.0.0",
+                       "tasks": [{"label": mod.LEGACY_TASK_LABELS[0]}]}, f)
+        import contextlib
+        import io as _io
+        buf = _io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                mod.status()
+        except SystemExit:
+            pass
+        out = buf.getvalue()
+        assert "OLD NAME" in out, "an old-label task did not report as an old-label task:%s%s" % (
+            chr(10), out)
+        assert "No usage terminal will open" not in out, (
+            "an old-label task was reported as absent:%s%s" % (chr(10), out))
+
     print("ok - --check neither wrote nor removed anything, and said so")
 
 

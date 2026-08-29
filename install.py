@@ -701,9 +701,26 @@ def status():
         entry = user_task_entry()
         for d in dirs:
             path = os.path.join(d, "tasks.json")
-            found = [t for t in ((load(path, {}) or {}).get("tasks") or [])
-                     if isinstance(t, dict) and t.get("label") == TASK_LABEL]
-            if not found:
+            have = [t for t in ((load(path, {}) or {}).get("tasks") or [])
+                    if isinstance(t, dict)]
+            found = [t for t in have if t.get("label") == TASK_LABEL]
+            # ⛔ A TASK UNDER AN OLD NAME IS NOT AN ABSENT TASK, and reporting it as one is
+            # the confident wrong answer this whole script exists to refuse: the branch below
+            # says "No usage terminal will open" while the old entry - still
+            # `runOn: folderOpen` - opens one on every folder open. Seen for real the hour
+            # the rename landed. It is also not "present": nothing that removes tasks by the
+            # current name can reach it, so it needs its own sentence.
+            old = [t for t in have if t.get("label") in LEGACY_TASK_LABELS]
+            if not found and old:
+                print("VS Code task        : ⚠ present under an OLD NAME (%s) in %s"
+                      % (old[0].get("label"), path))
+                print("                      It DOES still open a terminal - this is not the")
+                print("                      silent failure below. But it is invisible to")
+                print("                      anything that removes tasks by the current name.")
+                print("                      Fix: start a session inside VS Code and the hook")
+                print("                      replaces it, or run this script with --all.")
+                ok = False
+            elif not found:
                 print("VS Code task        : ⛔ NOT in %s" % path)
                 print("                      No usage terminal will open. Run this script")
                 print("                      with --all, or start a session INSIDE VS Code")
@@ -770,6 +787,46 @@ def status():
             print("                      prompts you at folder open - VS Code runs the")
             print("                      folder-open tasks only after every task provider")
             print("                      has answered.")
+            # ⛔ AND THE AUTOMATIC START IS A ONE-SHOT RACE INSIDE VS CODE, which is why
+            # "run it by hand and it works" proves so little. Read from the shipped
+            # workbench bundle, 1.135.0: RunAutomaticTasks sets its own _hasRunTasks flag
+            # BEFORE it looks for tasks; finding none it waits 10s for onDidChangeTaskConfig
+            # and then gives up FOR THAT WINDOW. It also returns in silence when the folder
+            # is not yet trusted - while `Tasks: Run Task` asks for trust instead. ⇒ Both
+            # give-ups are logged at TRACE and nowhere else, so the log level is the only
+            # instrument that separates them.
+            # ⛔ NOT THE `Developer: Set Log Level...` PALETTE COMMAND, which is the
+            # obvious advice and is WRONG here: the automatic-task decision is taken during
+            # startup, so a level raised after the window is up arrives too late and the
+            # log stays empty - measured 2026-08-29, renderer.log held nothing but [info].
+            # The level has to be set ON THE LAUNCH, and only a new PROCESS reads it, so
+            # every window must be closed first or `code` just messages the running one.
+            # ⭐ THE COMMON CASE FIRST, because it is the one that is not exotic and it
+            # was proved on a real machine by a snapshot pair: before the first open
+            # tasks.json read "(no such file)", after it the task was there, and between
+            # the first and second open THAT FILE DID NOT CHANGE. The task cannot run in
+            # the window that creates it - the hook writes it from a session, and a session
+            # starts after the window is up. The trace recipe below is for when this is
+            # NOT it.
+            print("                      ⭐ FIRST LAUNCH SINCE INSTALLING? Then it lost a")
+            print("                      RACE, and the next folder open wins it for good:")
+            print("                      a session writes the task file, and a session")
+            print("                      starts after the window. VS Code waits 10s for a")
+            print("                      task file to appear - measured, a write inside")
+            print("                      that window DOES run - then gives up silently.")
+            print("                      One machine measured 35s, losing by 25. To skip")
+            print("                      the race on a new machine, run this script with")
+            print("                      --all BEFORE opening VS Code.")
+            print("                      ⭐ WHY, IN ONE COMMAND: close EVERY VS Code window,")
+            print("                      then launch it as `code --log trace <folder>` and")
+            print("                      search window1/renderer.log for RunAutomaticTasks")
+            print("                      (F1 -> `Developer: Open Logs Folder`). ⚠ Setting")
+            print("                      the level from the palette instead is too late -")
+            print("                      the decision is taken while the window starts.")
+            print("                      NOT ONE such line = VS Code stopped at the")
+            print("                      workspace-trust check, which returns in silence.")
+            print("                      `Tasks: Run Task` PROMPTS for trust instead, which")
+            print("                      is why running it by hand proves so little here.")
             ok = False
 
     resume_status()

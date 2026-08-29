@@ -1441,9 +1441,21 @@ def _watch_line(stamp, data, v, note, cfg, idle=False, burn=None):
     tail = "  %s%s%s  " % (von, word, voff)
     windows, extras = _line_parts(data, note, lcfg, None,
                                   stale=False if idle else None, burn=burn)
-
+    # ⭐ THE WATCHER BREAKS AFTER THE LAST USAGE WINDOW, and Burn opens the second row.
+    # The owner's instruction, and it fixes the defect measured in 0.40.7: on a panel under
+    # 141 columns the gauge was silently dropped, so "no Burn" meant either "no data" or
+    # "too narrow" and the screen could not tell you which. Given a row of its own it is
+    # always there.
+    # ⛔ THE SPLIT IS FORCED ONLY WHEN THERE IS A BURN SEGMENT TO MOVE. Forcing it
+    # unconditionally would push the note and the model onto a second row on a wide
+    # terminal, which nobody asked for and which the existing checks pin.
+    # ⚠ WATCHER ONLY. _line() - the CLI statusline - does not pass always_split, because
+    # Claude Code renders one row and a second would be discarded.
+    split = bool(windows) and windows[-1].startswith("Burn")
+    if split:
+        extras.insert(0, windows.pop())
     return _rows(windows, extras, terminal_width(cfg), head, tail,
-                 cfg.get("two_rows", True))
+                 cfg.get("two_rows", True), always_split=split)
 
 
 # The payload key that carries context usage. ⭐ Named once because Part B turns its
@@ -1537,7 +1549,7 @@ def terminal_width(cfg):
         return None
 
 
-def _rows(windows, extras, width, head="", tail="", two_rows=True):
+def _rows(windows, extras, width, head="", tail="", two_rows=True, always_split=False):
     """The row(s) to draw: one when everything fits, two when it does not and `two_rows`.
 
     ⭐ ONE SPLITTER FOR BOTH SURFACES. The watcher and the statusline had different ideas
@@ -1553,11 +1565,22 @@ def _rows(windows, extras, width, head="", tail="", two_rows=True):
     ⚠ `two_rows` false keeps the old behaviour exactly - one row, packed, and whatever does
     not fit is dropped from the right. A second row costs a row of the terminal, and on a
     narrow one that is a row of conversation; the owner decides.
+
+    ⭐ `always_split` spends the second row even when everything WOULD fit. The watcher asks
+    for it so the burn gauge has a fixed home instead of appearing and vanishing with the
+    terminal width - a segment that moves is a segment nobody trusts. ⛔ It is not a
+    statusline option: that surface gets ONE row from Claude Code and a second would be
+    thrown away.
     """
     if not width:
+        # ⚠ A forced split has to survive here too, or the second row would appear only on
+        # terminals whose width could be detected - which is the machines, not the intent.
+        if always_split and two_rows and extras:
+            return [head + _fit(windows, None) + tail,
+                    " " * _visible_len(head) + _fit(extras, None)]
         return [head + _fit(windows + extras, None) + tail]
     one = head + _fit(windows + extras, None) + tail
-    if _visible_len(one) <= width:
+    if not always_split and _visible_len(one) <= width:
         return [one]
     # ⚠ With nothing to move to a second row there is nothing to split, so the single row is
     # cut instead. Dropping the only content would leave an empty display.
@@ -1624,7 +1647,12 @@ def _burn_part(burn, remain, rate, cfg, stale=False):
     if on is None:
         key = "ok" if ratio >= 1 else ("alarm" if ratio < 0.5 else "warn")
         on, off = ANSI[key], ANSI["reset"]
-    tail = "outlasts reset" if burn >= remain else "%s left" % duration(burn)
+    # ⛔ ALWAYS A TIME, NEVER WORDS. The owner's instruction: "outlasts reset" cost
+    # fourteen columns to say something the BAR already says - a full bar IS "the reset
+    # arrives first" - and it made the reader translate a phrase into a number anyway.
+    # ⚠ So this can now print a time LONGER than the window has left, and that is the
+    # honest reading: it is when the burn-out lands, not a promise you will get there.
+    tail = "%s left" % duration(burn)
     rate_s = "%.2f%%/m " % rate if rate else ""
     return "Burn %s%s%s %s· %s" % (on, bar, off, rate_s, tail)
 
@@ -2701,6 +2729,37 @@ def selftest():
                     "width %d, idle=%s: a row is %d columns and WILL wrap: %r"
                     % (_w, _idle, _visible_len(_r), _r))
 
+    # ⛔ THE WATCHER BREAKS AFTER THE LAST USAGE WINDOW WHEN THERE IS A BURN GAUGE, and the
+    # gauge opens the second row. The owner's instruction, and it closes the hole measured in
+    # 0.40.7: below 141 columns the gauge was silently dropped, so an absent Burn meant either
+    # "no data yet" or "your panel is narrow" and nothing on screen told the two apart.
+    # ⚠ EVEN AT WIDTH 200, where it would fit on one row. A segment that appears and vanishes
+    # with the terminal is a segment nobody can rely on.
+    _burn3 = (188, 106, 0.38)
+    _two = _watch_line("07:26:12", _live, _v, None, {"width": 200}, burn=_burn3)
+    assert len(_two) == 2, _two
+    assert "Burn" not in _two[0] and "Burn" in _two[1], _two
+    assert "5h" in _two[0] and "GO" in _two[0], _two[0]
+    # ...and both rows still fit, at every width, which is the defect this area exists for.
+    for _w in (200, 150, 120, 100, 80, 60, 40, 25):
+        for _idle in (True, False):
+            _rr = _watch_line("07:26:12", _live, _v, _note, {"width": _w},
+                              idle=_idle, burn=_burn3)
+            for _r in _rr:
+                assert _visible_len(_r) <= _w, (
+                    "width %d idle=%s: %d columns WILL wrap: %r"
+                    % (_w, _idle, _visible_len(_r), _r))
+
+    # ⛔ WITHOUT A BURN SEGMENT NOTHING IS FORCED. Splitting unconditionally would push the
+    # note and the model onto a second row on a wide terminal, which nobody asked for.
+    assert len(_watch_line("07:26:12", _live, _v, None, {"width": 200})) == 1
+
+    # ⛔ AND THE CLI STATUSLINE IS UNTOUCHED - it gets ONE row from Claude Code, so a second
+    # would be thrown away. The forced split is the watcher's, not a property of _line_parts.
+    _sl = _line(_live, None, {"width": 200, "colour": True}, None, burn=_burn3)
+    assert isinstance(_sl, str) and chr(10) not in _sl, _sl
+    assert "Burn" in _sl and "5h" in _sl, _sl
+
     # ⭐ IDLE KEEPS THE NUMBERS, DROPS EVERY COLOUR, AND SAYS Sleep. The owner's rule: while
     # nobody is working nobody is spending, so a frozen figure cannot drift - and hiding it
     # threw away information for a danger that is not there. `Sleep` is what says the line
@@ -3127,8 +3186,12 @@ def selftest():
     _full = _burn_part(188, 106, 0.38, _bcfg2)          # outlasts the reset
     _half = _burn_part(80, 119, 0.60, _bcfg2)           # 67% of the time left
     _dry = _burn_part(12, 130, 3.40, _bcfg2)            # 9%
-    assert "outlasts reset" in _full and BAR_EMPTY not in _STRIP_ANSI.sub("", _full), _full
-    assert "44m" not in _full and ANSI["ok"] in _full, _full
+    # ⛔ THE TAIL IS A TIME IN EVERY CASE NOW, including this one where the burn-out lands
+    # AFTER the reset. The owner's instruction: the words cost fourteen columns to repeat
+    # what the full bar already says. ⚠ 188 minutes with 106 left, so the number printed is
+    # deliberately LONGER than the window has - that is when burn-out lands, not a promise.
+    assert "3h-8m left" in _full and BAR_EMPTY not in _STRIP_ANSI.sub("", _full), _full
+    assert "outlasts" not in _full and ANSI["ok"] in _full, _full
     assert "left" in _half and ANSI["warn"] in _half, _half
     assert ANSI["alarm"] in _dry, _dry
     # ⚠ COLOUR IS INVERTED HERE, and _colour() must not be used: everywhere else a HIGH

@@ -101,11 +101,62 @@ skill 是模型看了描述之後**自己決定**要不要用；文件是模型*
 
 ## 安裝
 
-⭐ **裝外掛兩行，之後貼一段腳本。** hook 和 skill 隨外掛自動裝好，不用碰。
-剩下的是狀態列和 watcher —— 那兩樣**外掛做不到**（外掛沒有安裝時的鉤子、
-`statusLine` 不在外掛 manifest 裡、`.vscode/tasks.json` 是每個專案一份），
-所以 `install.py` 存在的唯一理由就是這個。
-⭐ **而那段腳本自己去查安裝路徑，所以你永遠不必知道 `install.py` 被裝到哪裡去了。**
+⭐ **兩條路，挑一條，兩條都是完整的。** 這一節只給步驟；每一步為什麼長那樣，
+下面的**說明區**都有 —— 想看再看。
+
+### ⚡ A. 一段貼完（最快，什麼都不用想）
+
+⛔ **在開 VS Code 之前跑完。** 理由見說明區的「**⚠ 安裝後重開 VS Code，它會問你一次**」。
+
+**Windows（PowerShell）**
+
+```powershell
+claude plugin marketplace add Dino9021/dispatch-guard
+claude plugin install dispatch-guard@dispatch-guard
+$p = (Get-Content "$env:USERPROFILE\.claude\plugins\installed_plugins.json" -Raw | ConvertFrom-Json).plugins.'dispatch-guard@dispatch-guard'[0].installPath
+if (-not $p) { throw "dispatch-guard is not installed" }
+& "$p\hooks\run.cmd" "$p\install.py" --all
+& "$p\hooks\run.cmd" "$p\install.py" --status
+```
+
+**macOS / Linux**
+
+```bash
+claude plugin marketplace add Dino9021/dispatch-guard
+claude plugin install dispatch-guard@dispatch-guard
+for c in python3 python py; do command -v "$c" >/dev/null && PY="$c" && break; done
+p=$("$PY" -c "import json,os;print(json.load(open(os.path.expanduser('~/.claude/plugins/installed_plugins.json')))['plugins']['dispatch-guard@dispatch-guard'][0]['installPath'])")
+[ -n "$p" ] || { echo "dispatch-guard is not installed"; exit 1; }
+sh "$p/hooks/run.sh" "$p/install.py" --all
+sh "$p/hooks/run.sh" "$p/install.py" --status
+```
+
+⭐ **這一段把四件事都做完**：外掛、CLI 狀態列、VS Code 的 `Claude Usage Watcher` 工作，
+以及 VS Code 的 `task.allowAutomaticTasks`（那個「你來不及按」的通知就不會出現了）。
+最後一行 `--status` 是驗收 —— `OVERALL` 那行說 live 就是好了。
+
+⚠ 然後**開一個新的 Claude session**（hook 在 session 開始才載入），**再開 VS Code**。
+
+> 細節在說明區：**1. 外掛本體**、**2.（選配）狀態列和 watcher**、**4. 確認裝好了**。
+
+### 🖱 B. 用介面選單一步一步做
+
+⚠ **只有第 1 步沒有選單** —— 外掛只能從 CLI 裝。之後全部是點的。
+
+| # | 在哪裡 | 做什麼 |
+|---|---|---|
+| 1 | 終端機 | `claude plugin marketplace add Dino9021/dispatch-guard` 然後 `claude plugin install dispatch-guard@dispatch-guard` |
+| 2 | Claude（新 session） | 打 `/dispatch-guard:install` —— ⭐ 先給你看 dry run，問過才動手 |
+| 3 | Claude | 打 `/dispatch-guard:status` 驗收 |
+| 4 | VS Code | `Ctrl+Shift+P` → `Tasks: Manage Automatic Tasks` → `Allow Automatic Tasks`（第 2 步通常已經設好了，這是保險）|
+| 5 | VS Code | 重開資料夾。沒出現的話：`Terminal` → `Run Task` → `Claude Usage Watcher` |
+
+> 細節在說明區：**0.（用 VS Code 的人先做這一步）**、**1. 外掛本體**、
+> **2.（選配）狀態列和 watcher**、**⚠ 安裝後重開 VS Code，它會問你一次**、**4. 確認裝好了**。
+
+---
+
+## 說明區 —— 上面每一步在做什麼
 
 ### 0.（用 VS Code 的人先做這一步，整個安裝會順很多）
 
@@ -196,6 +247,27 @@ sh "$p/hooks/run.sh" "$p/install.py" --all
 ⛔ **不會往你的 repo 寫任何東西。** 舊版本是每個專案一份 `.vscode/tasks.json`，
 那在「第一次開啟」永遠不會成立 —— 檔案由 session 寫出，而 session 在資料夾開啟**之後**才啟動，
 所以**每一個新專案**的第一次開啟都看不到它。
+
+⚠ **安裝完的「第一次開啟」是一場賽跑，而且你會贏或會輸。** 使用者層級的檔案是 session
+寫出來的，而 session 在視窗開起來**之後**才啟動。VS Code 找不到自動工作時，會再等
+**10 秒**（`onDidChangeTaskConfig`）；⭐ **檔案在那 10 秒內寫進去，它就會跑** ——
+實測 2026-08-29，log 依序寫著 `taskNames=[]` 然後 `updated taskNames=["Claude Usage Watcher"]`。
+⛔ **超過就整個視窗放棄，而且不會有任何訊息。**
+
+⇒ 所以有的機器「裝完開起來就好」，有的不會。⭐ **兩台都量過了,起點一模一樣** ——
+第一次開啟之前 `tasks.json` 兩台都是 `(no such file)`,所以跟同步、跟信任都沒有關係:
+
+| | 視窗開啟 | hook 寫出工作檔 | 差 | 結果 |
+|---|---|---|---|---|
+| 贏的那台 | `08:59:19` | `08:59:41` | **22 秒** | ✅ 自己起來了 |
+| 輸的那台 | `08:43:20` | `08:43:55` | **35 秒** | ⛔ 沒起來 |
+
+⇒ 差別就是 **13 秒**的 session 啟動時間。⚠ 這個數字不是「10 秒」那個門檻本身 ——
+VS Code 的 10 秒是從它自己**開始找工作**那一刻起算,而那一刻本身也會被擴充套件拖慢。
+
+⭐ **要讓它必贏，就在開 VS Code 之前，先在終端機跑一次安裝腳本**（下面第 2 步，
+或 Claude 裡的 `/dispatch-guard:install`）。檔案先在，就沒有賽跑。
+⚠ 第一次之後檔案就一直在了，**從此每個專案、每次開啟都不再有這個問題。**
 
 ### ⚠ 安裝後重開 VS Code，它會問你一次
 
@@ -604,6 +676,44 @@ claude plugin install dispatch-guard@dispatch-guard --config announce_unattended
 
 ⭐ 有判定字，因為對擴充套件使用者來說**這是唯一看得到用量的地方**，旁邊沒有開場那一行。
 ⛔ 它畫不出 Ctx、模型和 effort —— 它只是終端機裡的一個迴圈，沒有任何東西餵 payload 給它。
+
+### `Burn` 那一段：`11h-52m left` 是什麼意思
+
+`Burn` 回答一個問題：**照現在這個速度，我還有多久會撞到 100%。**
+
+⭐ **在 watcher（VS Code 擴充套件看的那個）裡，它有自己的一行**，接在 `Fable` 後面換行：
+
+```
+09:35:01  5h ░┃░░░░░░░░ 5% 4h-24m  7d ▓▓▓▓┃▓░░░░ 51% 4d-1h-24m  Fable ▓▓▓░┃░░░░░ 31% 4d-1h-24m  GO
+          Burn ▓▓▓▓▓▓▓▓▓ 0.13%/m · 11h-52m left
+```
+
+⛔ **CLI 狀態列不換行** —— Claude Code 只給它一列，第二列會被丟掉，所以那邊 `Burn` 還是接在後面。
+
+**怎麼讀：**
+
+| 看到 | 意思 |
+|---|---|
+| `0.13%/m` | 最近 **30 分鐘**每分鐘燒掉 0.13% —— 不是整個視窗的平均 |
+| `11h-52m left` | 照這個速度，**11 小時 52 分後**會撞到 100% |
+
+⚠ **這個時間可以比「視窗還剩多久」還長，那是正常的。** 上面那行剩 `4h-24m` 就重置，
+但燒完要 `11h-52m` ⇒ **你根本花不完，重置會先到。** 這時候 bar 是滿的。
+
+**那條 bar 是「燒完 ÷ 重置」的比值**，⛔ 不是油量：
+
+| bar | 顏色 | 意思 |
+|---|---|---|
+| `▓▓▓▓▓▓▓▓▓` 滿 | 🟢 綠 | 撐得過重置 —— 放心花 |
+| 一半 | 🟡 黃 | 只撐得到剩餘時間的一半 |
+| 很短 | 🔴 紅 | ⛔ 快撞到上限了 |
+
+⚠ **兩個反直覺的地方：**
+- **bar 會往上跑。** 你慢下來它就變長 —— 它量的是「兩個時鐘會不會交叉」，不是還剩多少油。
+- **顏色是反的。** 這一段滿=好；旁邊那三條是數字越高越糟。
+
+⚠ **`Burn ───────── --` 代表「還沒有資料」** —— 同一個 5 小時視窗裡至少要兩筆紀錄才算得出速度。
+剛裝好、或剛過重置點就是這樣，等幾分鐘就有了。
 
 ### ⭐ 沒人在工作的時候，watcher 會停止呼叫 API
 
@@ -1441,12 +1551,65 @@ that is itself the check that the tests stayed inside their sandbox.
 
 ## Install
 
-⭐ **Two commands to install the plugin, then one pasted script.** Hooks and the skill install
-themselves with the plugin — nothing to wire. What is left is the statusline and the watcher: the
-parts a plugin **cannot** do for itself, because there is no install-time hook, `statusLine` is
-not a key a plugin manifest can set, and `.vscode/tasks.json` is per-project. That is the whole
-reason `install.py` exists — ⭐ **and the script looks its own install path up, so you never have
-to know where `install.py` went.**
+⭐ **Two routes, pick one, both are complete.** This section is steps only; why each step looks
+the way it does is in the **reference** below — read it if you want it.
+
+### ⚡ A. One paste (fastest, nothing to think about)
+
+⛔ **Run it BEFORE opening VS Code.** Why is in the reference, under "**⚠ Reopen VS Code after
+installing, and it asks you once**".
+
+**Windows (PowerShell)**
+
+```powershell
+claude plugin marketplace add Dino9021/dispatch-guard
+claude plugin install dispatch-guard@dispatch-guard
+$p = (Get-Content "$env:USERPROFILE\.claude\plugins\installed_plugins.json" -Raw | ConvertFrom-Json).plugins.'dispatch-guard@dispatch-guard'[0].installPath
+if (-not $p) { throw "dispatch-guard is not installed" }
+& "$p\hooks\run.cmd" "$p\install.py" --all
+& "$p\hooks\run.cmd" "$p\install.py" --status
+```
+
+**macOS / Linux**
+
+```bash
+claude plugin marketplace add Dino9021/dispatch-guard
+claude plugin install dispatch-guard@dispatch-guard
+for c in python3 python py; do command -v "$c" >/dev/null && PY="$c" && break; done
+p=$("$PY" -c "import json,os;print(json.load(open(os.path.expanduser('~/.claude/plugins/installed_plugins.json')))['plugins']['dispatch-guard@dispatch-guard'][0]['installPath'])")
+[ -n "$p" ] || { echo "dispatch-guard is not installed"; exit 1; }
+sh "$p/hooks/run.sh" "$p/install.py" --all
+sh "$p/hooks/run.sh" "$p/install.py" --status
+```
+
+⭐ **That does all four things**: the plugin, the CLI statusline, VS Code's
+`Claude Usage Watcher` task, and VS Code's `task.allowAutomaticTasks` — so the notification you
+have to catch never appears. The last line is the check: `OVERALL` says live and you are done.
+
+⚠ Then **open a NEW Claude session** (a plugin's hooks load at session start), **then** VS Code.
+
+> Detail in the reference: **1. The plugin — hooks and the skill**, **2. (Optional) The statusline
+> and the watcher**, **4. Check it took**.
+
+### 🖱 B. Through the menus, step by step
+
+⚠ **Only step 1 has no menu** — the plugin installs from the CLI. Everything after it is clicks.
+
+| # | Where | What |
+|---|---|---|
+| 1 | a terminal | `claude plugin marketplace add Dino9021/dispatch-guard`, then `claude plugin install dispatch-guard@dispatch-guard` |
+| 2 | Claude (new session) | type `/dispatch-guard:install` — ⭐ it shows a dry run and asks before touching anything |
+| 3 | Claude | type `/dispatch-guard:status` to check |
+| 4 | VS Code | `Ctrl+Shift+P` → `Tasks: Manage Automatic Tasks` → `Allow Automatic Tasks` (step 2 usually set it already; this is the belt) |
+| 5 | VS Code | reopen the folder. Nothing there? `Terminal` → `Run Task` → `Claude Usage Watcher` |
+
+> Detail in the reference: **0. If you use VS Code, do this first**, **1. The plugin — hooks and
+> the skill**, **2. (Optional) The statusline and the watcher**, **⚠ Reopen VS Code after
+> installing, and it asks you once**, **4. Check it took**.
+
+---
+
+## Reference — what each of those steps does
 
 ### 0. If you use VS Code, do this first — the rest goes much smoother
 
@@ -1542,6 +1705,31 @@ sh "$p/hooks/run.sh" "$p/install.py" --all
 `.vscode/tasks.json`, which can never work on a FIRST open: the file is created by a session,
 and a session starts after the folder is already open — so the first open of every NEW project
 missed it.
+
+⚠ **The first open after installing is a race, and it can be won or lost.** The user-level
+file is written by a session, and a session starts *after* the window is up. When VS Code
+finds no automatic task it waits a further **10 seconds** for `onDidChangeTaskConfig` —
+⭐ **a file written inside those 10 seconds does run.** Measured 2026-08-29: the log reads
+`taskNames=[]` and then `updated taskNames=["Claude Usage Watcher"]`.
+⛔ **Past that it gives up for the whole window, and says nothing.**
+
+⇒ That is why one machine "just works after installing" and another does not. ⭐ **Both were
+measured, from an identical starting state** — `tasks.json` read `(no such file)` before the
+first open on BOTH, which rules out Settings Sync and workspace trust alike:
+
+| | window opened | hook wrote the task file | gap | outcome |
+|---|---|---|---|---|
+| the one that works | `08:59:19` | `08:59:41` | **22 s** | ✅ started by itself |
+| the one that does not | `08:43:20` | `08:43:55` | **35 s** | ⛔ nothing |
+
+⇒ Thirteen seconds of session-start time is the whole difference. ⚠ That gap is not the 10s
+threshold itself — VS Code counts its 10 seconds from the moment *it* starts looking for
+tasks, and extensions delay that moment too.
+
+⭐ **To win it every time, run the install script from a terminal BEFORE opening VS Code**
+(step 2 below, or `/dispatch-guard:install` from inside Claude). With the file already there
+no race is run. ⚠ After that first time the file stays, so **no project and no later open
+ever meets this again.**
 
 ### ⚠ Reopen VS Code after installing, and it asks you once
 
@@ -1963,6 +2151,49 @@ than a pair of eyes.
 ⭐ It has the verdict word, because for an extension user **this is the only place usage appears
 at all** and there is no opening line beside it. ⛔ It cannot draw Ctx, the model or the effort:
 it is a loop in a terminal, and nothing feeds it a payload.
+
+### The `Burn` segment: what `11h-52m left` means
+
+`Burn` answers one question: **at this rate, how long until I hit 100%.**
+
+⭐ **In the watcher — what the VS Code extension shows — it gets a row of its own**, breaking
+after the last usage window:
+
+```
+09:35:01  5h ░┃░░░░░░░░ 5% 4h-24m  7d ▓▓▓▓┃▓░░░░ 51% 4d-1h-24m  Fable ▓▓▓░┃░░░░░ 31% 4d-1h-24m  GO
+          Burn ▓▓▓▓▓▓▓▓▓ 0.13%/m · 11h-52m left
+```
+
+⛔ **The CLI statusline does not break** — Claude Code renders one row and a second would be
+thrown away, so there `Burn` stays inline.
+
+**How to read it:**
+
+| you see | meaning |
+|---|---|
+| `0.13%/m` | 0.13% burned per minute over the **last 30 minutes** — not an average of the window |
+| `11h-52m left` | at that rate you hit 100% in **11 hours 52 minutes** |
+
+⚠ **That time can exceed the time left in the window, and that is correct.** The line above
+resets in `4h-24m` but burns out in `11h-52m` ⇒ **you cannot spend it all; the reset arrives
+first.** That is when the bar is full.
+
+**The bar is the ratio** (burn-out ÷ reset), ⛔ not a fuel gauge:
+
+| bar | colour | meaning |
+|---|---|---|
+| `▓▓▓▓▓▓▓▓▓` full | 🟢 green | it outlasts the reset — spend freely |
+| half | 🟡 amber | you get halfway through the time left |
+| short | 🔴 red | ⛔ you hit the ceiling soon |
+
+⚠ **Two things that surprise people:**
+- **The bar goes back UP.** Slow down and it grows — it measures whether two clocks cross, not
+  how much is left in a tank.
+- **Its colour is inverted.** Full is good here; on the three bars beside it a high number is bad.
+
+⚠ **`Burn ───────── --` means "no data yet"** — a rate needs at least two readings inside the
+same five-hour window. Right after installing, or just past a reset, that is what you get; a few
+minutes fixes it.
 
 ### ⭐ The watcher stops calling the API when nobody is working
 

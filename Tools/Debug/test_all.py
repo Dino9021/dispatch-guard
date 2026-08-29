@@ -45,6 +45,12 @@ CHECKS = [
     # covers - an idle watcher redrawing a too-wide line for ever - cannot be seen from a
     # pure function, only from the loop that never returns.
     ("usage watch", [os.path.join(DEBUG_DIR, "test_usage_watch.py")]),
+    # ⚠ A diagnostic tool rots exactly like shipped code, and this one rots INTO A
+    # LIE: a broken comparison prints "no difference", which is also the honest
+    # answer on an idle machine. Its selftest plants a change and fails if it is
+    # not reported. It touches no VS Code state - it diffs two fixtures in a temp
+    # directory - so it is safe in the suite.
+    ("vscode snapshot", [os.path.join(DEBUG_DIR, "vscode_snapshot.py"), "--selftest"]),
 ]
 
 # ⚠ Per check, not for the whole run. The slowest of these takes seconds; anything near this
