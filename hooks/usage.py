@@ -1416,28 +1416,29 @@ def _watch_close(scroll):
     return "" if scroll else "\033[?7h"
 
 
-def _rewrite(prev_rows, lines, erase="\033[K"):
-    """The bytes that redraw `lines` in place over a previous draw of `prev_rows` rows.
+def _redraw(lines, erase="\033[K"):
+    """Every row, drawn from the top-left of the screen the watcher cleared and owns.
 
-    ⛔ THE CURSOR CLIMBS BY WHAT WAS ON SCREEN, NOT BY WHAT IS ABOUT TO BE. Getting that
-    backwards is a real defect and it shipped once: the first draw that needed a SECOND row
-    moved the cursor up one row FIRST - into whatever was above the watcher, the launch
-    command or somebody's prior output - and overwrote it. Every later 1-to-2 growth ate
-    another line of scrollback. ⇒ `prev_rows` is the previous draw, always.
+    ⛔ WHY THIS REPLACED A RELATIVE CLIMB, after three attempts that did not. `\033[1A` moves
+    up one row from WHEREVER THE CURSOR IS, so it is only correct while nothing else has moved
+    it - and inside a VS Code panel that is not something this process controls. Measured
+    2026-08-29: with the row count fixed at two and wrapping disabled, the FIRST draw was
+    still stranded, every later draw overwriting the second row cleanly. ⇒ The cursor was one
+    row lower than the arithmetic believed before the second draw ever ran, and no amount of
+    fixing the arithmetic reaches that.
 
-    ⭐ GROWING NEEDS NO CLIMB AT ALL. Row 1 is written over the row the cursor is already on,
-    and the `\n` before row 2 allocates the new row the way any program does.
+    ⭐ AN ABSOLUTE HOME CANNOT BE WRONG. `\033[H` is row 1, column 1 of the screen - not a
+    displacement from anywhere - so it does not matter what moved the cursor, how wide the
+    rows were, or how many were drawn last time. ⚠ It is legitimate ONLY because the watcher
+    cleared the screen at startup and redraws all of it every time; a program sharing a
+    terminal must never do this.
 
-    ⚠ SHRINKING PADS INSTEAD OF CLIMBING LESS. A draw with fewer rows than the last leaves
-    the old row on screen holding a line nothing will ever overwrite, so the difference is
-    written as blanks - which `erase` then clears.
+    ⭐ `\033[J` AT THE END erases from the cursor to the bottom of the screen, which is what
+    makes a shrinking draw safe without counting anything. The old code padded with blank
+    rows to do this, and the padding had to know the previous height.
     """
-    rows = max(prev_rows, len(lines))
-    padded = list(lines) + [""] * (rows - len(lines))
-    up = "\033[%dA" % (prev_rows - 1) if prev_rows > 1 else ""
-    body = "".join(("" if i == 0 else "\n") + "\r" + one + erase
-                   for i, one in enumerate(padded))
-    return up + body, rows
+    body = "\n".join("\r" + one + erase for one in lines)
+    return "\033[H" + body + "\033[J"
 
 
 def _watch_line(stamp, data, v, note, cfg, idle=False, burn=None):
@@ -2376,7 +2377,6 @@ def watch(sdir, cfg, argv):
 
     ERASE_TO_EOL = "\033[K"        # so a shorter line cannot leave the old tail behind
     drawn_idle = False             # has this quiet spell's SLEEP line been drawn already?
-    rows = 1                       # how many rows the last draw occupied; see the write below
     # ⛔ ONCE, BEFORE ANYTHING IS DRAWN. See _watch_open(): the line the previous run left
     # behind is above the row this one can reach, so nothing later can remove it.
     opening = _watch_open(scroll)
@@ -2450,15 +2450,14 @@ def watch(sdir, cfg, argv):
             drawn_idle = idle
             lines = _watch_line(time.strftime("%H:%M:%S"), data, v, note, cfg, idle=idle,
                                 burn=burn_triple(sdir, cfg, data))
-            # ⛔ REWRITING MORE THAN ONE ROW NEEDS THE CURSOR MOVED BACK UP BY WHAT THE LAST
-            # DRAW LEFT THERE. See _rewrite(): sizing that climb by the CURRENT draw walks
-            # the cursor into the caller's own output the first time a second row appears.
+            # ⛔ NO CLIMBING. See _redraw(): the watcher cleared the screen at startup and
+            # redraws all of it from an absolute home, because a relative move is only right
+            # while nothing else has touched the cursor - and in a VS Code panel it does.
             if scroll:
                 for one in lines:
                     print(one)
             else:
-                out, rows = _rewrite(rows, lines, ERASE_TO_EOL)
-                sys.stdout.write(out)
+                sys.stdout.write(_redraw(lines, ERASE_TO_EOL))
             sys.stdout.flush()
             _note_watch(sdir)
             time.sleep(every)
@@ -3193,40 +3192,23 @@ def selftest():
     shutil.rmtree(_cdir, ignore_errors=True)
     shutil.rmtree(_bt, ignore_errors=True)
 
-    # ⛔ THE IN-PLACE REWRITE, AND THE ONE THING THAT MUST NOT BE BACKWARDS. The cursor climbs
-    # by what the PREVIOUS draw left on screen. Sized by the CURRENT draw instead - which
-    # shipped once - the first render that needs a second row climbs into whatever was above
-    # the watcher and overwrites it, and every later 1-to-2 growth eats another line.
-    # ⚠ The bytes are asserted rather than the intent, because "moved up by one" and "moved
-    # up by one too many" produce the same shape and different screens.
-    # ⛔ THE OPENING CLEAR, and which surface gets it. A rewriting watcher cannot reach the
-    # row above the one it starts on, so the previous run's last line would sit there for
-    # ever - the screenshot that prompted this showed exactly that, and it reads as the
-    # two-row layout being broken. ⚠ Scrolling must emit NOTHING: that mode exists to keep
-    # history, and clearing it would throw away the thing it was chosen for.
-    # ⛔ AND AUTO-WRAP OFF WITH IT. A wrapped row makes `\033[1A` climb a VISUAL row instead
-    # of a logical one, which is the residue that survived both the clear and the fixed row
-    # count. ⚠ And it must be handed back, or the next thing to run in that terminal loses
-    # its own wrapping.
-    assert _watch_open(False) == "\033[2J\033[H\033[?7l", _watch_open(False)
-    assert _watch_open(True) == "", _watch_open(True)
-    assert _watch_close(False) == "\033[?7h", _watch_close(False)
-    assert _watch_close(True) == "", _watch_close(True)
-
-    _r, _n = _rewrite(1, ["a"], "<K>")
-    assert _r == "\ra<K>" and _n == 1, (_r, _n)
-    # ⭐ GROWING NEEDS NO CLIMB: row 1 lands on the row the cursor is on, and the newline
-    # allocates row 2. Any escape here is the defect.
-    _r, _n = _rewrite(1, ["a", "b"], "<K>")
-    assert "\033[" not in _r, "it climbed on the way from one row to two: %r" % _r
-    assert _r == "\ra<K>\n\rb<K>" and _n == 2, (_r, _n)
-    # ...and holding at two rows climbs exactly one.
-    _r, _n = _rewrite(2, ["a", "b"], "<K>")
-    assert _r == "\033[1A\ra<K>\n\rb<K>" and _n == 2, (_r, _n)
-    # ⚠ SHRINKING CLEARS THE ROW IT NO LONGER USES, rather than leaving a line nothing will
-    # overwrite. It stays two rows tall, so the next climb is still right.
-    _r, _n = _rewrite(2, ["a"], "<K>")
-    assert _r == "\033[1A\ra<K>\n\r<K>" and _n == 2, (_r, _n)
+    # ⛔ THE REDRAW IS ABSOLUTE, AND THAT IS THE WHOLE POINT. A relative climb (`\033[1A`)
+    # moves up from wherever the cursor IS, so it is correct only while nothing else has moved
+    # it - and in a VS Code panel that is not this process's to control. Measured 2026-08-29,
+    # after both the fixed row count and wrapping-off: the FIRST draw was still stranded, so
+    # the cursor was already a row lower than any arithmetic believed. ⇒ No climb at all.
+    # ⚠ The bytes are asserted rather than the intent: "homed" and "homed one row too far"
+    # produce the same shape and different screens.
+    assert _redraw(["a"], "<K>") == "\033[H\ra<K>\033[J", _redraw(["a"], "<K>")
+    assert _redraw(["a", "b"], "<K>") == "\033[H\ra<K>\n\rb<K>\033[J", _redraw(["a", "b"], "<K>")
+    # ⛔ NO RELATIVE MOVE MAY SURVIVE ANYWHERE IN IT. One `\033[1A` left behind is the whole
+    # defect back, and it would look like a cosmetic difference in a diff.
+    for _n_rows in (1, 2, 3):
+        assert "\033[1A" not in _redraw(["x"] * _n_rows, "<K>"), _n_rows
+    # ⚠ SHRINKING NEEDS NO COUNTING. `\033[J` clears from the cursor to the bottom, so a draw
+    # with fewer rows than the last cannot leave one behind - the old code padded with blanks
+    # instead, and the padding had to know the previous height.
+    assert _redraw(["a", "b"], "<K>").endswith("\033[J")
 
     # ⭐ TWO ROWS ARE A SETTING, AND BOTH SURFACES OBEY IT. The statusline was capped at one
     # row on a BELIEF, not a limit: the documentation says "each `echo` or `print` statement

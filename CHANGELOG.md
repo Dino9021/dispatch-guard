@@ -33,11 +33,33 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.42.0
+
+- ⛔ **不再「往上爬」。第四次,而且這次是拿到證據才動手的。** 擁有者的截圖配上行程清單:
+  跑的是 `0.41.5`(PID 3224,起始 `11:01:18`),而畫面上卡住的那一行**就是 `11:01:18`** ——
+  **第一次畫的那一行**。之後每一次重畫都乾乾淨淨。
+  ⇒ 在第二次畫之前,游標就已經比算式以為的低一列了。**修算式永遠碰不到這個。**
+- ⭐ **改成絕對定位:每次都 `[H` 回到左上角重畫整個畫面。** `[1A` 是「從**現在**的位置
+  往上一列」,只有在沒有別人動過游標時才對 —— 而在 VS Code 面板裡,那不是這個行程管得到的
+  (截圖左邊那個 `⊙` 就是它自己加的裝飾)。`[H` 是「螢幕的第 1 列第 1 欄」,不是位移,
+  所以誰動過游標、行有多寬、上次畫幾列,全部都不影響。
+- ⭐ **合法的原因是 watcher 啟動時已經清過畫面,整個畫面是它的。** 跟別人共用終端機的程式
+  絕對不可以這樣做 —— 這一點寫在函式的註解裡。
+- ⭐ **結尾的 `[J` 讓「變少」也不用數。** 從游標清到畫面底部,所以列數變少不可能留下舊的;
+  舊的做法是用空白列去補,而那要知道上次有幾列。
+- ⛔ **舊的 `_rewrite()` 整個刪掉了**,連同它追蹤的 `rows` 變數 —— 留著一個沒人呼叫的相對移動,
+  下次就會有人把它接回去。突變殺過:把 `[1A` 放回去 → `AssertionError('[1Aa<K>')`。
+- ⚠ **前三次(0.41.3 清畫面、0.41.4 固定列數、0.41.5 關折行)都留著,而且都不是白做** ——
+  每一個都真的修掉一種殘影,只是都不是擁有者遇到的那一種。
+
+---
+
 ## 0.41.5
 
 - ⛔ **殘影撐過了清畫面(0.41.3)也撐過了固定列數(0.41.4)。第三個原因:終端機自己折行。**
   一列跟面板一樣寬、或比它寬,終端機會把它折成**兩個視覺列** —— 這時 `[1A` 往上爬的是
-  **一個視覺列**,不是一個邏輯列,`` 就回到錯的那一列的開頭,被折斷的上半永遠留在畫面上。
+  **一個視覺列**,不是一個邏輯列,`
+` 就回到錯的那一列的開頭,被折斷的上半永遠留在畫面上。
   ⭐ 這正是 `_watch_line()` 開頭那段註解一直在講的原始缺陷,只是它假設「把行寬修好就不會發生」。
 - ⭐ **修法:重繪期間把終端機的自動折行關掉(DECAWM `?7l`)。** 關掉之後,太長的行由**終端機**
   在右邊界截斷,游標**留在原來那一列** —— 於是不管寬度量得對不對,爬幾列都不會錯。
@@ -1315,12 +1337,40 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.42.0
+
+- ⛔ **No more climbing. Fourth attempt, and the first one made from evidence.** The owner's
+  screenshot beside the process list: the running copy is `0.41.5` (PID 3224, started
+  `11:01:18`) and the stranded row **is `11:01:18`** — the FIRST draw. Every later redraw is
+  clean. ⇒ The cursor was already a row lower than the arithmetic believed before the second
+  draw ever ran, and **fixing the arithmetic can never reach that**.
+- ⭐ **Absolute positioning instead: `[H` and redraw the whole screen, every time.**
+  `[1A` means "up one row from WHEREVER THE CURSOR IS", which is correct only while
+  nothing else has moved it - and inside a VS Code panel that is not this process's to control
+  (the `⊙` at the left of the owner's screenshot is the terminal's own decoration). `[H`
+  is row 1 column 1 of the screen, not a displacement, so it does not matter what moved the
+  cursor, how wide the rows were, or how many were drawn last time.
+- ⭐ **It is legitimate only because the watcher cleared the screen at startup and owns it.**
+  A program sharing a terminal must never do this, and the function says so.
+- ⭐ **`[J` at the end makes shrinking safe without counting.** It erases from the cursor
+  to the bottom of the screen; the old code padded with blank rows, and the padding had to
+  know the previous height.
+- ⛔ **`_rewrite()` is deleted outright**, along with the `rows` counter it needed. Leaving an
+  uncalled relative move in the file is how it comes back. Mutation-checked: put `[1A`
+  back and `AssertionError('[1Aa<K>')` fires.
+- ⚠ **The three earlier fixes stay, and none was wasted** — the startup clear (0.41.3), the
+  fixed row count (0.41.4) and wrapping off (0.41.5) each remove a real way to strand a row.
+  None of them was the owner's.
+
+---
+
 ## 0.41.5
 
 - ⛔ **The residue survived the clear (0.41.3) and the fixed row count (0.41.4). Third cause:
   the terminal's own line wrapping.** A row as wide as the panel - or wider - is wrapped by the
   TERMINAL onto two visual rows, and `[1A` then climbs one VISUAL row rather than one
-  logical one: `` returns to the start of the wrong row and the top half stays on screen for
+  logical one: `
+` returns to the start of the wrong row and the top half stays on screen for
   ever. ⭐ This is the original defect the comment at the head of `_watch_line()` describes; it
   simply assumed fitting the row was enough to prevent it.
 - ⭐ **The fix: turn the terminal's auto-wrap off (DECAWM `?7l`) while rewriting.** With it off
