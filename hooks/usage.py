@@ -1464,17 +1464,24 @@ def _watch_line(stamp, data, v, note, cfg, idle=False, burn=None):
     # 141 columns the gauge was silently dropped, so "no Burn" meant either "no data" or
     # "too narrow" and the screen could not tell you which. Given a row of its own it is
     # always there.
-    # ⛔ THE SPLIT IS FORCED ONLY WHEN THERE IS A BURN SEGMENT TO MOVE. Forcing it
-    # unconditionally would push the note and the model onto a second row on a wide
-    # terminal, which nobody asked for and which the existing checks pin.
+    # ⛔ AND THE ROW COUNT NEVER CHANGES, which is the whole point rather than a detail.
+    # Before a burn rate exists the gauge was omitted and the watcher drew ONE row; the first
+    # draw after it appeared drew TWO, and that 1-to-2 transition is where a stranded line
+    # comes from - twice in the owner's screenshots. The cursor arithmetic for growth is
+    # correct and pinned, but it depends on the terminal not having moved the cursor in
+    # between, and in a VS Code panel that is not something this process controls.
+    # ⇒ REMOVE THE TRANSITION. `_burn_part(None, ...)` already draws "no data yet" as dashes,
+    # exactly as the statusline does, so there is always a segment to move and always two
+    # rows. ⚠ This also makes the gauge's absence impossible to misread: it is either a rate
+    # or dashes, never a missing row.
     # ⚠ WATCHER ONLY, by the owner's instruction - not because the statusline cannot do it.
     # line_rows() measured that Claude Code splits the command's output on newlines and
     # counts them, so a statusline may be two rows; it simply is not asked to spend one.
-    split = bool(windows) and windows[-1].startswith("Burn")
-    if split:
-        extras.insert(0, windows.pop())
+    if not (windows and windows[-1].startswith("Burn")):
+        windows.append(_burn_part(None, None, None, lcfg))
+    extras.insert(0, windows.pop())
     return _rows(windows, extras, terminal_width(cfg), head, tail,
-                 cfg.get("two_rows", True), always_split=split)
+                 cfg.get("two_rows", True), always_split=True)
 
 
 # The payload key that carries context usage. ⭐ Named once because Part B turns its
@@ -2821,9 +2828,21 @@ def selftest():
                     "width %d idle=%s: %d columns WILL wrap: %r"
                     % (_w, _idle, _visible_len(_r), _r))
 
-    # ⛔ WITHOUT A BURN SEGMENT NOTHING IS FORCED. Splitting unconditionally would push the
-    # note and the model onto a second row on a wide terminal, which nobody asked for.
-    assert len(_watch_line("07:26:12", _live, _v, None, {"width": 200})) == 1
+    # ⛔ THE ROW COUNT IS CONSTANT, WITH OR WITHOUT A BURN RATE. This is the fix for the
+    # stranded line in the owner's screenshots: the watcher drew one row until a rate existed
+    # and two afterwards, and that single 1-to-2 growth left the older row on screen. With no
+    # transition there is nothing to get wrong. ⚠ And the gauge says "no data" in words
+    # rather than by vanishing, which is the same rule the statusline already follows.
+    _none = _watch_line("07:26:12", _live, _v, None, {"width": 200})
+    assert len(_none) == 2, _none
+    assert "Burn" in _none[1] and "--" in _none[1], _none
+    assert _bar_col(_none[0]) == _bar_col(_none[1]), (_none, "dashes must align too")
+    # ...at every width, including ones where the second row has to be cut.
+    for _w in (200, 120, 80, 40, 25):
+        _rr = _watch_line("07:26:12", _live, _v, _note, {"width": _w})
+        assert len(_rr) == 2, (_w, _rr)
+        for _r in _rr:
+            assert _visible_len(_r) <= _w, (_w, _visible_len(_r), _r)
 
     # ⛔ AND THE CLI STATUSLINE IS UNTOUCHED - it gets ONE row from Claude Code, so a second
     # would be thrown away. The forced split is the watcher's, not a property of _line_parts.
@@ -2884,12 +2903,21 @@ def selftest():
     _wide = {"ts": int(time.time() * 1000),
              "five_hour": {"used_percentage": 55, "resets_at": int(time.time()) + 1600},
              "seven_day": {"used_percentage": 32, "resets_at": int(time.time()) + 300000}}
-    _two = _watch_line("07:26:12", _wide, _v, _long, {"width": 100})
+    _two = _watch_line("07:26:12", _wide, _v, _long, {"width": 160})
     assert len(_two) == 2, "it dropped the note instead of using a second row: %r" % (_two,)
     assert "5h" in _two[0] and "GO" in _two[0], _two
+    # ⚠ THE BURN GAUGE OPENS ROW TWO AND THE NOTE FOLLOWS IT. The gauge goes first because it
+    # is the segment with a BAR, and the bar is what row two is aligned by; a note in front of
+    # it would leave the two rows looking unrelated again. ⇒ On a row too narrow for both, the
+    # note is what goes - the same right-to-left rule every other row here follows.
+    assert _two[1].lstrip().startswith("Burn"), _two
     assert "OAuth" in _two[1], _two
-    # ...and a line that FITS must stay on one row, or every watcher grows a blank second one.
-    assert len(_watch_line("07:26:12", _wide, _v, None, {"width": 200})) == 1
+    # ⛔ AND A LINE THAT FITS STILL SPENDS THE SECOND ROW. The old rule was the opposite -
+    # "or every watcher grows a blank second one" - and that reason is gone: row two is never
+    # blank now, it always carries the gauge. ⚠ The rule it replaces is what produced the
+    # stranded line: one row before a burn rate existed, two after, and the single growth in
+    # between left the older row on screen.
+    assert len(_watch_line("07:26:12", _wide, _v, None, {"width": 200})) == 2
 
     # ⛔ THE MODEL-SCOPED WINDOW, against BOTH measured accounts. The rows below are the real
     # `limits[]` entries captured 2026-08-27 from an account that may NOT use Fable and one

@@ -33,12 +33,34 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.41.4
+
+- ⛔ **殘影的真正原因:watcher 的「列數會變」。** 0.41.3 清了畫面,擁有者的第二張截圖還是有 ——
+  這次看得很清楚:`10:30:24` 畫 **1 列**(那時候還沒有 burn 速率),`10:30:54` 畫 **2 列**,
+  中間那一次 1→2 的成長就把舊的那列留在畫面上了。
+- ⭐ **修法是「把這個轉換拿掉」,不是把游標算式修對。** 成長時的游標算式本來就是對的,
+  而且釘住了 —— 但它假設「中間沒有別人動過游標」,而在 VS Code 面板裡那不是這個行程管得到的事。
+  ⇒ 沒有速率的時候就畫 `Burn ────────── --`(狀態列本來就是這樣畫「還不知道」的),
+  **列數永遠是 2**,沒有轉換就沒有東西會出錯。
+- ⭐ **順帶一個好處:gauge 不會再用「整列消失」來表示沒資料。** 要嘛是速率、要嘛是虛線,
+  兩種都看得見。
+- ⚠ **推翻了一條舊規則,而且理由已經不成立。** 舊的檢查寫著「塞得下就只畫一列,不然每個
+  watcher 都會多長出一列空白」—— 現在第二列永遠有 gauge,不可能空白。
+- ⚠ **第二列的順序是 gauge 先、note 後。** gauge 是**有 bar 的**那一段,而第二列就是靠 bar
+  對齊的;note 排在前面會讓兩列又看起來不相干。⇒ 窄到塞不下時被丟掉的是 note,
+  跟這裡其他每一列的「由右往左丟」是同一條規則。
+  突變殺過:沒有 burn 時走回舊的單列路徑 → 檢查立刻失敗。
+
+---
+
 ## 0.41.3
 
 - ⭐ **watcher 啟動時清一次畫面,舊行程留下的殘影不再卡在上面。** 擁有者的截圖:一列的舊版
   draw 卡在兩列的新版 draw 上面,看起來像「兩列壞掉」。⛔ **那不是重繪的 bug** ——
-  1 列→2 列的成長本來就是原地覆蓋(`a<K>
-b<K>`,而且早就釘住了)。
+  1 列→2 列的成長本來就是原地覆蓋(`
+a<K>
+
+b<K>`,而且早就釘住了)。
   問題是那一行是**上一個行程**留下的:會重繪的 watcher 只搆得到自己起始的那一列,
   上面那列一輩子搆不到。
 - ⭐ **清畫面只發生在「會重繪」的模式。** 一個一直覆蓋自己那一列的畫面,scrollback 本來就沒意義;
@@ -1274,14 +1296,40 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.41.4
+
+- ⛔ **The real cause of the stranded line: the watcher's ROW COUNT changed.** 0.41.3 cleared
+  the terminal and the owner's second screenshot still showed it - and showed it clearly:
+  `10:30:24` drew **one** row (no burn rate yet), `10:30:54` drew **two**, and that single
+  1-to-2 growth left the older row on screen.
+- ⭐ **The cure is to remove the transition, not to get the cursor arithmetic right.** That
+  arithmetic was already correct and pinned - but it assumes nothing else moved the cursor in
+  between, and inside a VS Code panel that is not something this process controls. ⇒ With no
+  rate, the gauge is drawn as `Burn ────────── --`, exactly how the statusline already draws
+  "not known yet", so there are **always two rows** and no transition to get wrong.
+- ⭐ **A second benefit: the gauge no longer says "no data" by vanishing.** It is either a rate
+  or dashes; both are visible.
+- ⚠ **An old rule is overturned and its reason is gone.** The check used to say a line that
+  fits must stay on one row "or every watcher grows a blank second one". Row two is never
+  blank now - it always carries the gauge.
+- ⚠ **Row two is gauge first, note second.** The gauge is the segment with a BAR, and the bar
+  is what row two is aligned by; a note in front of it would leave the rows looking unrelated
+  again. ⇒ Too narrow for both and the note is what goes - the same right-to-left rule every
+  other row here follows. Mutation-checked: fall back to the old single-row path when there is
+  no burn and the check fails at once.
+
+---
+
 ## 0.41.3
 
 - ⭐ **The watcher clears the terminal once at startup, so the previous run's line is not
   stranded above the new one.** From the owner's screenshot: a one-row draw from the old
   version sitting above a two-row draw from the new one, which reads as the two-row layout
   being broken. ⛔ **It is not a rewrite bug** — 1-to-2 growth overwrites row one in place
-  (`a<K>
-b<K>`, pinned long before this). The stranded line belonged to a DIFFERENT
+  (`
+a<K>
+
+b<K>`, pinned long before this). The stranded line belonged to a DIFFERENT
   PROCESS: a rewriting watcher can only reach the row it starts on, and that line is above it.
 - ⭐ **The clear happens only in rewriting mode.** A surface that overwrites its own row has no
   scrollback worth keeping; anyone who wants the history passes `--scroll`, and that path emits
