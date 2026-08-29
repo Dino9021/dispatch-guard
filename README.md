@@ -191,7 +191,7 @@ sh "$p/hooks/run.sh" "$p/install.py" --all
 | | 這個腳本裝什麼 | 裝在哪裡 |
 |---|---|---|
 | CLI | 狀態列 | `~/.claude/settings.json`，⭐ 每個帳號一次 |
-| VS Code 擴充套件 | `Claude usage watch` 工作 | ⭐ VS Code 的**使用者層級** `tasks.json`，一次涵蓋**每個專案** |
+| VS Code 擴充套件 | `Claude Usage Watcher` 工作 | ⭐ VS Code 的**使用者層級** `tasks.json`，一次涵蓋**每個專案** |
 
 ⛔ **不會往你的 repo 寫任何東西。** 舊版本是每個專案一份 `.vscode/tasks.json`，
 那在「第一次開啟」永遠不會成立 —— 檔案由 session 寫出，而 session 在資料夾開啟**之後**才啟動，
@@ -202,7 +202,7 @@ sh "$p/hooks/run.sh" "$p/install.py" --all
 ⭐ **這是唯一需要你點的一下，而且只有一次。** 重開資料夾之後，VS Code 右下角會跳出：
 
 > **Notifications**
-> This workspace has tasks (Claude usage watch) defined () that can launch processes
+> This workspace has tasks (Claude Usage Watcher) defined () that can launch processes
 > automatically when you open this workspace. Do you want to allow automatic tasks to run in
 > all trusted workspaces?
 >
@@ -463,10 +463,10 @@ OVERALL             : everything is live
 5. ⚠ **重新開啟資料夾。** 工作是 `runOn: folderOpen`，所以現在不會起來。
 6. ⚠ VS Code 會問 **Allow Automatic Tasks**。**要按同意。**
    ⭐ 先做過第 0 步的話，這一步不會出現 —— 那就是它存在的理由。
-7. 一個叫 `Claude usage watch` 的專用終端機會出現，裡面就是那一行用量。
+7. 一個叫 `Claude Usage Watcher` 的專用終端機會出現，裡面就是那一行用量。
 
 ⛔ **第 6 步沒同意，看起來跟「工作寫壞了」一模一樣** —— 兩種情況都是什麼都沒出現、也沒有錯誤訊息。
-要分開它們：Terminal → Run Task → `Claude usage watch`。
+要分開它們：Terminal → Run Task → `Claude Usage Watcher`。
 手動跑得起來，就表示工作本身沒問題，只有自動觸發沒動作。
 
 ⭐ **那個 watcher 是「你的」時鐘，不是煞車的。** 狀態列那一半在擴充套件裡永遠不會顯示。
@@ -505,7 +505,7 @@ sh "$p/hooks/run.sh" "$p/install.py" --all --uninstall
 
 - 移掉 `settings.json` 裡的 `statusLine`（`refreshInterval` 跟著一起走）
 - ⭐ 把 `auto_statusline` 和 `auto_vscode_task` 設成 false
-- 移掉**這個專案** `.vscode/tasks.json` 裡的 `Claude usage watch`
+- 移掉**這個專案** `.vscode/tasks.json` 裡的 `Claude Usage Watcher`
 - ⭐ 取消已經預約的 resume
 
 ⛔ **第二項不是多餘的，少了它移除會自己失效。** `auto_statusline` 預設是 true，
@@ -541,7 +541,7 @@ claude plugin marketplace remove dispatch-guard
 | `.bak-dispatch-guard` | 那個設定檔旁邊 | 那是你原本設定的備份 |
 | `statusline-backup.json` | `~/.claude/` 裡 | 只有用過 `--take-statusline` 才會有 |
 
-⚠ **已經開著的那個 `Claude usage watch` 終端機不會自己關。** 重新開啟資料夾，或手動關掉。
+⚠ **已經開著的那個 `Claude Usage Watcher` 終端機不會自己關。** 重新開啟資料夾，或手動關掉。
 
 ---
 
@@ -674,7 +674,7 @@ Context 長條、模型、說明移到第二列，**兩列各自裁到寬度**�
 | | 用量那一行顯示在哪裡 |
 |---|---|
 | CLI | ⭐ 狀態列 |
-| 擴充套件 | ⭐ 一個終端機 —— `Claude usage watch` 這個工作，或你自己跑的 `usage.py --watch` |
+| 擴充套件 | ⭐ 一個終端機 —— `Claude Usage Watcher` 這個工作，或你自己跑的 `usage.py --watch` |
 
 ⛔ **擴充套件畫不出狀態列**，這是能力限制，不是設定問題。2.1.246 版實測：
 `statusLine` 在擴充套件的 webview bundle 裡出現 **0 次**，
@@ -1536,7 +1536,7 @@ sh "$p/hooks/run.sh" "$p/install.py" --all
 | | What this script installs | Where it goes |
 |---|---|---|
 | CLI | the statusline | `~/.claude/settings.json` — ⭐ once per account |
-| VS Code extension | the `Claude usage watch` task | ⭐ VS Code's **user-level** `tasks.json` — once, covering **every** project |
+| VS Code extension | the `Claude Usage Watcher` task | ⭐ VS Code's **user-level** `tasks.json` — once, covering **every** project |
 
 ⛔ **Nothing is written into your repository.** Earlier versions used a per-project
 `.vscode/tasks.json`, which can never work on a FIRST open: the file is created by a session,
@@ -1549,7 +1549,7 @@ missed it.
 this in the bottom right:
 
 > **Notifications**
-> This workspace has tasks (Claude usage watch) defined () that can launch processes
+> This workspace has tasks (Claude Usage Watcher) defined () that can launch processes
 > automatically when you open this workspace. Do you want to allow automatic tasks to run in
 > all trusted workspaces?
 >
@@ -1816,10 +1816,10 @@ Optional, for numbers on your screen:
 5. ⚠ **Reopen the folder.** The task is `runOn: folderOpen`, so nothing starts now.
 6. ⚠ VS Code asks **Allow Automatic Tasks**. **Say yes.**
    ⭐ Do step 0 first and this never appears — which is the whole point of it.
-7. A dedicated terminal named `Claude usage watch` appears, carrying the usage line.
+7. A dedicated terminal named `Claude Usage Watcher` appears, carrying the usage line.
 
 ⛔ **Declining step 6 looks exactly like a broken task** — both give you nothing on screen and
-no error. To tell them apart: Terminal → Run Task → `Claude usage watch`. If it works by hand,
+no error. To tell them apart: Terminal → Run Task → `Claude Usage Watcher`. If it works by hand,
 the task is fine and only the automatic trigger is not.
 
 ⭐ **That watcher is YOUR clock, not the brake's.** The statusline half never shows in the
@@ -1859,7 +1859,7 @@ It does four things:
 
 - removes `statusLine` from `settings.json` (`refreshInterval` goes with it)
 - ⭐ sets `auto_statusline` and `auto_vscode_task` to false
-- removes `Claude usage watch` from **this** project's `.vscode/tasks.json`
+- removes `Claude Usage Watcher` from **this** project's `.vscode/tasks.json`
 - ⭐ cancels an armed resume
 
 ⛔ **The second one is not housekeeping; without it the uninstall undoes itself.**
@@ -1896,7 +1896,7 @@ claude plugin marketplace remove dispatch-guard
 | `.bak-dispatch-guard` | beside that settings file | it is the backup of *your* settings |
 | `statusline-backup.json` | in `~/.claude/` | only exists if you used `--take-statusline` |
 
-⚠ **An already-open `Claude usage watch` terminal does not close itself.** Reopen the folder,
+⚠ **An already-open `Claude Usage Watcher` terminal does not close itself.** Reopen the folder,
 or close it by hand.
 
 ---
@@ -2039,7 +2039,7 @@ line in different places:
 | | Where the usage line appears |
 |---|---|
 | CLI | ⭐ the statusline |
-| extension | ⭐ a terminal — the `Claude usage watch` task, or your own `usage.py --watch` |
+| extension | ⭐ a terminal — the `Claude Usage Watcher` task, or your own `usage.py --watch` |
 
 ⛔ **The extension cannot draw a statusline at all**, which is a capability limit rather than a
 setting. Measured on 2.1.246: `statusLine` appears **0 times** in the extension's webview bundle

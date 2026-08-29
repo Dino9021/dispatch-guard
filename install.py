@@ -25,7 +25,7 @@ Everything below is the manual form, for a plain terminal.
     python install.py --vscode-task  the old per-PROJECT form, for one repository only
                                      (--remove to take it out again)
     python install.py --all --uninstall  ⭐ remove BOTH halves: the statusline and this
-                                 project's `Claude usage watch` task. It then lists what
+                                 project's `Claude Usage Watcher` task. It then lists what
                                  it did not touch. Add --check to see it change nothing.
     python install.py --uninstall    the statusline only
 
@@ -372,7 +372,7 @@ def wired_paths_health(settings):
                 judge("statusline", quoted)
     tasks = load(os.path.join(os.getcwd(), ".vscode", "tasks.json"), {})
     for t in (tasks.get("tasks") or []):
-        if t.get("label") != "Claude usage watch":
+        if not ours(t):
             continue
         for cand in [t.get("command")] + list(t.get("args") or []):
             if (isinstance(cand, str) and not cand.startswith("$")
@@ -754,13 +754,13 @@ def status():
                 print("usage watcher       : ⚠ last drew %.0f min ago, so it is not running now"
                       % age)
                 print("                      Start it NOW without reloading: F1 ->")
-                print("                      `Tasks: Run Task` -> `Claude usage watch`.")
+                print("                      `Tasks: Run Task` -> `Claude Usage Watcher`.")
         else:
             print("usage watcher       : ⛔ HAS NEVER RUN on this machine.")
             print("                      The task above is only a definition; this is the")
             print("                      proof it started.")
             print("                      ⭐ START IT NOW, NO RELOAD: F1 -> `Tasks: Run Task`")
-            print("                      -> `Claude usage watch`. It opens in this window.")
+            print("                      -> `Claude Usage Watcher`. It opens in this window.")
             print("                      ⚠ The AUTOMATIC start needs a folder open, and no")
             print("                      outside program can trigger it: a task written")
             print("                      during a session arrives after this window opened,")
@@ -939,7 +939,20 @@ def allow_automatic_tasks():
 # a configuration directory for an editor that is not installed would be litter.
 VSCODE_USER_DIRS = ("Code", "Code - Insiders", "VSCodium")
 
-TASK_LABEL = "Claude usage watch"
+TASK_LABEL = "Claude Usage Watcher"
+
+# ⛔ EVERY LABEL THIS PLUGIN HAS EVER WRITTEN, because a rename that only teaches the writer
+# the NEW name leaves the OLD task exactly where it was: still `runOn: folderOpen`, still
+# opening a terminal, and no longer matched by anything that removes or repairs it. The
+# result is TWO watcher terminals on every folder open and an uninstall that cannot reach
+# one of them. Renaming again means appending here, never editing the line above.
+LEGACY_TASK_LABELS = ("Claude usage watch",)
+
+
+def ours(task):
+    """Is this task dict one of ours, under the current name or any name we used before?"""
+    return (isinstance(task, dict)
+            and task.get("label") in (TASK_LABEL,) + LEGACY_TASK_LABELS)
 
 
 def vscode_user_dirs():
@@ -1018,8 +1031,7 @@ def vscode_user_task(remove=False, check_only=False):
             continue
         data = load(path, {"version": "2.0.0", "tasks": []})
         data.setdefault("version", "2.0.0")
-        tasks = [t for t in data.get("tasks") or []
-                 if not (isinstance(t, dict) and t.get("label") == TASK_LABEL)]
+        tasks = [t for t in data.get("tasks") or [] if not ours(t)]
         if remove:
             if len(tasks) == len(data.get("tasks") or []):
                 done.append("nothing to remove in %s" % path)
@@ -1064,7 +1076,9 @@ def vscode_user_task_current():
         path = os.path.join(d, "tasks.json")
         if not readable(path):
             return True                   # cannot read: pretend current, never rewrite
-        if entry not in ((load(path, {}) or {}).get("tasks") or []):
+        have = (load(path, {}) or {}).get("tasks") or []
+        if entry not in have or any(t.get("label") in LEGACY_TASK_LABELS
+                                    for t in have if isinstance(t, dict)):
             return False
     return True
 
@@ -1079,7 +1093,7 @@ def vscode_task_entry(repo):
     """
     cmd, args = _watch_command(repo)
     return {
-        "label": "Claude usage watch",
+        "label": TASK_LABEL,
         # ⛔ "process", NOT "shell". A shell task is handed to the user's default shell,
         # which on Windows is PowerShell - and in PowerShell a quoted path at the start of
         # a line is a STRING LITERAL, not a command. Measured 2026-08-26: the task failed
@@ -1104,8 +1118,7 @@ def vscode_task_present(repo):
     version `claude plugin update` moved on from.
     """
     path = os.path.join(repo, ".vscode", "tasks.json")
-    return any(isinstance(t, dict) and t.get("label") == "Claude usage watch"
-               for t in (load(path, {}) or {}).get("tasks") or [])
+    return any(ours(t) for t in (load(path, {}) or {}).get("tasks") or [])
 
 
 def vscode_task_current(repo):
@@ -1117,7 +1130,7 @@ def vscode_task_current(repo):
     """
     path = os.path.join(repo, ".vscode", "tasks.json")
     for t in (load(path, {}) or {}).get("tasks") or []:
-        if isinstance(t, dict) and t.get("label") == "Claude usage watch":
+        if ours(t):
             return t == vscode_task_entry(repo)
     return False
 
@@ -1151,7 +1164,7 @@ def vscode_task(repo, remove=False, check_only=False, grant=True):
         return 1
     data = load(path, {"version": "2.0.0", "tasks": []})
     data.setdefault("version", "2.0.0")
-    tasks = [t for t in data.get("tasks", []) if t.get("label") != "Claude usage watch"]
+    tasks = [t for t in data.get("tasks", []) if not ours(t)]
     if remove:
         # ⛔ AN UNINSTALL MUST NOT CREATE A FILE. load() falls back to an empty task list, so
         # removing from a project that never had a tasks.json wrote a new empty one - seen
@@ -1205,7 +1218,7 @@ def vscode_task(repo, remove=False, check_only=False, grant=True):
     print()
     print("It opens a dedicated terminal showing the usage line, on every folder open.")
     print("⚠ REOPEN THE FOLDER for it to start - the task fires on folder open, not now.")
-    print("  Nothing appearing? Terminal -> Run Task -> 'Claude usage watch' runs it by")
+    print("  Nothing appearing? Terminal -> Run Task -> 'Claude Usage Watcher' runs it by")
     print("  hand: if that works the task is fine and only the automatic trigger is not,")
     print("  which separates two failures that otherwise look identical.")
     return 0
@@ -1303,7 +1316,7 @@ def statusline_install(argv):
         print("  - `task.allowAutomaticTasks` in VS Code user settings, and any")
         print("    .bak-dispatch-guard beside it. Other tasks may rely on that switch now.")
         if "--all" not in argv:
-            print("  - the `Claude usage watch` task in this project. Use --all --uninstall,")
+            print("  - the `Claude Usage Watcher` task in this project. Use --all --uninstall,")
             print("    or --vscode-task --remove, to take that out too.")
         return 0
 
@@ -1423,7 +1436,7 @@ def main():
                 pass
             if value:
                 print("                      New projects opened in VS Code now get the")
-                print("                      `Claude usage watch` task by themselves.")
+                print("                      `Claude Usage Watcher` task by themselves.")
                 print("                      ⚠ REOPEN THE FOLDER for it to start.")
             return 0
     if "--all" in argv:

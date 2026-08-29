@@ -676,7 +676,7 @@ def maybe_install_vscode_task(root, cfg, sdir=None):
         # the folder is already open, so the first open of every new project missed it.
         if not install.vscode_user_task_current():
             lines = install.vscode_user_task()
-            note = (" ⭐ The `Claude usage watch` task was added to VS Code's USER tasks, so "
+            note = (" ⭐ The `Claude Usage Watcher` task was added to VS Code's USER tasks, so "
                     "EVERY project gets the usage line from now on - there is no per-project "
                     "file and nothing was written into this repository. ⚠ It starts by itself "
                     "on the next FOLDER OPEN; to start it in THIS window instead, the person "
@@ -688,9 +688,9 @@ def maybe_install_vscode_task(root, cfg, sdir=None):
             # the 1.135.0 CLI has no option that runs a task in a window already running, so
             # the palette is the only door. Measured 2026-08-27, the same day the user-level
             # task was chosen: it appears in Run Task and starts there.
-            seen = ("added the `Claude usage watch` task to VS Code's user tasks - it covers "
+            seen = ("added the `Claude Usage Watcher` task to VS Code's user tasks - it covers "
                     "every project. ⭐ To start it NOW without reloading: press F1, run "
-                    "`Tasks: Run Task`, pick `Claude usage watch`. Otherwise it starts by "
+                    "`Tasks: Run Task`, pick `Claude Usage Watcher`. Otherwise it starts by "
                     "itself the next time this folder opens.")
         else:
             note = seen = None
@@ -699,7 +699,7 @@ def maybe_install_vscode_task(root, cfg, sdir=None):
         # by git, where removing it would dirty somebody's tree.
         if install.vscode_task_present(root):
             if _git_tracked(root, ".vscode/tasks.json"):
-                extra = ("this project also carries an OLDER per-project `Claude usage watch` "
+                extra = ("this project also carries an OLDER per-project `Claude Usage Watcher` "
                          "task, which opens a SECOND identical terminal. It is tracked by git "
                          "here, so it was not removed - take it out yourself, or run "
                          "install.py --vscode-task --remove.")
@@ -2407,7 +2407,7 @@ def selftest():
             assert _install.vscode_user_task_current(), "what it wrote does not read back"
             with open(up, encoding="utf-8") as fh:
                 written = fh.read()
-            assert "Claude usage watch" in written
+            assert _install.TASK_LABEL in written
             # ⛔ NEVER ${workspaceFolder} IN A USER-LEVEL TASK. It has no workspace of its
             # own, so VS Code resolves that variable against whatever project happens to be
             # open and looks for the plugin inside it - wrong in every project, including the
@@ -2444,7 +2444,21 @@ def selftest():
             _install.vscode_user_task()
             with open(up, encoding="utf-8") as fh:
                 labels = [t["label"] for t in json.load(fh)["tasks"]]
-            assert "my build" in labels and "Claude usage watch" in labels, labels
+            assert "my build" in labels and _install.TASK_LABEL in labels, labels
+
+            # ⛔ A TASK UNDER AN OLD LABEL IS REPLACED, NOT JOINED. Both carry
+            # `runOn: folderOpen`, so leaving the old one opens TWO watcher terminals on
+            # every folder open - and nothing that removes tasks by the current label can
+            # ever reach the old one again. Mutation-checked: drop LEGACY_TASK_LABELS from
+            # ours() and this assertion fails with both labels present.
+            with open(up, "w", encoding="utf-8") as fh:
+                json.dump({"version": "2.0.0",
+                           "tasks": [{"label": _install.LEGACY_TASK_LABELS[0]}]}, fh)
+            assert not _install.vscode_user_task_current(), "an old label read as current"
+            _install.vscode_user_task()
+            with open(up, encoding="utf-8") as fh:
+                labels = [t["label"] for t in json.load(fh)["tasks"]]
+            assert labels == [_install.TASK_LABEL], labels
 
             # ⛔ ...and refuses a file it cannot read. VS Code allows comments here.
             # ⚠ Built by join rather than written with escapes: a generated "\n" inside

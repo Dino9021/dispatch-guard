@@ -33,6 +33,22 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.40.0
+
+- ⭐ **工作改名為 `Claude Usage Watcher`。** 擁有者的指示。VS Code 的 Run Task 清單、
+  專用終端機的分頁名稱、通知裡引的那一句,全部跟著改。
+- ⛔ **舊名字沒有被忘掉,而這才是重點。** 只教寫入端新名字的改名,會把舊的
+  `Claude usage watch` 工作原封不動留在 `tasks.json` 裡 —— 它一樣是 `runOn: folderOpen`,
+  於是每次開資料夾就開**兩個** watcher 終端機,而且移除工作的程式碼再也搆不到它。
+  `install.py` 的 `LEGACY_TASK_LABELS` 記著每一個用過的名字,寫入、判斷「是不是最新」、
+  移除、`Tools/clean-dispatch-guard.ps1` 全部認兩個名字。
+- ⭐ **檢查用突變殺過。** 把 `LEGACY_TASK_LABELS` 從 `ours()` 拿掉 →
+  `AssertionError: ['Claude usage watch', 'Claude Usage Watcher']`,也就是那兩個終端機。
+- ⚠ **已經開著的那個舊終端機不會自己改名,也不會自己關。** 它是上一次開資料夾留下來的;
+  重新開啟資料夾,或手動關掉它。
+
+---
+
 ## 0.39.2
 
 - ⛔ **「已過期」那一句也拿掉了。** 擁有者的指示:「『已過期』也不顯示」。
@@ -1037,6 +1053,23 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.40.0
+
+- ⭐ **The task is now called `Claude Usage Watcher`.** The owner's instruction. VS Code's
+  Run Task list, the dedicated terminal's tab, and the quoted notification all follow.
+- ⛔ **The old name is not forgotten, and that is the point.** A rename that teaches only the
+  writer the new name leaves the old `Claude usage watch` task sitting in `tasks.json` —
+  still `runOn: folderOpen`, so every folder open starts **two** watcher terminals, and
+  nothing that removes tasks by label can reach the old one again. `LEGACY_TASK_LABELS` in
+  `install.py` remembers every name ever written; writing, the is-it-current check, removal
+  and `Tools/clean-dispatch-guard.ps1` all match both.
+- ⭐ **Mutation-checked.** Drop `LEGACY_TASK_LABELS` from `ours()` →
+  `AssertionError: ['Claude usage watch', 'Claude Usage Watcher']` — those two terminals.
+- ⚠ **An already-open old terminal does not rename or close itself.** It belongs to the
+  previous folder open; reopen the folder, or close it by hand.
 
 ---
 

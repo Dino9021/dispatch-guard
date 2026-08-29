@@ -1,5 +1,5 @@
 ---
-description: Remove the statusline and this project's Claude usage watch task, and say what is left
+description: Remove the statusline and this project's Claude Usage Watcher task, and say what is left
 allowed-tools: Bash(bash:*), AskUserQuestion
 ---
 
@@ -16,7 +16,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/hooks/run.sh" "${CLAUDE_PLUGIN_ROOT}/install.py" --a
 2. Show that output to the user.
 
 3. ⚠ ASK FIRST, with `AskUserQuestion`, exactly once:
-   - `Remove both (Recommended)` - the statusline and this project's `Claude usage watch`
+   - `Remove both (Recommended)` - the statusline and this project's `Claude Usage Watcher`
      task. It also sets `auto_statusline` and `auto_vscode_task` to false, WITHOUT WHICH THE
      UNINSTALL UNDOES ITSELF - the hook refills an empty statusline slot on the next session
      start - and cancels an armed resume, because that one is a scheduled OS task that would

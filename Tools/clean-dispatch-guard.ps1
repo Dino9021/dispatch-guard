@@ -44,7 +44,11 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 }
 
 $MARKER  = 'dispatch-guard'
-$TASKDEF = 'Claude usage watch'
+# ⛔ EVERY label the plugin has ever written, not just the current one - a cleaner that
+# only knows the new name leaves the old `runOn: folderOpen` task opening a terminal for
+# ever, with nothing left on disk that names it. Renaming again means APPENDING here.
+$TASKDEFS = @('Claude Usage Watcher', 'Claude usage watch')
+$TASKDEF  = $TASKDEFS[0]
 $SCHED   = 'ClaudeDispatchGuardResume'
 $plan     = [System.Collections.Generic.List[hashtable]]::new()
 $skipped  = [System.Collections.Generic.List[string]]::new()
@@ -131,7 +135,7 @@ function Plan-VsTask([string]$path) {
     $t = Read-JsonFile $path
     if ($null -eq $t -or $t -eq 'UNPARSEABLE' -or -not $t.ContainsKey('tasks')) { return }
     $all  = @($t['tasks'])
-    $keep = @($all | Where-Object { [string]$_.label -ne $TASKDEF })
+    $keep = @($all | Where-Object { $TASKDEFS -notcontains [string]$_.label })
     if ($keep.Count -eq $all.Count) { return }
     if ($keep.Count -eq 0) {
         # ⚠ Only our task is in there, so the file is ours to take. An empty shell left behind
@@ -331,7 +335,7 @@ foreach ($item in $plan) {
         'vstask' {
             $t = Read-JsonFile $item.Path -Quiet
             if ($null -eq $t -or $t -eq 'UNPARSEABLE') { $skipped.Add($item.Path); break }
-            $t['tasks'] = @($t['tasks'] | Where-Object { [string]$_.label -ne $TASKDEF })
+            $t['tasks'] = @($t['tasks'] | Where-Object { $TASKDEFS -notcontains [string]$_.label })
             Write-JsonFile $item.Path $t
             $done++; Note 'modified' "$($item.Path)   -   `"$TASKDEF`" taken out"
         }

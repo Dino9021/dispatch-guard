@@ -7,7 +7,7 @@
 
 and that path carries the version. Hooks are immune - `hooks.json` uses
 `${CLAUDE_PLUGIN_ROOT}`, re-expanded every session - but everything else that names this
-plugin holds a LITERAL path: `statusLine.command` in settings.json, the `Claude usage watch`
+plugin holds a LITERAL path: `statusLine.command` in settings.json, the `Claude Usage Watcher`
 task in tasks.json, and every command the gate hands to the model. ⇒ The next
 `claude plugin update` moves the directory and all of them point at a version that is gone.
 

@@ -36,7 +36,7 @@ def case_no_version_in_wired_paths():
 
     A marketplace install lives under `.../cache/dispatch-guard/dispatch-guard/<VERSION>/`.
     Hooks are immune - hooks.json uses ${CLAUDE_PLUGIN_ROOT}, re-expanded every session - but
-    `statusLine.command` in settings.json and the `Claude usage watch` task in tasks.json hold
+    `statusLine.command` in settings.json and the `Claude Usage Watcher` task in tasks.json hold
     LITERAL paths, and so does every command the gate hands to the model. ⇒ The next
     `claude plugin update` moves the directory and each of them points at a version that is
     gone; worse, measured 2026-08-26, the old directory is LEFT BEHIND, so a stale path keeps
@@ -143,7 +143,7 @@ def main():
         os.mkdir(os.path.join(tmp, ".vscode"))
         tasks = os.path.join(tmp, ".vscode", "tasks.json")
         with open(tasks, "w", encoding="utf-8") as f:
-            f.write('{"version": "2.0.0", "tasks": [{"label": "Claude usage watch"}]}')
+            f.write('{"version": "2.0.0", "tasks": [{"label": "Claude Usage Watcher"}]}')
         r = subprocess.run([sys.executable, os.path.join(HERE, "install.py"),
                             "--vscode-task", "--remove", "--check"],
                            cwd=tmp, capture_output=True, text=True,
@@ -151,7 +151,7 @@ def main():
                            env=dict(os.environ, PYTHONIOENCODING="utf-8"))
         assert r.returncode == 0, "--remove --check exited %d:\n%s" % (r.returncode, r.stderr)
         with open(tasks, encoding="utf-8") as f:
-            assert "Claude usage watch" in f.read(), "--check REMOVED the task for real"
+            assert "Claude Usage Watcher" in f.read(), "--check REMOVED the task for real"
 
         # ⭐ And without --check it has to actually go. Same file, so this also proves the
         # --check run above left something behind to remove.
@@ -162,7 +162,7 @@ def main():
                            env=dict(os.environ, PYTHONIOENCODING="utf-8"))
         assert r.returncode == 0, "--remove exited %d:\n%s" % (r.returncode, r.stderr)
         with open(tasks, encoding="utf-8") as f:
-            assert "Claude usage watch" not in f.read(), "--remove did not remove the task"
+            assert "Claude Usage Watcher" not in f.read(), "--remove did not remove the task"
 
     # ⛔ The uninstall path is a third door out, and it deletes from the USER's settings.
     # `--uninstall --check` used to remove the statusline entry for real, so this one is
