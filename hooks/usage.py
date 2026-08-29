@@ -54,6 +54,7 @@ failure here must end as "no number", never as a wrong number and never as a cra
 Standard library only, by design. No pip install, no npm install, nothing to vendor.
 """
 
+import atexit
 import datetime
 import glob
 import json
@@ -1394,7 +1395,25 @@ def _watch_open(scroll):
     with it, which is the cost, and the reason this is tied to rewriting rather than done
     unconditionally.
     """
-    return "" if scroll else "\033[2J\033[H"
+    # ⛔ AND AUTO-WRAP OFF (DECAWM, `?7l`), which is the fix for the residue that survived
+    # both the clear and the fixed row count. A row as wide as the panel - or wider - is
+    # wrapped by the TERMINAL onto a second visual row, and `\033[1A` then climbs one VISUAL
+    # row rather than one logical one: it lands mid-line, `\r` returns to the start of the
+    # wrong row, and the top half is left on screen for ever. ⚠ Fitting cannot rule this out,
+    # because the width may be wrong (a resize between measuring and writing) or unknowable
+    # (COLUMNS unset and no tty size). With wrapping off the terminal truncates at the margin
+    # instead and the cursor stays on the row it was on, so the climb cannot be wrong.
+    return "" if scroll else "\033[2J\033[H\033[?7l"
+
+
+def _watch_close(scroll):
+    """The bytes that hand the terminal back. Empty when scrolling.
+
+    ⛔ AUTO-WRAP IS THE TERMINAL'S MODE, NOT THIS PROCESS'S. Left off it stays off for
+    whatever runs next there - a shell whose own commands then vanish at the right margin.
+    Restoring it is giving back something borrowed, not tidiness.
+    """
+    return "" if scroll else "\033[?7h"
 
 
 def _rewrite(prev_rows, lines, erase="\033[K"):
@@ -2364,6 +2383,18 @@ def watch(sdir, cfg, argv):
     if opening:
         sys.stdout.write(opening)
         sys.stdout.flush()
+        # ⭐ atexit RATHER THAN A finally AROUND THE LOOP, deliberately: the loop is a
+        # `while True` with several ways out, and this runs on all of them - a clean return,
+        # Ctrl-C, an unhandled error - without reindenting a body whose cursor arithmetic is
+        # the thing being protected. ⚠ Wrapped in try/except: a closed pipe at shutdown must
+        # not turn a clean stop into a traceback.
+        def _restore(_bytes=_watch_close(scroll)):
+            try:
+                sys.stdout.write(_bytes)
+                sys.stdout.flush()
+            except Exception:
+                pass
+        atexit.register(_restore)
     try:
         while True:
             # ⭐ Pause the FETCH when nobody is working - never the redraw. A frozen
@@ -3173,8 +3204,14 @@ def selftest():
     # ever - the screenshot that prompted this showed exactly that, and it reads as the
     # two-row layout being broken. ⚠ Scrolling must emit NOTHING: that mode exists to keep
     # history, and clearing it would throw away the thing it was chosen for.
-    assert _watch_open(False) == "\033[2J\033[H", _watch_open(False)
+    # ⛔ AND AUTO-WRAP OFF WITH IT. A wrapped row makes `\033[1A` climb a VISUAL row instead
+    # of a logical one, which is the residue that survived both the clear and the fixed row
+    # count. ⚠ And it must be handed back, or the next thing to run in that terminal loses
+    # its own wrapping.
+    assert _watch_open(False) == "\033[2J\033[H\033[?7l", _watch_open(False)
     assert _watch_open(True) == "", _watch_open(True)
+    assert _watch_close(False) == "\033[?7h", _watch_close(False)
+    assert _watch_close(True) == "", _watch_close(True)
 
     _r, _n = _rewrite(1, ["a"], "<K>")
     assert _r == "\ra<K>" and _n == 1, (_r, _n)

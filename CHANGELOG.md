@@ -33,6 +33,25 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.41.5
+
+- ⛔ **殘影撐過了清畫面(0.41.3)也撐過了固定列數(0.41.4)。第三個原因:終端機自己折行。**
+  一列跟面板一樣寬、或比它寬,終端機會把它折成**兩個視覺列** —— 這時 `[1A` 往上爬的是
+  **一個視覺列**,不是一個邏輯列,`` 就回到錯的那一列的開頭,被折斷的上半永遠留在畫面上。
+  ⭐ 這正是 `_watch_line()` 開頭那段註解一直在講的原始缺陷,只是它假設「把行寬修好就不會發生」。
+- ⭐ **修法:重繪期間把終端機的自動折行關掉(DECAWM `?7l`)。** 關掉之後,太長的行由**終端機**
+  在右邊界截斷,游標**留在原來那一列** —— 於是不管寬度量得對不對,爬幾列都不會錯。
+  ⚠ **這是「量寬度」永遠治不好的**:寬度可能量完就被使用者拉過(resize),也可能根本量不到
+  (`COLUMNS` 沒設、又拿不到 tty 尺寸)。關掉折行是把這一整類問題移除,不是再猜一次寬度。
+- ⛔ **離開時要還回去(`?7h`)。** 折行是**終端機的模式**,不是這個行程的;留著不還,
+  下一個在那個終端機跑的東西就會在右邊界被吃掉。用 `atexit` 註冊,正常結束、Ctrl-C、
+  沒接到的例外三種出口都會還。
+- ⚠ **這是第三次修同一個症狀,而且我沒有證明就是這個原因** —— 我沒辦法從這裡量到你面板的寬度。
+  ⭐ 五秒的驗證法:**先不要更新,直接把面板拉寬一大截**。如果殘影立刻不見了,那就是折行;
+  如果照樣有,那就是第四個原因,這次的修改也白做。
+
+---
+
 ## 0.41.4
 
 - ⛔ **殘影的真正原因:watcher 的「列數會變」。** 0.41.3 清了畫面,擁有者的第二張截圖還是有 ——
@@ -1293,6 +1312,30 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.41.5
+
+- ⛔ **The residue survived the clear (0.41.3) and the fixed row count (0.41.4). Third cause:
+  the terminal's own line wrapping.** A row as wide as the panel - or wider - is wrapped by the
+  TERMINAL onto two visual rows, and `[1A` then climbs one VISUAL row rather than one
+  logical one: `` returns to the start of the wrong row and the top half stays on screen for
+  ever. ⭐ This is the original defect the comment at the head of `_watch_line()` describes; it
+  simply assumed fitting the row was enough to prevent it.
+- ⭐ **The fix: turn the terminal's auto-wrap off (DECAWM `?7l`) while rewriting.** With it off
+  an over-long row is truncated by the TERMINAL at the margin and the cursor stays on the row it
+  was on - so the climb cannot be wrong however the width measurement turned out.
+  ⚠ **Measuring the width can never fix this**: the width can be stale (a resize between
+  measuring and writing) or unknowable (`COLUMNS` unset and no tty size). Turning wrapping off
+  removes the class instead of guessing better.
+- ⛔ **Handed back on exit (`?7h`).** Auto-wrap is the TERMINAL's mode, not this process's; left
+  off, the next thing to run there loses its own wrapping. Registered with `atexit`, so a clean
+  return, a Ctrl-C and an unhandled error all restore it.
+- ⚠ **This is the third attempt at one symptom, and the cause is NOT proved** - the panel's
+  width cannot be measured from here. ⭐ A five-second check that settles it: **before updating,
+  drag the panel much wider.** If the residue stops, it was wrapping. If it does not, there is a
+  fourth cause and this change was wasted.
 
 ---
 
