@@ -64,6 +64,7 @@ import re
 import shutil
 import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 
@@ -1287,6 +1288,30 @@ def _colour(pct, cfg):
 
 
 BAR_MARK = "┃"    # the elapsed-time marker
+
+# ⭐ THE BURN GAUGE'S LABEL, the owner's choice. ⚠ Two columns, not one - _visible_len()
+# knows, and everything that fits the row goes through it. ⛔ Named once because three places
+# ask "is this segment the gauge?" by looking at the start of the string, and a label that
+# drifts from that test is a gauge that silently stops being found.
+BURN_LABEL = "Burn"
+
+# ⛔ THE LABELS ARE TEXT AGAIN, and that was measured on the owner's screen rather than
+# decided. Icons were tried for all four (a clock, a keycap seven, a rocket, a fire) and the
+# terminal's font drew the keycap as NOTHING and the fire as a coloured dot - so two of the
+# four segments lost their label entirely while the width counter went on reserving two
+# columns for each. ⇒ A glyph a font may not have is not a saving, it is a blank.
+# ⭐ The verdict keeps its circle: those four are geometric shapes with far wider font
+# coverage than an emoji, and the screenshot shows them drawing correctly.
+FIVE_HOUR_LABEL = "5h"
+SEVEN_DAY_LABEL = "7d"
+
+# ⛔ ICONS FOR THE VERDICT, AND FOR THE DISPLAY ONLY. The gate reads verdict() and acts on the
+# WORD; a symbol reaching that side would be a value the dispatch logic does not know. This
+# map is applied where the row is assembled and nowhere else - the same rule SLEEP_WORD
+# already follows. ⚠ Anything not in the map keeps its word, so a new verdict shows up as
+# text rather than vanishing.
+VERDICT_ICON = {"GO": "\U0001f7e2", "PACE": "\U0001f7e0",
+                "STOP": "\U0001f534", "NO-DATA": "\u26aa"}
 # Module-level because _bar is called from several places and threading a flag through
 # all of them for one boolean is noise. Set from config once, at entry.
 SHOW_MARK = [True]
@@ -1469,7 +1494,9 @@ def _watch_line(stamp, data, v, note, cfg, idle=False, burn=None):
     fourth word arriving from the display side would be a word the dispatch logic does not
     know. This substitution is local to the watcher's screen.
     """
-    word = SLEEP_WORD if idle else v["verdict"]
+    # ⚠ THE ICON IS CHOSEN HERE, where the row is assembled, and nowhere else: the gate
+    # acts on the WORD, and a symbol reaching that side is a value it does not know.
+    word = SLEEP_WORD if idle else VERDICT_ICON.get(v["verdict"], v["verdict"])
     lcfg = dict(cfg)
     if idle:
         # ⭐ ONE key carries the whole idle appearance: _colour() already honours it, so "no
@@ -1492,7 +1519,7 @@ def _watch_line(stamp, data, v, note, cfg, idle=False, burn=None):
     # each. ⇒ Whatever will not fit is dropped from the right, as it was before.
     # ⭐ The gauge is still drawn as dashes when there is no rate yet, so its absence means
     # exactly one thing - the row was too narrow - and never "no data".
-    if not (windows and windows[-1].startswith("Burn")):
+    if not (windows and windows[-1].startswith(BURN_LABEL)):
         windows.append(_burn_part(None, None, None, lcfg))
     return _rows(windows, extras, terminal_width(cfg), head, tail, two_rows=False)
 
@@ -1560,8 +1587,42 @@ _STRIP_ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _visible_len(text):
-    """Length as the terminal sees it: ANSI codes occupy no columns."""
-    return len(_STRIP_ANSI.sub("", text))
+    """Columns as the terminal draws them: ANSI codes occupy none, an emoji occupies two.
+
+    ⛔ COUNTING CODEPOINTS WAS ENOUGH ONLY WHILE EVERYTHING WAS NARROW, and the comment on
+    BAR_FULL says as much - the block glyphs were chosen single-width because "CJK would
+    misalign". The moment a wide character joins the row that assumption is a silent
+    off-by-one per glyph, and one column of overflow is precisely what makes a line wrap -
+    the single failure a carriage return can never repair, and the one this watcher spent
+    four releases chasing.
+
+    ⚠ `east_asian_width` answers W (wide) and F (fullwidth) for exactly the characters a
+    terminal draws in two cells, which covers CJK as well as the emoji that prompted this.
+    """
+    plain = _STRIP_ANSI.sub("", text)
+    return sum(_cols(ch) for ch in plain)
+
+
+KEYCAP = "\u20e3"                    # combining enclosing keycap: `7` + VS16 + this = `7\u20e3`
+
+
+def _cols(ch):
+    """Columns one character occupies. ⚠ Three cases, and every one of them is on the row.
+
+    ⭐ W/F is the ordinary answer for an emoji or a CJK glyph: two cells.
+    ⛔ A VARIATION SELECTOR IS NOT A CHARACTER. `\ufe0f` asks the previous glyph to be drawn
+    in colour and occupies nothing; counting it as a column makes every keycap one too wide,
+    and one column too wide is what wraps a row.
+    ⭐ THE KEYCAP MARK IS COUNTED AS ONE because it does not add a cell of its own - it turns
+    the digit before it into a two-cell box. Digit (1) + selector (0) + keycap (1) = 2, which
+    is what the terminal draws.
+    ⚠ Every other combining mark is zero: it is drawn on top of the character before it.
+    """
+    if ch == KEYCAP:
+        return 1
+    if unicodedata.combining(ch) or unicodedata.category(ch) in ("Mn", "Me", "Cf"):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
 
 
 def terminal_width(cfg):
@@ -1680,8 +1741,19 @@ def _cut(text, width):
     """
     if not width or _visible_len(text) <= width:
         return text
-    plain = _STRIP_ANSI.sub("", text)[:width]
-    return plain + (ANSI["reset"] if _STRIP_ANSI.search(text) else "")
+    # ⛔ CUT BY COLUMNS, NOT BY CHARACTERS. Slicing `[:width]` counts codepoints, and an emoji
+    # occupies two cells - so a 25-column budget produced a 26-column row, which wraps.
+    # Measured the moment the labels became icons. ⚠ A glyph that would straddle the last
+    # column is dropped rather than half-drawn: half of a two-cell character is not a
+    # narrower character, it is a broken one.
+    plain, kept, used = _STRIP_ANSI.sub("", text), [], 0
+    for ch in plain:
+        w = _cols(ch)
+        if used + w > width:
+            break
+        kept.append(ch)
+        used += w
+    return "".join(kept) + (ANSI["reset"] if _STRIP_ANSI.search(text) else "")
 
 
 def _burn_part(burn, remain, rate, cfg, stale=False):
@@ -1712,7 +1784,7 @@ def _burn_part(burn, remain, rate, cfg, stale=False):
     if stale or burn is None or not remain:
         # ⚠ `--` matches every other segment's "no usable number", and the dashes are a
         # different glyph from an empty bar on purpose.
-        return "Burn %s %s" % ("─" * (BAR_WIDTH + 1), "--")
+        return "%s %s %s" % (BURN_LABEL, "─" * (BAR_WIDTH + 1), "--")
     ratio = burn / float(remain)
     # ⚠ BAR_WIDTH + 1, exactly like the Ctx segment. The three usage bars carry the elapsed
     # marker, which sits BETWEEN cells and so costs them one extra column; a bar without one
@@ -1729,24 +1801,44 @@ def _burn_part(burn, remain, rate, cfg, stale=False):
     # arrives first" - and it made the reader translate a phrase into a number anyway.
     # ⚠ So this can now print a time LONGER than the window has left, and that is the
     # honest reading: it is when the burn-out lands, not a promise you will get there.
-    tail = "%s left" % duration(burn)
-    rate_s = "%.2f%%/m " % rate if rate else ""
-    return "Burn %s%s%s %s· %s" % (on, bar, off, rate_s, tail)
+    #
+    # ⭐ AND STRIPPED TO `.36%m 3h17m`, the owner's second pass over it. Every piece removed
+    # was one the reader already had: the leading `0` of a rate that is always below one, the
+    # `/` in `%/m`, the `·`, and the word `left` after a duration that can only be a time
+    # remaining. ⚠ The leading zero goes ONLY when it is a zero - a rate of 1.20%/m still
+    # prints `1.20%m`, because dropping a digit that carries magnitude is a different thing
+    # from dropping one that never varies.
+    rate_s = ""
+    if rate:
+        rate_s = "%.2f" % rate
+        if rate_s.startswith("0."):
+            rate_s = rate_s[1:]
+        rate_s += "%/m "
+    return "%s %s%s%s %s%s" % (BURN_LABEL, on, bar, off, rate_s, duration(burn))
+
+
+SEP = " "                           # between segments; see _fit()
 
 
 def _fit(parts, width, keep=1):
-    """Join `parts` with two spaces, dropping from the RIGHT until it fits `width`.
+    """Join `parts` with `SEP`, dropping from the RIGHT until it fits `width`.
 
     ⭐ The rightmost parts are the least load-bearing, and `keep` is how many may never be
     dropped - one, normally, because the five-hour window is what the brake acts on and a
     line without it says nothing.
+
+    ⚠ SEP WAS TWO SPACES, and the owner shortened it to one. That is a real trade and worth
+    knowing rather than rediscovering: the segments contain single spaces of their own
+    (`5h <bar> 29% 2h21m`), so a one-space separator is no longer distinguishable from the
+    spaces inside a segment and the row reads as one stream rather than four items. It buys
+    six columns, which on a single row is six columns of burn gauge.
     """
     parts = [p for p in parts if p]
     if not width:
-        return "  ".join(parts)
-    while len(parts) > keep and _visible_len("  ".join(parts)) > width:
+        return SEP.join(parts)
+    while len(parts) > keep and _visible_len(SEP.join(parts)) > width:
         parts.pop()
-    return "  ".join(parts)
+    return SEP.join(parts)
 
 
 def _line_parts(record, stale_note=None, cfg=None, payload=None, stale=None, burn=None):
@@ -1765,9 +1857,9 @@ def _line_parts(record, stale_note=None, cfg=None, payload=None, stale=None, bur
     # it as a percentage would mislead? By default that is "there is a note", which the
     # caller sets from the file's age; a caller that knows better says so explicitly.
     stale = bool(stale_note) if stale is None else bool(stale)
-    parts = [_window("5h", rec.get("five_hour"), now, cfg, 5 * 3600, stale)]
+    parts = [_window(FIVE_HOUR_LABEL, rec.get("five_hour"), now, cfg, 5 * 3600, stale)]
     if isinstance(rec.get("seven_day"), dict):
-        parts.append(_window("7d", rec["seven_day"], now, cfg, 7 * 86400, stale))
+        parts.append(_window(SEVEN_DAY_LABEL, rec["seven_day"], now, cfg, 7 * 86400, stale))
     # ⭐ THE MODEL-SCOPED WINDOW, when the account has one running. It goes THROUGH _window()
     # like the other two, so staleness, the idle rule and the past-a-reset rule all apply to
     # it identically - a bar that degraded differently would be the one bar that lies.
@@ -2830,12 +2922,13 @@ def selftest():
     _burn3 = (188, 106, 0.38)
     _one = _watch_line("07:26:12", _live, _v, None, {"width": 200}, burn=_burn3)
     assert len(_one) == 1, _one
-    assert "5h" in _one[0] and "Burn" in _one[0] and "GO" in _one[0], _one
+    assert (FIVE_HOUR_LABEL in _one[0] and BURN_LABEL in _one[0]
+            and VERDICT_ICON["GO"] in _one[0]), _one
     # ⭐ AND THE GAUGE IS DRAWN AS DASHES WHEN THERE IS NO RATE, never omitted. Its absence
     # then means exactly one thing - the row was too narrow - instead of two things the
     # screen cannot tell apart.
     _dashes = _watch_line("07:26:12", _live, _v, None, {"width": 200})
-    assert len(_dashes) == 1 and "Burn" in _dashes[0] and "--" in _dashes[0], _dashes
+    assert len(_dashes) == 1 and BURN_LABEL in _dashes[0] and "--" in _dashes[0], _dashes
     # ...and it fits at every width, which is what `\r` needs to be enough: a row wider than
     # the terminal wraps, and a wrapped row is the one thing a carriage return cannot repair.
     for _w in (200, 150, 120, 100, 80, 60, 40, 25):
@@ -2851,7 +2944,7 @@ def selftest():
     # different terminal, and it keeps its own two-row setting.
     _sl = _line(_live, None, {"width": 200, "colour": True}, None, burn=_burn3)
     assert isinstance(_sl, str) and chr(10) not in _sl, _sl
-    assert "Burn" in _sl and "5h" in _sl, _sl
+    assert BURN_LABEL in _sl and FIVE_HOUR_LABEL in _sl, _sl
 
     # ⭐ IDLE KEEPS THE NUMBERS, DROPS EVERY COLOUR, AND SAYS Sleep. The owner's rule: while
     # nobody is working nobody is spending, so a frozen figure cannot drift - and hiding it
@@ -2866,7 +2959,8 @@ def selftest():
     # ...and the active line is the opposite on all three counts, or the test proves nothing.
     _live_line = chr(10).join(
         _watch_line("07:26:12", _live, _v, _note, {"width": 200}, idle=False))
-    assert SLEEP_WORD not in _live_line and "GO" in _live_line, _live_line
+    assert (SLEEP_WORD not in _live_line
+            and VERDICT_ICON["GO"] in _live_line), _live_line
     assert _STRIP_ANSI.sub("", _live_line) != _live_line, (
         "the active line lost its colour: %r" % _live_line)
 
@@ -2910,7 +3004,7 @@ def selftest():
     # right - the five-hour window is kept, because it is what the brake acts on.
     _cut_row = _watch_line("07:26:12", _wide, _v, _long, {"width": 100})
     assert len(_cut_row) == 1, _cut_row
-    assert "5h" in _cut_row[0] and _visible_len(_cut_row[0]) <= 100, _cut_row
+    assert FIVE_HOUR_LABEL in _cut_row[0] and _visible_len(_cut_row[0]) <= 100, _cut_row
     # ...while a wide terminal keeps the note as well as everything else.
     _room = _watch_line("07:26:12", _wide, _v, _long, {"width": 240})
     assert len(_room) == 1 and "OAuth" in _room[0], _room
@@ -2959,6 +3053,10 @@ def selftest():
     _with = {"ts": int(time.time() * 1000),
              "five_hour": {"used_percentage": 55, "resets_at": int(time.time()) + 1600},
              "scoped": _got}
+    # ⚠ THE SEGMENT IS FOUND BY ITS ICON, NOT BY THE ACCOUNT'S LABEL. The API's label
+    # ("Fable") no longer reaches the row - it was five columns saying what the presence of
+    # the segment already says - so a check looking for that word tests nothing about what a
+    # reader sees.
     _shown = _line(_with, None, {"width": 200})
     assert "Fable" in _shown, _shown
     _without = dict(_with)
@@ -3211,7 +3309,7 @@ def selftest():
         assert "OAuth token expires" not in _off[0], _off
         # ...and the five-hour window is on the FIRST row either way - it is what the brake
         # acts on, and a display that can hide it is worse than a narrower one.
-        assert "5h" in _on[0] and "5h" in _off[0], (_on, _off)
+        assert FIVE_HOUR_LABEL in _on[0] and FIVE_HOUR_LABEL in _off[0], (_on, _off)
 
     # ⚠ AND THE WATCHER READS THE SAME KEY. One question, one answer: they had different ones
     # for a while and that is how two surfaces drift.
@@ -3290,7 +3388,15 @@ def selftest():
     # AFTER the reset. The owner's instruction: the words cost fourteen columns to repeat
     # what the full bar already says. ⚠ 188 minutes with 106 left, so the number printed is
     # deliberately LONGER than the window has - that is when burn-out lands, not a promise.
-    assert "3h8m left" in _full and BAR_EMPTY not in _STRIP_ANSI.sub("", _full), _full
+    # ⭐ THE TAIL IS `.38%m 3h8m` AND NOTHING ELSE - the owner's second pass. Each piece
+    # removed was one the reader already had: the leading zero of a rate always below one,
+    # the slash in `%/m`, the separating dot, and the word `left` after a duration that can
+    # only be a time remaining.
+    assert ".38%/m 3h8m" in _full and BAR_EMPTY not in _STRIP_ANSI.sub("", _full), _full
+    assert "left" not in _full and "·" not in _full, _full
+    # ⛔ AND THE LEADING ZERO GOES ONLY WHEN IT IS A ZERO. A rate above one carries magnitude
+    # in that digit, and dropping it would read as a hundredth of the real burn.
+    assert "1.20%/m" in _burn_part(80, 119, 1.20, _bcfg2), _burn_part(80, 119, 1.20, _bcfg2)
     # ⛔ AND IT IS BAR_WIDTH + 1 WIDE, like the Ctx segment and unlike a bare bar. The three
     # usage bars carry the elapsed marker, which sits between cells and costs them a column;
     # a burn bar one narrower cannot line up beneath them however the row is indented.
@@ -3300,7 +3406,7 @@ def selftest():
     _glyphs = [c for c in _STRIP_ANSI.sub("", _full) if c in (BAR_FULL, BAR_EMPTY, BAR_MARK)]
     assert len(_glyphs) == BAR_WIDTH + 1, (len(_glyphs), _full)
     assert "outlasts" not in _full and ANSI["ok"] in _full, _full
-    assert "left" in _half and ANSI["warn"] in _half, _half
+    assert "1h20m" in _half and ANSI["warn"] in _half, _half
     assert ANSI["alarm"] in _dry, _dry
     # ⚠ COLOUR IS INVERTED HERE, and _colour() must not be used: everywhere else a HIGH
     # number is bad, so the shared thresholds would paint safety red. Pinned by asserting
@@ -3321,16 +3427,16 @@ def selftest():
     _brec = {"ts": int(time.time() * 1000),
              "five_hour": {"used_percentage": 29, "resets_at": int(time.time()) + 5900}}
     _wins, _extras = _line_parts(_brec, None, _bcfg2, None, burn=(188, 106, 0.38))
-    assert any(w.startswith("Burn") for w in _wins), _wins
-    assert not any(x.startswith("Burn") for x in _extras), _extras
-    assert _wins[0].startswith("5h"), "the burn segment displaced the five-hour window"
+    assert any(w.startswith(BURN_LABEL) for w in _wins), _wins
+    assert not any(x.startswith(BURN_LABEL) for x in _extras), _extras
+    assert _wins[0].startswith(FIVE_HOUR_LABEL), "the burn segment displaced the five-hour window"
     # ...and it is the LAST of them, so a narrow terminal drops it before any usage bar.
-    assert _wins[-1].startswith("Burn"), _wins
+    assert _wins[-1].startswith(BURN_LABEL), _wins
 
     # ⚠ Absent when there is nothing to show, and switchable.
-    assert not any(w.startswith("Burn")
+    assert not any(w.startswith(BURN_LABEL)
                    for w in _line_parts(_brec, None, _bcfg2, None, burn=None)[0])
-    assert not any(w.startswith("Burn") for w in _line_parts(
+    assert not any(w.startswith(BURN_LABEL) for w in _line_parts(
         _brec, None, dict(_bcfg2, show_burn=False), None, burn=(188, 106, 0.38))[0])
 
     # ⛔ AND burn_triple() MUST REFUSE A WINDOW THAT HAS ALREADY RESET, where the stored

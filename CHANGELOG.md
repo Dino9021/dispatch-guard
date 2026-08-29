@@ -33,6 +33,51 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.44.1
+
+- ⛔ **段落標籤的圖示收回來了 —— 在擁有者的終端機上，它們畫不出來。** 螢幕截圖:
+  那個 `7️⃣` **什麼都沒有**，`🔥` 變成一個彩色圓點。⇒ 四段裡有兩段直接失去標籤，
+  而寬度計算還在替它們各留兩欄。**一個字型可能沒有的字不是節省，是空白。**
+  ```
+  12:02:02  5h ▓▓▓░░░┃░░░ 34% 1h52m 7d ▓▓▓▓┃▓░░░░ 54% 3d22h Fable ▓▓▓░┃░░░░░ 31% 3d22h Burn ▓▓▓▓▓▓▓▓▓▓ .17%/m 6h36m  🟢
+  ```
+- ⭐ **只留最後那個判定圓點。** 那四個是幾何符號，字型覆蓋率比表情符號高得多，
+  而且截圖裡它們畫得好好的。PACE 照擁有者說的用 🟠。
+- ⭐ **這一版沒有把 0.44.0 全部退掉。** 一格間隔、短時間格式（`3d22h`）、
+  燒盡尾巴（`.17%/m 6h36m`）都留著 —— 那些是**文字**，不靠字型有沒有某個字。
+  整行 119 欄（圖示版 109，原本 141）。
+- ⭐ **`_cols()` 那個寬度計算也留著。** 行尾那個圓點就是兩欄寬的字元，還是要算對；
+  而且它現在也把 CJK 算對了，那是這個檔案原本就知道自己不會的事。
+
+---
+
+## 0.44.0
+
+- ⭐ **整行改用圖示，擁有者一項一項指定的。**
+  ```
+  11:23:40  🕒▓▓▓░░┃░░░░ 33% 2h6m 7️⃣▓▓▓▓┃▓░░░░ 54% 3d23h 🚀▓▓▓░┃░░░░░ 31% 3d23h 🔥▓▓▓▓▓▓▓▓▓▓ .30%/m 3h43m  🟢
+  ```
+  🕒 五小時、7️⃣ 七天、🚀 模型視窗、🔥 燒盡速度；判定字換成 🟢 GO、🟠 PACE、🔴 STOP、⚪ 沒資料。
+  段落間隔從兩格改一格，圖示緊貼自己的 bar，燒盡尾巴縮成 `.30%/m 3h43m`
+  （開頭的 0 只在它是 0 時省掉 —— `1.20%/m` 那個 1 是有意義的）。
+  **整行從 141 欄降到 109 欄。**
+- ⛔ **判定圖示只在畫面上。** gate 拿到的還是 `GO`/`PACE`/`STOP` 那個**字** —— 換掉的話，
+  派工邏輯會收到一個它不認識的值。轉換發生在組裝那一行的地方，別的地方都沒有，
+  跟 `SLEEP` 早就遵守的規則一樣。
+- ⛔ **寬度計算重寫了，而這是整批改動裡唯一危險的部分。** 以前是「數碼位」，
+  那只有在每個字都一欄寬時才對 —— `BAR_FULL` 的註解本來就寫著「CJK 會歪掉」。
+  一個表情符號是**兩欄**，`7️⃣` 更是**三個碼位假裝成一個字**（數字 + 變體選擇符 + 圍框記號）。
+  ⇒ `_cols()` 現在分三種：W/F 兩欄、變體選擇符和組合記號零欄、圍框記號一欄。
+  ⚠ **`_cut()` 也一起改成照「欄」切**，不然 25 欄的預算會切出 26 欄的行 —— 實測過。
+  **算錯一欄就會換行，而換行正是這個 watcher 唯一修不好的事。**
+- ⛔ **順手修掉一個會過期的檢查（跟這批改動無關）。** `test_guards.py` 有一句
+  「回填 25 小時的本地表要輸給比較新的種子」，而那個種子是 repo 裡的檔案、時間固定 ——
+  於是它在種子滿 24 小時的那一刻開始失敗，而且不是因為程式壞了。實測 2026-08-29：
+  種子 24.09 小時，整套測試變紅。⇒ 現在那一句的時間點是**從種子本身算出來的**。
+  ⚠ 第一次改的時候我直接動 `now`，結果連累下面量 24 小時間隔的兩句 —— 改成只影響那一句。
+
+---
+
 ## 0.43.0
 
 - ⛔ **watcher 改回「一行」，而這是終端機決定的。** 擁有者的最後一張截圖是決定性的：
@@ -1382,6 +1427,62 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.44.1
+
+- ⛔ **The segment-label icons are withdrawn - they do not draw on the owner's terminal.**
+  From the screenshot: the keycap seven rendered as **nothing at all** and the fire came out
+  as a coloured dot. ⇒ Two of the four segments lost their label while the width counter went
+  on reserving two columns for each. **A glyph a font may not have is not a saving, it is a
+  blank.**
+  ```
+  12:02:02  5h ▓▓▓░░░┃░░░ 34% 1h52m 7d ▓▓▓▓┃▓░░░░ 54% 3d22h Fable ▓▓▓░┃░░░░░ 31% 3d22h Burn ▓▓▓▓▓▓▓▓▓▓ .17%/m 6h36m  🟢
+  ```
+- ⭐ **Only the verdict dot stays.** Those four are geometric shapes with far wider font
+  coverage than an emoji, and the screenshot shows them drawing correctly. PACE keeps 🟠, as
+  the owner asked.
+- ⭐ **0.44.0 is not withdrawn wholesale.** The one-space separator, the short durations
+  (`3d22h`) and the trimmed burn tail (`.17%/m 6h36m`) all stay - those are TEXT, and depend
+  on no font having any particular glyph. The row is 119 columns (109 with icons, 141 before).
+- ⭐ **`_cols()` stays too.** The dot at the end of the row is itself a two-column character
+  and still has to be measured - and it now gets CJK right as well, which this file always
+  knew it did not.
+
+---
+
+## 0.44.0
+
+- ⭐ **The whole row is icons now, each one the owner's choice.**
+  ```
+  11:23:40  🕒▓▓▓░░┃░░░░ 33% 2h6m 7️⃣▓▓▓▓┃▓░░░░ 54% 3d23h 🚀▓▓▓░┃░░░░░ 31% 3d23h 🔥▓▓▓▓▓▓▓▓▓▓ .30%/m 3h43m  🟢
+  ```
+  🕒 five hours, 7️⃣ seven days, 🚀 the model window, 🔥 the burn rate; the verdict becomes
+  🟢 GO, 🟠 PACE, 🔴 STOP, ⚪ no data. The separator goes from two spaces to one, each icon
+  sits against its own bar, and the burn tail shrinks to `.30%/m 3h43m` - the leading zero
+  dropped only when it IS a zero, since the `1` in `1.20%/m` carries magnitude.
+  **The row falls from 141 columns to 109.**
+- ⛔ **The verdict icon is display only.** The gate still receives the WORD `GO`/`PACE`/`STOP`;
+  a symbol reaching that side would be a value the dispatch logic does not know. The
+  substitution happens where the row is assembled and nowhere else - the rule `SLEEP` has
+  followed all along.
+- ⛔ **The width counter is rewritten, and that is the only dangerous part of this.** It
+  counted CODEPOINTS, which is right only while everything is one column wide - `BAR_FULL`'s
+  own comment says the blocks were chosen because "CJK would misalign". An emoji is TWO
+  columns, and `7️⃣` is three codepoints pretending to be one character (digit + variation
+  selector + enclosing keycap). ⇒ `_cols()` now answers three cases: W/F is two, a variation
+  selector or combining mark is zero, the keycap mark is one. ⚠ **`_cut()` had to learn
+  columns too**, or a 25-column budget produced a 26-column row - measured the moment the
+  labels changed. **One column of miscounting wraps the row, and a wrapped row is the one
+  thing this watcher cannot repair.**
+- ⛔ **And an expiring check is repaired in passing, unrelated to the rest.**
+  `test_guards.py` asserted that "a back-dated live table loses to a NEWER seed" - but the
+  seed is a file in this repository with a fixed timestamp, so the premise expired 24 hours
+  after that capture and the suite then went red on the clock rather than on a defect.
+  Measured 2026-08-29: the seed turned 24.09 h old and the suite failed. ⇒ The instant is now
+  derived FROM the seed. ⚠ The first attempt moved `now` itself and broke the two assertions
+  below it that measure the 24 h interval from it; it is scoped to the one line that needs it.
 
 ---
 

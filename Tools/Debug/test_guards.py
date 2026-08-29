@@ -658,10 +658,21 @@ def case_price_refresh(gate, sdir):
     # loses to the seed that ships in the repository - and the seed is fresh, so nothing is
     # due. That is the CORRECT behaviour (the newest table wins), which is why the interval is
     # driven from the clock here instead of by falsifying the file.
+    # ⛔ THE PREMISE HAS TO BE ESTABLISHED, NOT ASSUMED. The assertion below reads "a
+    # back-dated live copy loses to a NEWER seed" - and the seed is a file committed to this
+    # repository with a fixed `fetched_at`, so the premise expired exactly 24 hours after
+    # that capture and the check then failed on the clock with nothing changed. Measured
+    # 2026-08-29: the seed turned 24.09 h old and the suite went red.
+    # ⇒ the instant is taken FROM THE SEED, so the case tests what it says for ever.
+    # ⚠ AND IT IS A LOCAL INSTANT, NOT A CHANGE TO `now`. The assertions below measure
+    # the 24 h interval FROM `now`, so moving it turns this red check into a different
+    # one - which is what the first attempt at this did.
+    _seed = mp.read(os.path.join(mp.PLUGIN_DIR, mp.FILENAME)) or {}
+    _fresh = min(now, (_seed.get("fetched_at") or now) + 3600)
     old = dict(before)
-    old["fetched_at"] = int(now - 25 * 3600)
+    old["fetched_at"] = int(_fresh - 25 * 3600)
     mp.write(old, live)
-    assert not gate.prices_due(sdir, cfg, now), \
+    assert not gate.prices_due(sdir, cfg, _fresh), \
         "a back-dated live copy must lose to a newer seed, not trigger a refresh"
     mp.write(before, live)
     later = now + 25 * 3600

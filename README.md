@@ -671,8 +671,17 @@ claude plugin install dispatch-guard@dispatch-guard --config announce_unattended
 **watcher（`--watch`，擴充套件看的就是這個）**
 
 ```
-07:57:41  5h ▓▓▓▓┃░░░░░ 43% 2h-47m  7d ▓▓▓▓┃▓▓░░░ 64% 4d-3h-59m  GO
+12:02:02  5h ▓▓▓░░░┃░░░ 34% 1h52m 7d ▓▓▓▓┃▓░░░░ 54% 3d22h Fable ▓▓▓░┃░░░░░ 31% 3d22h Burn ▓▓▓▓▓▓▓▓▓▓ .17%/m 6h36m  🟢
 ```
+
+⭐ **判定字換成圓點**：🟢 GO、🟠 PACE、🔴 STOP、⚪ 還沒有資料。
+⚠ **那只在畫面上** —— gate 拿到的還是 `GO`/`PACE`/`STOP` 那個字，換掉的話派工邏輯會收到
+一個它不認識的值。
+
+⛔ **段落標籤試過改成圖示（🕒 7️⃣ 🚀 🔥），失敗了，所以是文字。**
+在擁有者的終端機上，那個 `7️⃣` **什麼都沒畫出來**，`🔥` 變成一個彩色圓點 ——
+四段裡有兩段直接失去標籤，而寬度計算還在替它們各留兩欄。
+⇒ 一個字型可能沒有的字不是節省，是空白。圓點留著，因為那是幾何符號，字型覆蓋率高得多。
 
 ⭐ 有判定字，因為對擴充套件使用者來說**這是唯一看得到用量的地方**，旁邊沒有開場那一行。
 ⛔ 它畫不出 Ctx、模型和 effort —— 它只是終端機裡的一個迴圈，沒有任何東西餵 payload 給它。
@@ -682,8 +691,18 @@ claude plugin install dispatch-guard@dispatch-guard --config announce_unattended
 `Burn` 回答一個問題：**照現在這個速度，我還有多久會撞到 100%。**
 
 ```
-11:23:40  5h ▓▓░░░┃░░░░ 27% 2h29m  7d ▓▓▓▓┃▓░░░░ 53% 3d23h  Fable ▓▓▓░┃░░░░░ 31% 3d23h  Burn ▓▓▓▓▓▓▓▓▓▓ 0.40%/m · 3h3m left  GO
+12:02:02  5h ▓▓▓░░░┃░░░ 34% 1h52m 7d ▓▓▓▓┃▓░░░░ 54% 3d22h Fable ▓▓▓░┃░░░░░ 31% 3d22h Burn ▓▓▓▓▓▓▓▓▓▓ .17%/m 6h36m  🟢
 ```
+
+⭐ **The verdict is a coloured dot**: 🟢 GO, 🟠 PACE, 🔴 STOP, ⚪ no data yet.
+⚠ **Display only** — the gate still receives the word `GO`/`PACE`/`STOP`; a symbol reaching
+that side would be a value the dispatch logic does not know.
+
+⛔ **Icons were tried for the segment labels (🕒 7️⃣ 🚀 🔥) and failed, which is why they are
+text.** On the owner's terminal the keycap seven drew **nothing at all** and the fire came out
+as a coloured dot — two of the four segments lost their label while the width counter went on
+reserving two columns for each. ⇒ A glyph a font may not have is not a saving, it is a blank.
+The dots stay: geometric shapes have far wider font coverage than an emoji.
 
 ⛔ **watcher 是「一行」，而那是終端機決定的，不是喜好問題。** 第二行只能靠「把游標往上移」
 才有辦法重畫，而 VS Code 的終端機面板**完全不理會任何垂直移動** —— 量了四個版本才確定，
@@ -715,7 +734,7 @@ claude plugin install dispatch-guard@dispatch-guard --config announce_unattended
 - **bar 會往上跑。** 你慢下來它就變長 —— 它量的是「兩個時鐘會不會交叉」，不是還剩多少油。
 - **顏色是反的。** 這一段滿=好；旁邊那三條是數字越高越糟。
 
-⚠ **`Burn ───────── --` 代表「還沒有資料」** —— 同一個 5 小時視窗裡至少要兩筆紀錄才算得出速度。
+⚠ **`🔥────────── --` 代表「還沒有資料」** —— 同一個 5 小時視窗裡至少要兩筆紀錄才算得出速度。
 剛裝好、或剛過重置點就是這樣，等幾分鐘就有了。
 
 ### ⭐ 沒人在工作的時候，watcher 會停止呼叫 API
@@ -2148,7 +2167,7 @@ than a pair of eyes.
 **The watcher (`--watch`, which is what the extension shows)**
 
 ```
-07:57:41  5h ▓▓▓▓┃░░░░░ 43% 2h-47m  7d ▓▓▓▓┃▓▓░░░ 64% 4d-3h-59m  GO
+12:02:02  5h ▓▓▓░░░┃░░░ 34% 1h52m 7d ▓▓▓▓┃▓░░░░ 54% 3d22h Fable ▓▓▓░┃░░░░░ 31% 3d22h Burn ▓▓▓▓▓▓▓▓▓▓ .17%/m 6h36m  🟢
 ```
 
 ⭐ It has the verdict word, because for an extension user **this is the only place usage appears
@@ -2160,7 +2179,7 @@ it is a loop in a terminal, and nothing feeds it a payload.
 `Burn` answers one question: **at this rate, how long until I hit 100%.**
 
 ```
-11:23:40  5h ▓▓░░░┃░░░░ 27% 2h29m  7d ▓▓▓▓┃▓░░░░ 53% 3d23h  Fable ▓▓▓░┃░░░░░ 31% 3d23h  Burn ▓▓▓▓▓▓▓▓▓▓ 0.40%/m · 3h3m left  GO
+12:02:02  5h ▓▓▓░░░┃░░░ 34% 1h52m 7d ▓▓▓▓┃▓░░░░ 54% 3d22h Fable ▓▓▓░┃░░░░░ 31% 3d22h Burn ▓▓▓▓▓▓▓▓▓▓ .17%/m 6h36m  🟢
 ```
 
 ⛔ **The watcher is ONE row, and the terminal decided that, not a preference.** A second row can
@@ -2198,7 +2217,7 @@ first.** That is when the bar is full.
   how much is left in a tank.
 - **Its colour is inverted.** Full is good here; on the three bars beside it a high number is bad.
 
-⚠ **`Burn ───────── --` means "no data yet"** — a rate needs at least two readings inside the
+⚠ **`🔥────────── --` means "no data yet"** — a rate needs at least two readings inside the
 same five-hour window. Right after installing, or just past a reset, that is what you get; a few
 minutes fixes it.
 
