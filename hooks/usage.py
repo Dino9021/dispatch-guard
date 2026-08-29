@@ -1317,19 +1317,24 @@ def _bar(pct, width=None, time_pct=None):
 
 
 def duration(mins):
-    """Minutes as the largest units that fit, hyphenated: 9m, 3h-5m, 4d-4h-7m.
+    """Minutes as the largest two units that fit: 9m, 3h5m, 4d4h.
 
     ⚠ Hours alone stop being readable past a day - the seven-day window routinely shows a
-    three-digit hour count, and "100h24m" is arithmetic the reader has to do. Hyphens and
-    no zero padding, because "4d04h07m" reads as one long number and "4d-4h-7m" reads as
-    three separate quantities, which is what it is.
+    three-digit hour count, and "100h24m" is arithmetic the reader has to do.
+
+    ⛔ SHORTER THAN IT WAS, and deliberately: this used to be hyphenated and to print all
+    three units past a day (`4d-0h-16m`). The owner's watcher is back to a single row, where
+    every column decides whether the burn gauge is drawn at all - and three of these appear
+    on that row, so the old form cost about sixteen columns to say nothing extra. ⚠ The
+    MINUTES go, not the hours: four days out, a minute is noise; three hours out, it is not,
+    which is why the two-unit rule keeps them below a day.
     """
     mins = max(0, int(mins))
     if mins < 60:
         return "%dm" % mins
     if mins < 1440:
-        return "%dh-%dm" % (mins // 60, mins % 60)
-    return "%dd-%dh-%dm" % (mins // 1440, (mins % 1440) // 60, mins % 60)
+        return "%dh%dm" % (mins // 60, mins % 60)
+    return "%dd%dh" % (mins // 1440, (mins % 1440) // 60)
 
 
 def _window(label, win, now, cfg=None, window_secs=None, stale=False):
@@ -1417,33 +1422,24 @@ def _watch_close(scroll):
 
 
 def _redraw(lines, erase="\033[K"):
-    """Every row, drawn from the top-left of the screen the watcher cleared and owns.
+    """The bytes that rewrite the watcher's line in place. ONE row, and no vertical move.
 
-    ⛔ WHY THIS REPLACED A RELATIVE CLIMB, after three attempts that did not. `\033[1A` moves
-    up one row from WHEREVER THE CURSOR IS, so it is only correct while nothing else has moved
-    it - and inside a VS Code panel that is not something this process controls. Measured
-    2026-08-29: with the row count fixed at two and wrapping disabled, the FIRST draw was
-    still stranded, every later draw overwriting the second row cleanly. ⇒ The cursor was one
-    row lower than the arithmetic believed before the second draw ever ran, and no amount of
-    fixing the arithmetic reaches that.
+    ⛔ THIS TERMINAL HONOURS `\r` AND NOTHING ELSE, and that was established by elimination
+    rather than by reading a specification. Four attempts each fixed a real defect and none
+    fixed the owner's screen: a startup clear, a fixed row count, auto-wrap off, and an
+    absolute home. The byte stream was then CAPTURED - `\033[2J\033[H\033[?7l` once, then
+    `\033[H\r<row>\033[K\n\r<row>\033[K\033[J` per draw, no stray output, no relative move -
+    and a VS Code panel stacked three complete draws anyway. ⇒ `\033[2J`, `\033[H` and
+    `\033[1A` are all ignored there; `\r` plus `\033[K` had been working since the day this
+    was written, on a single row.
+    ⇒ The two-row layout is not achievable in that panel, so the owner chose one row back.
 
-    ⛔ AND HOMING ALONE WAS NOT ENOUGH EITHER, which is why this clears first. The bytes were
-    CAPTURED, not assumed - `\033[2J\033[H\033[?7l` once, then `\033[H\r<row>\033[K\n\r<row>
-    \033[K\033[J` per draw, no stray output and no relative move anywhere in the stream - and
-    the owner's panel still stranded a row. ⇒ Where that terminal puts `\033[H` is not what
-    this process believes, and after four attempts the useful move is to stop depending on
-    the answer rather than to keep guessing it.
-
-    ⭐ CLEARING EVERY DRAW CANNOT STRAND ANYTHING, because there is nothing left to strand:
-    the screen holds only what this draw put there. ⚠ It costs a full repaint every
-    `--every` seconds, which for two rows on a thirty-second interval is nothing anybody can
-    see; a watcher redrawing many rows at speed would need the careful version back.
-
-    ⚠ It is legitimate ONLY because the watcher owns its terminal - a dedicated panel whose
-    entire content is this line. A program sharing a terminal must never do this.
+    ⚠ `lines` is still a list, and only the FIRST is drawn. _watch_line() asks _rows() for a
+    single row, so a second can only arrive from a caller that has changed its mind - and
+    silently drawing half of what it was handed is how that would go unnoticed.
     """
-    body = "\n".join("\r" + one + erase for one in lines)
-    return "\033[2J\033[H" + body
+    assert len(lines) == 1, "the watcher draws ONE row: %r" % (lines,)
+    return "\r" + lines[0] + erase
 
 
 def _watch_line(stamp, data, v, note, cfg, idle=False, burn=None):
@@ -1489,24 +1485,16 @@ def _watch_line(stamp, data, v, note, cfg, idle=False, burn=None):
     # 141 columns the gauge was silently dropped, so "no Burn" meant either "no data" or
     # "too narrow" and the screen could not tell you which. Given a row of its own it is
     # always there.
-    # ⛔ AND THE ROW COUNT NEVER CHANGES, which is the whole point rather than a detail.
-    # Before a burn rate exists the gauge was omitted and the watcher drew ONE row; the first
-    # draw after it appeared drew TWO, and that 1-to-2 transition is where a stranded line
-    # comes from - twice in the owner's screenshots. The cursor arithmetic for growth is
-    # correct and pinned, but it depends on the terminal not having moved the cursor in
-    # between, and in a VS Code panel that is not something this process controls.
-    # ⇒ REMOVE THE TRANSITION. `_burn_part(None, ...)` already draws "no data yet" as dashes,
-    # exactly as the statusline does, so there is always a segment to move and always two
-    # rows. ⚠ This also makes the gauge's absence impossible to misread: it is either a rate
-    # or dashes, never a missing row.
-    # ⚠ WATCHER ONLY, by the owner's instruction - not because the statusline cannot do it.
-    # line_rows() measured that Claude Code splits the command's output on newlines and
-    # counts them, so a statusline may be two rows; it simply is not asked to spend one.
+    # ⛔ ONE ROW, ALWAYS - `two_rows=False`, and it is not a preference. A second row can only
+    # be drawn over again by moving the cursor UP, and the terminal this exists for ignores
+    # every vertical move: measured by elimination, then confirmed by capturing the byte
+    # stream, a VS Code panel stacked three complete two-row draws that carried a `\033[2J`
+    # each. ⇒ Whatever will not fit is dropped from the right, as it was before.
+    # ⭐ The gauge is still drawn as dashes when there is no rate yet, so its absence means
+    # exactly one thing - the row was too narrow - and never "no data".
     if not (windows and windows[-1].startswith("Burn")):
         windows.append(_burn_part(None, None, None, lcfg))
-    extras.insert(0, windows.pop())
-    return _rows(windows, extras, terminal_width(cfg), head, tail,
-                 cfg.get("two_rows", True), always_split=True)
+    return _rows(windows, extras, terminal_width(cfg), head, tail, two_rows=False)
 
 
 # The payload key that carries context usage. ⭐ Named once because Part B turns its
@@ -2834,53 +2822,33 @@ def selftest():
                     "width %d, idle=%s: a row is %d columns and WILL wrap: %r"
                     % (_w, _idle, _visible_len(_r), _r))
 
-    # ⛔ THE WATCHER BREAKS AFTER THE LAST USAGE WINDOW WHEN THERE IS A BURN GAUGE, and the
-    # gauge opens the second row. The owner's instruction, and it closes the hole measured in
-    # 0.40.7: below 141 columns the gauge was silently dropped, so an absent Burn meant either
-    # "no data yet" or "your panel is narrow" and nothing on screen told the two apart.
-    # ⚠ EVEN AT WIDTH 200, where it would fit on one row. A segment that appears and vanishes
-    # with the terminal is a segment nobody can rely on.
+    # ⛔ THE WATCHER IS ONE ROW, WITH OR WITHOUT A BURN RATE - and that is the terminal's
+    # rule, not a preference. A second row can only be redrawn by moving the cursor UP, and
+    # the panel this exists for ignores every vertical move: measured by elimination across
+    # four releases, then confirmed by capturing the byte stream, where a `\033[2J` per draw
+    # still stacked three complete two-row draws.
     _burn3 = (188, 106, 0.38)
-    _two = _watch_line("07:26:12", _live, _v, None, {"width": 200}, burn=_burn3)
-    assert len(_two) == 2, _two
-    assert "Burn" not in _two[0] and "Burn" in _two[1], _two
-    assert "5h" in _two[0] and "GO" in _two[0], _two[0]
-    # ⛔ AND THE TWO BARS SIT IN THE SAME COLUMN. Indenting the second row by the timestamp
-    # was the old rule and it aligned nothing: `5h` and `Burn` are different lengths, so the
-    # bars landed two columns apart and the rows read as two unrelated lines. ⚠ The widths
-    # have to match too - the usage bars carry the elapsed marker, which costs them a column
-    # a plain bar does not have, so _burn_part draws BAR_WIDTH + 1.
-    assert _bar_col(_two[0]) == _bar_col(_two[1]), (
-        "the bars are not in one column: %r vs %r"
-        % (_bar_col(_two[0]), _bar_col(_two[1])))
-    # ...and both rows still fit, at every width, which is the defect this area exists for.
+    _one = _watch_line("07:26:12", _live, _v, None, {"width": 200}, burn=_burn3)
+    assert len(_one) == 1, _one
+    assert "5h" in _one[0] and "Burn" in _one[0] and "GO" in _one[0], _one
+    # ⭐ AND THE GAUGE IS DRAWN AS DASHES WHEN THERE IS NO RATE, never omitted. Its absence
+    # then means exactly one thing - the row was too narrow - instead of two things the
+    # screen cannot tell apart.
+    _dashes = _watch_line("07:26:12", _live, _v, None, {"width": 200})
+    assert len(_dashes) == 1 and "Burn" in _dashes[0] and "--" in _dashes[0], _dashes
+    # ...and it fits at every width, which is what `\r` needs to be enough: a row wider than
+    # the terminal wraps, and a wrapped row is the one thing a carriage return cannot repair.
     for _w in (200, 150, 120, 100, 80, 60, 40, 25):
         for _idle in (True, False):
             _rr = _watch_line("07:26:12", _live, _v, _note, {"width": _w},
                               idle=_idle, burn=_burn3)
-            for _r in _rr:
-                assert _visible_len(_r) <= _w, (
-                    "width %d idle=%s: %d columns WILL wrap: %r"
-                    % (_w, _idle, _visible_len(_r), _r))
+            assert len(_rr) == 1, (_w, _rr)
+            assert _visible_len(_rr[0]) <= _w, (
+                "width %d idle=%s: %d columns WILL wrap: %r"
+                % (_w, _idle, _visible_len(_rr[0]), _rr[0]))
 
-    # ⛔ THE ROW COUNT IS CONSTANT, WITH OR WITHOUT A BURN RATE. This is the fix for the
-    # stranded line in the owner's screenshots: the watcher drew one row until a rate existed
-    # and two afterwards, and that single 1-to-2 growth left the older row on screen. With no
-    # transition there is nothing to get wrong. ⚠ And the gauge says "no data" in words
-    # rather than by vanishing, which is the same rule the statusline already follows.
-    _none = _watch_line("07:26:12", _live, _v, None, {"width": 200})
-    assert len(_none) == 2, _none
-    assert "Burn" in _none[1] and "--" in _none[1], _none
-    assert _bar_col(_none[0]) == _bar_col(_none[1]), (_none, "dashes must align too")
-    # ...at every width, including ones where the second row has to be cut.
-    for _w in (200, 120, 80, 40, 25):
-        _rr = _watch_line("07:26:12", _live, _v, _note, {"width": _w})
-        assert len(_rr) == 2, (_w, _rr)
-        for _r in _rr:
-            assert _visible_len(_r) <= _w, (_w, _visible_len(_r), _r)
-
-    # ⛔ AND THE CLI STATUSLINE IS UNTOUCHED - it gets ONE row from Claude Code, so a second
-    # would be thrown away. The forced split is the watcher's, not a property of _line_parts.
+    # ⛔ THE CLI STATUSLINE IS UNTOUCHED by any of this - it is a different surface with a
+    # different terminal, and it keeps its own two-row setting.
     _sl = _line(_live, None, {"width": 200, "colour": True}, None, burn=_burn3)
     assert isinstance(_sl, str) and chr(10) not in _sl, _sl
     assert "Burn" in _sl and "5h" in _sl, _sl
@@ -2938,21 +2906,14 @@ def selftest():
     _wide = {"ts": int(time.time() * 1000),
              "five_hour": {"used_percentage": 55, "resets_at": int(time.time()) + 1600},
              "seven_day": {"used_percentage": 32, "resets_at": int(time.time()) + 300000}}
-    _two = _watch_line("07:26:12", _wide, _v, _long, {"width": 160})
-    assert len(_two) == 2, "it dropped the note instead of using a second row: %r" % (_two,)
-    assert "5h" in _two[0] and "GO" in _two[0], _two
-    # ⚠ THE BURN GAUGE OPENS ROW TWO AND THE NOTE FOLLOWS IT. The gauge goes first because it
-    # is the segment with a BAR, and the bar is what row two is aligned by; a note in front of
-    # it would leave the two rows looking unrelated again. ⇒ On a row too narrow for both, the
-    # note is what goes - the same right-to-left rule every other row here follows.
-    assert _two[1].lstrip().startswith("Burn"), _two
-    assert "OAuth" in _two[1], _two
-    # ⛔ AND A LINE THAT FITS STILL SPENDS THE SECOND ROW. The old rule was the opposite -
-    # "or every watcher grows a blank second one" - and that reason is gone: row two is never
-    # blank now, it always carries the gauge. ⚠ The rule it replaces is what produced the
-    # stranded line: one row before a burn rate existed, two after, and the single growth in
-    # between left the older row on screen.
-    assert len(_watch_line("07:26:12", _wide, _v, None, {"width": 200})) == 2
+    # ⚠ THE WATCHER CANNOT SPEND A SECOND ROW, so what will not fit is dropped from the
+    # right - the five-hour window is kept, because it is what the brake acts on.
+    _cut_row = _watch_line("07:26:12", _wide, _v, _long, {"width": 100})
+    assert len(_cut_row) == 1, _cut_row
+    assert "5h" in _cut_row[0] and _visible_len(_cut_row[0]) <= 100, _cut_row
+    # ...while a wide terminal keeps the note as well as everything else.
+    _room = _watch_line("07:26:12", _wide, _v, _long, {"width": 240})
+    assert len(_room) == 1 and "OAuth" in _room[0], _room
 
     # ⛔ THE MODEL-SCOPED WINDOW, against BOTH measured accounts. The rows below are the real
     # `limits[]` entries captured 2026-08-27 from an account that may NOT use Fable and one
@@ -3204,19 +3165,23 @@ def selftest():
     # the cursor was already a row lower than any arithmetic believed. ⇒ No climb at all.
     # ⚠ The bytes are asserted rather than the intent: "homed" and "homed one row too far"
     # produce the same shape and different screens.
-    # ⛔ AND IT CLEARS FIRST, EVERY TIME. Homing alone was emitted correctly - the byte stream
-    # was captured and carried no stray output and no relative move - and the owner's panel
-    # stranded a row regardless. A screen wiped before each draw has nothing left to strand.
-    assert _redraw(["a"], "<K>") == "\033[2J\033[H\ra<K>", _redraw(["a"], "<K>")
-    assert _redraw(["a", "b"], "<K>") == "\033[2J\033[H\ra<K>\n\rb<K>", _redraw(["a", "b"], "<K>")
-    # ⛔ NO RELATIVE MOVE MAY SURVIVE ANYWHERE IN IT. One `\033[1A` left behind is the whole
-    # defect back, and it would look like a cosmetic difference in a diff.
-    for _n_rows in (1, 2, 3):
-        assert "\033[1A" not in _redraw(["x"] * _n_rows, "<K>"), _n_rows
-    # ⚠ SHRINKING NEEDS NO COUNTING EITHER: the clear removes the previous draw entirely, so
-    # a draw with fewer rows cannot leave one behind. The first version padded with blank
-    # rows, and the padding had to know the previous height.
-    assert _redraw(["a", "b"], "<K>").startswith("\033[2J")
+    # ⛔ AND IT IS `\r` AND NOTHING ELSE. Four releases each removed a real way to strand a
+    # row - a startup clear, a fixed row count, auto-wrap off, an absolute home - and none of
+    # them fixed the owner's panel; the captured byte stream showed the program emitting
+    # exactly what it intended while the terminal stacked the draws anyway. ⇒ `\r` plus
+    # `\033[K` is the only pair that panel honours, and it can only rewrite ONE row.
+    # ⚠ The bytes are asserted rather than the intent: a stray escape here is invisible in a
+    # diff and fatal on screen.
+    assert _redraw(["a"], "<K>") == "\ra<K>", _redraw(["a"], "<K>")
+    for _seq in ("\033[1A", "\033[H", "\033[2J", "\n"):
+        assert _seq not in _redraw(["a"], "<K>"), _seq
+    # ⛔ AND IT REFUSES A SECOND ROW rather than drawing half of what it was handed. That is
+    # the only way a caller that changes its mind gets noticed.
+    try:
+        _redraw(["a", "b"], "<K>")
+        raise SystemExit("_redraw accepted two rows")
+    except AssertionError:
+        pass
 
     # ⭐ TWO ROWS ARE A SETTING, AND BOTH SURFACES OBEY IT. The statusline was capped at one
     # row on a BELIEF, not a limit: the documentation says "each `echo` or `print` statement
@@ -3250,11 +3215,12 @@ def selftest():
 
     # ⚠ AND THE WATCHER READS THE SAME KEY. One question, one answer: they had different ones
     # for a while and that is how two surfaces drift.
+    # ⚠ AND THE WATCHER IGNORES IT, on purpose: `two_rows` is the statusline's choice, and
+    # the watcher has no choice to make - its terminal cannot redraw a second row at all.
     _v2 = {"verdict": "GO", "pct": 55}
-    assert len(_watch_line("07:26:12", _tr, _v2, _tnote,
-                           {"width": 100, "two_rows": True})) == 2
-    assert len(_watch_line("07:26:12", _tr, _v2, _tnote,
-                           {"width": 100, "two_rows": False})) == 1
+    for _setting in (True, False):
+        assert len(_watch_line("07:26:12", _tr, _v2, _tnote,
+                               {"width": 100, "two_rows": _setting})) == 1, _setting
 
     # ⚠ A line that FITS stays on one row whatever the setting, or every display grows a
     # blank second row it does not need.
@@ -3324,7 +3290,7 @@ def selftest():
     # AFTER the reset. The owner's instruction: the words cost fourteen columns to repeat
     # what the full bar already says. ⚠ 188 minutes with 106 left, so the number printed is
     # deliberately LONGER than the window has - that is when burn-out lands, not a promise.
-    assert "3h-8m left" in _full and BAR_EMPTY not in _STRIP_ANSI.sub("", _full), _full
+    assert "3h8m left" in _full and BAR_EMPTY not in _STRIP_ANSI.sub("", _full), _full
     # ⛔ AND IT IS BAR_WIDTH + 1 WIDE, like the Ctx segment and unlike a bare bar. The three
     # usage bars carry the elapsed marker, which sits between cells and costs them a column;
     # a burn bar one narrower cannot line up beneath them however the row is indented.

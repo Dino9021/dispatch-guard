@@ -33,23 +33,50 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.43.0
+
+- ⛔ **watcher 改回「一行」，而這是終端機決定的。** 擁有者的最後一張截圖是決定性的：
+  加了「每次重畫前清整個畫面」之後，VS Code 面板**把三次完整的兩列重畫疊在一起**，
+  一份都沒被清掉。⇒ 那個面板**連 `\033[2J` 都不理**。
+  對照：在加第二列之前，那一行一直好好地原地更新。
+
+  | 指令 | 那個面板 |
+  |---|---|
+  | `\r` + `\033[K` | ✅ 有效 |
+  | `\033[1A`、`\033[H`、`\033[2J` | ⛔ 全部無效 |
+
+  ⇒ 只有「不用垂直移動」的那一組有效，而那一組只能重畫一行。**兩列在那裡做不到。**
+- ⭐ **擁有者選了「回到一行，把時間寫短讓 Burn 塞得下」。** `duration()` 從
+  `4d-0h-16m` 變成 `4d0h`（超過一天就不印分鐘 —— 四天後的一分鐘是雜訊，三小時後的不是）。
+  整行含 `Burn` 從 **141 欄降到 129 欄**。
+- ⭐ **`_redraw()` 現在只送 `\r` + 那一行 + `\033[K`，而且拿到第二列會 assert 失敗。**
+  安靜地只畫一半，是「改主意的呼叫者」最容易溜過去的方式。改完後**重新錄一次位元組**確認：
+  整條 stream 裡沒有換行、沒有任何 `\033[` 移動指令。
+- ⚠ **`Burn` 還是會被丟掉，如果面板窄於 129 欄** —— 一行就是這樣，塞不下就從右邊丟。
+- ⛔ **順手修掉我自己弄壞的東西：這個檔案裡有 22 個「真的 ESC 控制字元」。** 前面幾版的編輯
+  把 `\033` 這四個字寫成了那個位元組本身，於是 CHANGELOG 變成一個帶控制字元的檔案，
+  在畫面上看起來只是少了幾個字。⚠ 這正是「產生完要回頭讀真正被吃下去的成品」那條規則在講的事。
+
+---
+
 ## 0.42.1
 
-- ⛔ **`[H` 也不夠,而這次是把位元組錄下來才知道的。** 擁有者確認跑的是 `0.42.0`
+- ⛔ **`\033[H` 也不夠,而這次是把位元組錄下來才知道的。** 擁有者確認跑的是 `0.42.0`
   (PID 31008),畫面照樣卡一行。⇒ 把 watcher 寫到 stdout 的**每一個位元組**攔下來看:
   ```
   <ESC>[2J<ESC>[H<ESC>[?7l              ← 開場
   <ESC>[H<CR>第一列<ESC>[K<LF><CR>第二列<ESC>[K<ESC>[J   ← 每次重畫
   ```
   **沒有雜訊、沒有任何相對移動、順序完全正確。** ⇒ 程式送出去的是對的,
-  是那個終端機把 `[H` 放在跟這個行程認知不同的地方。
+  是那個終端機把 `\033[H` 放在跟這個行程認知不同的地方。
 - ⭐ **所以不再依賴「原點在哪裡」:每一次重畫之前,整個畫面清掉。** 清過的畫面上只剩這一次
   畫的東西,**沒有東西可以被卡住** —— 不管終端機怎麼想。
   ⚠ 代價是每 `--every` 秒整頁重畫一次;兩列、三十秒一次,沒有人看得出來。
   要是哪天 watcher 變成很多列又畫很快,那個小心翼翼的版本才需要回來。
-- ⚠ **我仍然不知道那個終端機為什麼不把 `[H` 當成第 1 列。** 這一版不是回答那個問題,
+- ⚠ **我仍然不知道那個終端機為什麼不把 `\033[H` 當成第 1 列。** 這一版不是回答那個問題,
   是讓那個問題不再重要 —— 連猜四次之後,這比再猜第五次有用。
-  突變殺過:把每次的清畫面拿掉 → `AssertionError('[Ha<K>')`。
+  突變殺過:把每次的清畫面拿掉 → `AssertionError('\033[H
+a<K>')`。
 
 ---
 
@@ -59,16 +86,16 @@ GATE-ERROR NameError("name 'now' is not defined")
   跑的是 `0.41.5`(PID 3224,起始 `11:01:18`),而畫面上卡住的那一行**就是 `11:01:18`** ——
   **第一次畫的那一行**。之後每一次重畫都乾乾淨淨。
   ⇒ 在第二次畫之前,游標就已經比算式以為的低一列了。**修算式永遠碰不到這個。**
-- ⭐ **改成絕對定位:每次都 `[H` 回到左上角重畫整個畫面。** `[1A` 是「從**現在**的位置
+- ⭐ **改成絕對定位:每次都 `\033[H` 回到左上角重畫整個畫面。** `\033[1A` 是「從**現在**的位置
   往上一列」,只有在沒有別人動過游標時才對 —— 而在 VS Code 面板裡,那不是這個行程管得到的
-  (截圖左邊那個 `⊙` 就是它自己加的裝飾)。`[H` 是「螢幕的第 1 列第 1 欄」,不是位移,
+  (截圖左邊那個 `⊙` 就是它自己加的裝飾)。`\033[H` 是「螢幕的第 1 列第 1 欄」,不是位移,
   所以誰動過游標、行有多寬、上次畫幾列,全部都不影響。
 - ⭐ **合法的原因是 watcher 啟動時已經清過畫面,整個畫面是它的。** 跟別人共用終端機的程式
   絕對不可以這樣做 —— 這一點寫在函式的註解裡。
-- ⭐ **結尾的 `[J` 讓「變少」也不用數。** 從游標清到畫面底部,所以列數變少不可能留下舊的;
+- ⭐ **結尾的 `\033[J` 讓「變少」也不用數。** 從游標清到畫面底部,所以列數變少不可能留下舊的;
   舊的做法是用空白列去補,而那要知道上次有幾列。
 - ⛔ **舊的 `_rewrite()` 整個刪掉了**,連同它追蹤的 `rows` 變數 —— 留著一個沒人呼叫的相對移動,
-  下次就會有人把它接回去。突變殺過:把 `[1A` 放回去 → `AssertionError('[1A
+  下次就會有人把它接回去。突變殺過:把 `\033[1A` 放回去 → `AssertionError('\033[1A
 a<K>')`。
 - ⚠ **前三次(0.41.3 清畫面、0.41.4 固定列數、0.41.5 關折行)都留著,而且都不是白做** ——
   每一個都真的修掉一種殘影,只是都不是擁有者遇到的那一種。
@@ -78,7 +105,7 @@ a<K>')`。
 ## 0.41.5
 
 - ⛔ **殘影撐過了清畫面(0.41.3)也撐過了固定列數(0.41.4)。第三個原因:終端機自己折行。**
-  一列跟面板一樣寬、或比它寬,終端機會把它折成**兩個視覺列** —— 這時 `[1A` 往上爬的是
+  一列跟面板一樣寬、或比它寬,終端機會把它折成**兩個視覺列** —— 這時 `\033[1A` 往上爬的是
   **一個視覺列**,不是一個邏輯列,`
 ` 就回到錯的那一列的開頭,被折斷的上半永遠留在畫面上。
   ⭐ 這正是 `_watch_line()` 開頭那段註解一直在講的原始缺陷,只是它假設「把行寬修好就不會發生」。
@@ -1358,9 +1385,40 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.43.0
+
+- ⛔ **The watcher is back to ONE row, and the terminal decided that.** The owner's last
+  screenshot is conclusive: with a full clear before every draw, the VS Code panel **stacked
+  three complete two-row draws**, none of them cleared. ⇒ That panel **ignores `\033[2J`
+  too**. Against that: before a second row existed, the single line updated in place perfectly.
+
+  | sequence | that panel |
+  |---|---|
+  | `\r` + `\033[K` | ✅ honoured |
+  | `\033[1A`, `\033[H`, `\033[2J` | ⛔ all ignored |
+
+  ⇒ Only the pair that needs no vertical movement works, and that pair rewrites one row.
+  **Two rows are not achievable there.**
+- ⭐ **The owner chose "one row, with the times shortened so Burn fits".** `duration()` goes
+  from `4d-0h-16m` to `4d0h` - past a day the minutes are dropped, because four days out a
+  minute is noise and three hours out it is not. The whole line with `Burn` falls from **141
+  columns to 129**.
+- ⭐ **`_redraw()` now emits `\r` + the row + `\033[K` and nothing else, and asserts on a
+  second row** rather than silently drawing half of what it was handed. The byte stream was
+  re-captured after the change: no newline and no `\033[` movement anywhere in it.
+- ⚠ **`Burn` is still dropped on a panel narrower than 129 columns** - one row means whatever
+  does not fit goes from the right.
+- ⛔ **And a defect of my own making is repaired: this file held 22 real ESC control bytes.**
+  Earlier edits wrote the byte itself where the text meant the four characters `\033`, so
+  the CHANGELOG became a file with control characters in it, looking on screen merely like a
+  few missing letters. ⚠ Exactly what the rule about reading back the artefact that is
+  actually consumed exists to catch.
+
+---
+
 ## 0.42.1
 
-- ⛔ **`[H` was not enough either, and this time the bytes were CAPTURED to find out.**
+- ⛔ **`\033[H` was not enough either, and this time the bytes were CAPTURED to find out.**
   The owner confirmed `0.42.0` was running (PID 31008) and the panel still stranded a row.
   ⇒ Every byte the watcher writes to stdout was recorded:
   ```
@@ -1368,16 +1426,17 @@ GATE-ERROR NameError("name 'now' is not defined")
   <ESC>[H<CR>row1<ESC>[K<LF><CR>row2<ESC>[K<ESC>[J      each draw
   ```
   **No stray output, no relative move anywhere, order exactly right.** ⇒ What this process
-  sends is correct; where that terminal puts `[H` is not what it believes.
+  sends is correct; where that terminal puts `\033[H` is not what it believes.
 - ⭐ **So it stops depending on where home is: the screen is cleared before EVERY draw.** A
   cleared screen holds only what this draw put there, so there is nothing left to strand,
   whatever the terminal thinks. ⚠ It costs a full repaint every `--every` seconds - two rows
   on a thirty-second interval, which nobody can see. A watcher redrawing many rows at speed
   would need the careful version back.
-- ⚠ **Why that terminal does not treat `[H` as row 1 is still unknown.** This release does
+- ⚠ **Why that terminal does not treat `\033[H` as row 1 is still unknown.** This release does
   not answer that question; it makes the answer stop mattering - which after four guesses is
   worth more than a fifth. Mutation-checked: drop the per-draw clear and
-  `AssertionError('[Ha<K>')` fires.
+  `AssertionError('\033[H
+a<K>')` fires.
 
 ---
 
@@ -1388,20 +1447,20 @@ GATE-ERROR NameError("name 'now' is not defined")
   `11:01:18`) and the stranded row **is `11:01:18`** — the FIRST draw. Every later redraw is
   clean. ⇒ The cursor was already a row lower than the arithmetic believed before the second
   draw ever ran, and **fixing the arithmetic can never reach that**.
-- ⭐ **Absolute positioning instead: `[H` and redraw the whole screen, every time.**
-  `[1A` means "up one row from WHEREVER THE CURSOR IS", which is correct only while
+- ⭐ **Absolute positioning instead: `\033[H` and redraw the whole screen, every time.**
+  `\033[1A` means "up one row from WHEREVER THE CURSOR IS", which is correct only while
   nothing else has moved it - and inside a VS Code panel that is not this process's to control
-  (the `⊙` at the left of the owner's screenshot is the terminal's own decoration). `[H`
+  (the `⊙` at the left of the owner's screenshot is the terminal's own decoration). `\033[H`
   is row 1 column 1 of the screen, not a displacement, so it does not matter what moved the
   cursor, how wide the rows were, or how many were drawn last time.
 - ⭐ **It is legitimate only because the watcher cleared the screen at startup and owns it.**
   A program sharing a terminal must never do this, and the function says so.
-- ⭐ **`[J` at the end makes shrinking safe without counting.** It erases from the cursor
+- ⭐ **`\033[J` at the end makes shrinking safe without counting.** It erases from the cursor
   to the bottom of the screen; the old code padded with blank rows, and the padding had to
   know the previous height.
 - ⛔ **`_rewrite()` is deleted outright**, along with the `rows` counter it needed. Leaving an
-  uncalled relative move in the file is how it comes back. Mutation-checked: put `[1A`
-  back and `AssertionError('[1A
+  uncalled relative move in the file is how it comes back. Mutation-checked: put `\033[1A`
+  back and `AssertionError('\033[1A
 a<K>')` fires.
 - ⚠ **The three earlier fixes stay, and none was wasted** — the startup clear (0.41.3), the
   fixed row count (0.41.4) and wrapping off (0.41.5) each remove a real way to strand a row.
@@ -1413,7 +1472,7 @@ a<K>')` fires.
 
 - ⛔ **The residue survived the clear (0.41.3) and the fixed row count (0.41.4). Third cause:
   the terminal's own line wrapping.** A row as wide as the panel - or wider - is wrapped by the
-  TERMINAL onto two visual rows, and `[1A` then climbs one VISUAL row rather than one
+  TERMINAL onto two visual rows, and `\033[1A` then climbs one VISUAL row rather than one
   logical one: `
 ` returns to the start of the wrong row and the top half stays on screen for
   ever. ⭐ This is the original defect the comment at the head of `_watch_line()` describes; it

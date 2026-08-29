@@ -681,19 +681,17 @@ claude plugin install dispatch-guard@dispatch-guard --config announce_unattended
 
 `Burn` 回答一個問題：**照現在這個速度，我還有多久會撞到 100%。**
 
-⭐ **在 watcher（VS Code 擴充套件看的那個）裡，它有自己的一行**，接在 `Fable` 後面換行：
-
 ```
-09:35:01  5h ░┃░░░░░░░░ 5% 4h-24m  7d ▓▓▓▓┃▓░░░░ 51% 4d-1h-24m  Fable ▓▓▓░┃░░░░░ 31% 4d-1h-24m  GO
-        Burn ▓▓▓▓▓▓▓▓▓▓ 0.13%/m · 11h-52m left
+11:23:40  5h ▓▓░░░┃░░░░ 27% 2h29m  7d ▓▓▓▓┃▓░░░░ 53% 3d23h  Fable ▓▓▓░┃░░░░░ 31% 3d23h  Burn ▓▓▓▓▓▓▓▓▓▓ 0.40%/m · 3h3m left  GO
 ```
 
-⭐ **兩條 bar 對齊在同一欄。** 第二列的縮排是**算出來的**，不是照時間戳寬度縮 ——
-`5h` 和 `Burn` 字數不同，照時間戳縮的話 bar 會差兩欄。
-⚠ `Burn` 的 bar 也多畫一格：另外三條帶著 `┃` 標記，那個標記卡在格子中間，多佔一欄。
+⛔ **watcher 是「一行」，而那是終端機決定的，不是喜好問題。** 第二行只能靠「把游標往上移」
+才有辦法重畫，而 VS Code 的終端機面板**完全不理會任何垂直移動** —— 量了四個版本才確定，
+最後把 watcher 寫出去的每一個位元組錄下來:程式送的完全正確,那個面板照樣把三次重畫疊起來。
+⇒ 只有 `\r`（回到行首）加 `\033[K`（清掉這一行）是有效的,而那一組只能重畫**一行**。
 
-⚠ **CLI 狀態列不換行，那是刻意的,不是做不到。** Claude Code 的狀態列**可以**兩列
-（量過:它會把輸出照換行切開來數），這裡只是沒叫它換 —— 擁有者要求 CLI 那邊不要動。
+⚠ **所以時間寫得比較短**（`3d23h`，不是 `3d-23h-16m`）—— 一行上每一欄都在決定
+`Burn` 畫不畫得下。整行含 `Burn` 是 **129 欄**。面板窄於這個數字,`Burn` 就會被丟掉。
 
 **怎麼讀：**
 
@@ -2161,22 +2159,20 @@ it is a loop in a terminal, and nothing feeds it a payload.
 
 `Burn` answers one question: **at this rate, how long until I hit 100%.**
 
-⭐ **In the watcher — what the VS Code extension shows — it gets a row of its own**, breaking
-after the last usage window:
-
 ```
-09:35:01  5h ░┃░░░░░░░░ 5% 4h-24m  7d ▓▓▓▓┃▓░░░░ 51% 4d-1h-24m  Fable ▓▓▓░┃░░░░░ 31% 4d-1h-24m  GO
-        Burn ▓▓▓▓▓▓▓▓▓▓ 0.13%/m · 11h-52m left
+11:23:40  5h ▓▓░░░┃░░░░ 27% 2h29m  7d ▓▓▓▓┃▓░░░░ 53% 3d23h  Fable ▓▓▓░┃░░░░░ 31% 3d23h  Burn ▓▓▓▓▓▓▓▓▓▓ 0.40%/m · 3h3m left  GO
 ```
 
-⭐ **The two bars sit in one column.** The second row's indent is COMPUTED rather than copied
-from the timestamp: `5h` and `Burn` are different lengths, so indenting by the timestamp put the
-bars two columns apart. ⚠ The burn bar is drawn one cell wider too — the other three carry the
-`┃` marker, which sits between cells and costs them a column.
+⛔ **The watcher is ONE row, and the terminal decided that, not a preference.** A second row can
+only be redrawn by moving the cursor UP, and a VS Code terminal panel ignores every vertical
+move — established across four releases and then settled by capturing every byte the watcher
+writes: the program emitted exactly what it intended and that panel stacked three complete
+redraws anyway. ⇒ `\r` (back to the start of the line) plus `\033[K` (clear it) is the only pair
+it honours, and that pair can rewrite one row.
 
-⚠ **The CLI statusline does not break, and that is a choice rather than a limit.** A statusline
-CAN be two rows — measured: Claude Code splits the command's output on newlines and counts them —
-it is simply not asked to, because the owner asked for the CLI side to stay as it was.
+⚠ **Which is why the times are short** (`3d23h`, not `3d-23h-16m`) — on a single row every
+column decides whether `Burn` is drawn at all. The whole line with `Burn` is **129 columns**;
+a panel narrower than that drops it.
 
 **How to read it:**
 
