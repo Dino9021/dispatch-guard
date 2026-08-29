@@ -75,6 +75,12 @@ failure into two confusing ones.
 - It does not bump the version. Publish whatever the private `plugin.json` says.
 - It does not touch the private repository at all.
 - It does not delete `Memory/` from anywhere. It only declines to copy it.
+- **It does not commit the public `.gitignore` after the first time.** It stages that file
+  only on a run that ADDS a missing rule, and `PUBLIC_OWNED` drops it from both sides of the
+  mirror, so it never appears in `added` either. ⛔ Setting up a public folder from scratch
+  therefore needs one commit of it by hand — and while the file is untracked it **ignores
+  itself**, so `git status` shows nothing and `git add -f` is required. This repository's
+  public folder has it tracked already; a new one would not.
 
 ## If it refuses
 

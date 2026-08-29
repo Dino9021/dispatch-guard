@@ -224,8 +224,18 @@ def main(argv):
         print("files to delete : %d" % len(removed))
         for f in removed[:20]:
             print("   - %s" % f)
-        print("Memory/ in the publish set: %d  (must be 0)"
-              % len([f for f in new if f.split("/", 1)[0] in EXCLUDE_TOP]))
+        # ⛔ THE LITERAL "Memory" IS DELIBERATE - do NOT rewrite this to use EXCLUDE_TOP.
+        # It did use EXCLUDE_TOP, and that made the line decoration rather than a check: a
+        # mutation run with EXCLUDE_TOP emptied put Memory/notes/... in the add list AND still
+        # printed 0, because the counter was asking the same variable that had just failed to
+        # filter. A guard measured with the instrument under test cannot fail.
+        # ⚠ And it refuses, rather than printing a number nobody reads.
+        leaked = sorted(f for f in new if f.split("/", 1)[0] == "Memory")
+        print("Memory/ in the publish set: %d  (must be 0)" % len(leaked))
+        if leaked:
+            for f in leaked[:10]:
+                print("   ⛔ %s" % f)
+            die("refusing to publish - the private work log reached the publish set")
 
         if not (added or changed or removed or gitignore_added):
             print("\nnothing to publish - the snapshot already matches %s." % sha)

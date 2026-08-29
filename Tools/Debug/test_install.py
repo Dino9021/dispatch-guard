@@ -374,6 +374,36 @@ def main():
         assert "No usage terminal will open" not in out, (
             "an old-label task was reported as absent:%s%s" % (chr(10), out))
 
+    # ⛔ A LAUNCHER LEFT ON AN OLDER COPY MUST BE REPORTED. `claude plugin update` leaves the
+    # previous directory in place, so the shim's recorded path still EXISTS and every other
+    # check here passes while the VS Code watcher runs old code - measured for real, the
+    # watcher kept drawing the previous version's line after a successful update.
+    # ⚠ And the opposite must stay quiet, or running --status out of a development checkout
+    # would cry stale on every run.
+    with scratch_dir("shim-points-at-an-older-copy") as tmp:
+        import contextlib
+        import io as _io
+        mod = load_install_module(tmp)
+        # ⚠ The module writes its OWN shim rather than the test importing hooks/shim.py -
+        # importing it here left a `shim` in sys.modules that a LATER check then picked up
+        # instead of loading its own, and that check failed for a reason nothing named.
+        mod.write_shim()
+
+        def say(installed):
+            buf = _io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                mod._shim_version_line(installed)
+            return buf.getvalue()
+
+        newer = os.path.join(tmp, "cache", "0.41.0")
+        os.makedirs(newer)
+        out = say(newer)
+        assert "launcher (shim)" in out, "an older shim was not reported:%s%s" % (chr(10), out)
+        assert "NEW Claude session" in out, "it did not name the repair:%s%s" % (chr(10), out)
+        # ...and when the shim already names the installed copy there is nothing to say.
+        quiet = say(mod.HERE)
+        assert quiet == "", "a current shim was reported as stale: %r" % quiet
+
     print("ok - --check neither wrote nor removed anything, and said so")
 
 

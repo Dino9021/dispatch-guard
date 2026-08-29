@@ -33,6 +33,56 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.41.3
+
+- ⭐ **watcher 啟動時清一次畫面,舊行程留下的殘影不再卡在上面。** 擁有者的截圖:一列的舊版
+  draw 卡在兩列的新版 draw 上面,看起來像「兩列壞掉」。⛔ **那不是重繪的 bug** ——
+  1 列→2 列的成長本來就是原地覆蓋(`a<K>
+b<K>`,而且早就釘住了)。
+  問題是那一行是**上一個行程**留下的:會重繪的 watcher 只搆得到自己起始的那一列,
+  上面那列一輩子搆不到。
+- ⭐ **清畫面只發生在「會重繪」的模式。** 一個一直覆蓋自己那一列的畫面,scrollback 本來就沒意義;
+  要保留歷史的人用 `--scroll`,那條路徑**一個位元組都不輸出**。
+  ⚠ 代價是連工作的 `Executing task` 標頭也一起清掉 —— 所以它綁在「會重繪」而不是無條件執行。
+  突變殺過:讓它回傳空字串 → `AssertionError('')`。
+
+---
+
+## 0.41.2
+
+- ⭐ **兩列的 bar 對齊了。** 擁有者:「可以將圖表對齊嗎?」以前第二列是照**時間戳寬度**縮排的,
+  而那對不齊任何東西 —— `5h` 兩個字、`Burn` 四個字,bar 就差兩欄,兩列看起來像不相干的兩行。
+  現在縮排是**從字串量出來的**(找第一個 bar 字元在第幾欄),所以以後多一個新標籤也不用改這裡。
+- ⭐ **`Burn` 的 bar 也加寬一格,變成 `BAR_WIDTH + 1`** —— 跟 `Ctx` 一樣。另外三條帶著 `┃`
+  標記,那個標記卡在格子中間,害它們多佔一欄;窄一格的 bar 不管怎麼縮排都對不齊。
+  ⚠ **只比對齊欄位抓不到這個** —— 兩條 bar 起點一樣、終點不一樣。所以是分開釘的。
+  兩個都突變殺過:縮排改回照時間戳 → `not in one column: 13 vs 15`;寬度改回 `BAR_WIDTH` →
+  `AssertionError((9, 'Burn ...'))`。
+- ⛔ **收回一個我在 0.41.0 寫錯的說法。** 那一版的註解、CHANGELOG 和 README 都說
+  「CLI 狀態列只有一列,第二列會被丟掉」—— **那是錯的。** 同一個檔案裡的 `line_rows()`
+  早就從出貨的 binary 量過:Claude Code 會把輸出照換行切開來數,狀態列**可以**兩列。
+  正確的理由是**擁有者要求 CLI 那邊不要動**,不是平台做不到。三處都改了。
+
+---
+
+## 0.41.1
+
+- ⛔ **`--status` 現在會說「你的 watcher 在跑舊版」。** 擁有者更新了外掛,畫面卻還是舊的那一行。
+  原因:`claude plugin update` 會把**舊資料夾留在原地**,而 shim 記的是一個確切路徑,
+  只有在那個路徑**不見了**才會自己找新的 —— 於是它永遠不會換。
+  ⚠ **當時每一項檢查都是綠的**:工作是最新的(它的指令裡沒有版本號)、狀態列是最新的、
+  shim 記的路徑確實存在。沒有人問的那一個問題是「它是不是**最新的那一份**」。
+- ⭐ **修法是「開一個新的 Claude session」,不是重開 VS Code,也不是重裝。** gate 在 session
+  開始時就會把 shim 指回來。⚠ 然後要**重開 watcher 終端機**,跑著的行程不會自己換程式碼。
+  這兩句話現在就印在那一行警告底下 —— 沒有動作可做的警告等於沒有警告。
+- ⭐ **它只報告,不修。** `--status` 是唯讀指令,在裡面順手修好會讓下一次執行跟這一次不一樣,
+  而讀的人看不出為什麼。
+- ⚠ **從開發 checkout 跑 `--status` 不會誤報** —— 比對的對象是**已安裝的那一份**,不是這支腳本
+  所在的資料夾。那是既有 VS Code 工作檢查早就踩過的同一個坑。
+  突變殺過:把那個比對改成永遠相等 → `an older shim was not reported`。
+
+---
+
 ## 0.41.0
 
 - ⭐ **`outlasts reset` 改成一律顯示時間。** 擁有者的指示:「文字敘述佔欄寬又不容易理解」。
@@ -1221,6 +1271,67 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.41.3
+
+- ⭐ **The watcher clears the terminal once at startup, so the previous run's line is not
+  stranded above the new one.** From the owner's screenshot: a one-row draw from the old
+  version sitting above a two-row draw from the new one, which reads as the two-row layout
+  being broken. ⛔ **It is not a rewrite bug** — 1-to-2 growth overwrites row one in place
+  (`a<K>
+b<K>`, pinned long before this). The stranded line belonged to a DIFFERENT
+  PROCESS: a rewriting watcher can only reach the row it starts on, and that line is above it.
+- ⭐ **The clear happens only in rewriting mode.** A surface that overwrites its own row has no
+  scrollback worth keeping; anyone who wants the history passes `--scroll`, and that path emits
+  nothing at all from here. ⚠ The cost is that it takes the task's `Executing task` header with
+  it, which is why it is tied to rewriting rather than done unconditionally.
+  Mutation-checked: return an empty string and `AssertionError('')` fires.
+
+---
+
+## 0.41.2
+
+- ⭐ **The two rows' bars now sit in one column.** The owner asked for the charts to line up.
+  The second row used to be indented by the TIMESTAMP's width, which aligns nothing: `5h` is
+  two characters and `Burn` is four, so the bars landed two columns apart and the rows read as
+  two unrelated lines. The indent is now MEASURED from the strings (where the first bar glyph
+  falls), so a new label needs nothing added here.
+- ⭐ **The burn bar is drawn `BAR_WIDTH + 1` wide**, like `Ctx`. The other three carry the `┃`
+  marker, which sits between cells and costs them a column; a bar one narrower cannot line up
+  beneath them however the row is indented. ⚠ **Column equality does not catch this** — both
+  bars start in the same place and end in different ones — so it is pinned separately. Both
+  mutation-checked: indent back to the timestamp → `not in one column: 13 vs 15`; width back to
+  `BAR_WIDTH` → `AssertionError((9, 'Burn ...'))`.
+- ⛔ **A claim from 0.41.0 is withdrawn.** Its comments, CHANGELOG and README all said the CLI
+  statusline gets one row and a second would be thrown away. **That is wrong.** `line_rows()`,
+  in the same file, had already measured out of the shipped binary that Claude Code splits the
+  command's output on newlines and counts them — a statusline MAY be two rows. The real reason
+  the statusline does not split is the owner's instruction to leave the CLI side alone. Fixed
+  in all three places.
+
+---
+
+## 0.41.1
+
+- ⛔ **`--status` can now say "your watcher is running an older copy".** The owner updated the
+  plugin and the display kept drawing the previous version's line. Cause: `claude plugin update`
+  **leaves the old directory in place**, and the shim records an exact path and only falls back
+  to the newest copy when the recorded one is GONE — so it never falls back.
+  ⚠ **Every check was green while that was true**: the task is current (its command carries no
+  version), the statusline is current, the recorded path exists. The question nobody asked is
+  whether it is the NEWEST one.
+- ⭐ **The repair is a NEW Claude session** — not a VS Code restart and not a reinstall. The gate
+  repoints the shim at session start. ⚠ Then restart the watcher terminal, because a running
+  process does not reload its code. Both sentences are printed under the warning: a warning with
+  no move to make is not a warning.
+- ⭐ **It reports and never repairs.** `--status` is read-only, and fixing something from inside
+  it would make the next run disagree with this one for reasons the reader cannot see.
+- ⚠ **Running `--status` from a development checkout does not false-alarm** — the comparison is
+  against the INSTALLED copy, not the directory this script sits in. That is the same trap the
+  VS Code task check already learned. Mutation-checked: make the comparison always equal and
+  `an older shim was not reported` fires.
 
 ---
 

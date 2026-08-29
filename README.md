@@ -685,10 +685,15 @@ claude plugin install dispatch-guard@dispatch-guard --config announce_unattended
 
 ```
 09:35:01  5h ░┃░░░░░░░░ 5% 4h-24m  7d ▓▓▓▓┃▓░░░░ 51% 4d-1h-24m  Fable ▓▓▓░┃░░░░░ 31% 4d-1h-24m  GO
-          Burn ▓▓▓▓▓▓▓▓▓ 0.13%/m · 11h-52m left
+        Burn ▓▓▓▓▓▓▓▓▓▓ 0.13%/m · 11h-52m left
 ```
 
-⛔ **CLI 狀態列不換行** —— Claude Code 只給它一列，第二列會被丟掉，所以那邊 `Burn` 還是接在後面。
+⭐ **兩條 bar 對齊在同一欄。** 第二列的縮排是**算出來的**，不是照時間戳寬度縮 ——
+`5h` 和 `Burn` 字數不同，照時間戳縮的話 bar 會差兩欄。
+⚠ `Burn` 的 bar 也多畫一格：另外三條帶著 `┃` 標記，那個標記卡在格子中間，多佔一欄。
+
+⚠ **CLI 狀態列不換行，那是刻意的,不是做不到。** Claude Code 的狀態列**可以**兩列
+（量過:它會把輸出照換行切開來數），這裡只是沒叫它換 —— 擁有者要求 CLI 那邊不要動。
 
 **怎麼讀：**
 
@@ -2161,11 +2166,17 @@ after the last usage window:
 
 ```
 09:35:01  5h ░┃░░░░░░░░ 5% 4h-24m  7d ▓▓▓▓┃▓░░░░ 51% 4d-1h-24m  Fable ▓▓▓░┃░░░░░ 31% 4d-1h-24m  GO
-          Burn ▓▓▓▓▓▓▓▓▓ 0.13%/m · 11h-52m left
+        Burn ▓▓▓▓▓▓▓▓▓▓ 0.13%/m · 11h-52m left
 ```
 
-⛔ **The CLI statusline does not break** — Claude Code renders one row and a second would be
-thrown away, so there `Burn` stays inline.
+⭐ **The two bars sit in one column.** The second row's indent is COMPUTED rather than copied
+from the timestamp: `5h` and `Burn` are different lengths, so indenting by the timestamp put the
+bars two columns apart. ⚠ The burn bar is drawn one cell wider too — the other three carry the
+`┃` marker, which sits between cells and costs them a column.
+
+⚠ **The CLI statusline does not break, and that is a choice rather than a limit.** A statusline
+CAN be two rows — measured: Claude Code splits the command's output on newlines and counts them —
+it is simply not asked to, because the owner asked for the CLI side to stay as it was.
 
 **How to read it:**
 

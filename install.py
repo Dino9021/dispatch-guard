@@ -563,6 +563,12 @@ def status():
             print("                        run from somewhere else; the installed one is:")
             print("                        %s" % rec)
     ok = ok and bool(found) and bool(enabled.get(found))
+    # ⛔ ASKED AFTER `elsewhere` IS KNOWN, and asked against the INSTALLED copy rather than
+    # HERE. Running --status out of a development checkout is normal and is already reported
+    # two lines up; comparing the shim with the checkout would call a perfectly good launcher
+    # stale every time, which is the same false alarm the VS Code task check exists to avoid.
+    _shim_version_line(installed.get(found) and
+                       (installed[found][0].get("installPath") or "") or None)
 
     stamps = sorted(glob.glob(os.path.join(STATE_DIR, "state", "*.start")),
                     key=lambda p: os.path.getmtime(p), reverse=True)
@@ -1536,6 +1542,59 @@ def main():
                            check_only="--check" in argv)
     return statusline_install(argv)
 
+
+def _shim_version_line(installed_path=None):
+    """Say so when the launcher still names an older installed copy.
+
+    ⛔ THE FAILURE THIS EXISTS FOR, and it cost an afternoon. `claude plugin update` installs
+    the new version and LEAVES THE OLD DIRECTORY BEHIND. The shim records an exact path and
+    only falls back to the newest copy when the recorded one is GONE - so it never falls
+    back, and the VS Code watcher goes on running the old code for ever. ⚠ Every check here
+    passed while that was true: the task is current (its command has no version in it), the
+    statusline is current, the recorded path EXISTS. The one question nobody was asking is
+    whether it is the NEWEST one.
+
+    ⭐ THE REPAIR IS A NEW SESSION, not a reinstall and not a VS Code restart: the gate calls
+    shim.write() at session start, which repoints it. So this line names that, because a
+    warning without the move to make is a warning nobody can act on.
+
+    ⚠ It reports and never repairs. --status is a read-only command and a person runs it to
+    find out what is true; repairing from inside it would make the next run disagree with
+    this one for reasons the reader cannot see.
+    """
+    try:
+        import sys as _sys
+        _sys.path.insert(0, os.path.join(HERE, "hooks"))
+        import shim as _shim                              # noqa: E402
+        rec = _shim.recorded(STATE_DIR)
+    except Exception:
+        return                                # no shim yet is not a finding; --all writes one
+    if not rec:
+        return
+    # ⚠ Compared by DIRECTORY, not by parsing a version out of the path. A version string is
+    # this plugin's own convention today; the directory either is the running copy or is not,
+    # and that is the question.
+    want = (installed_path or HERE).replace(chr(92), "/").rstrip("/")
+    if rec.rstrip("/") == want:
+        return
+    peers = os.path.dirname(rec)
+    newest = None
+    try:
+        names = sorted(os.listdir(peers))
+        newest = names[-1] if names else None
+    except OSError:
+        pass
+    print("launcher (shim)     : ⚠ points at %s" % rec)
+    print("                      but the INSTALLED copy is %s" % want)
+    print("                      Anything started through the shim - the VS Code watcher")
+    print("                      above, the statusline - runs the OTHER one. `plugin")
+    print("                      update` leaves the old directory in place, so nothing")
+    print("                      else here can notice.")
+    print("                      Fix: open a NEW Claude session (not a VS Code restart);")
+    print("                      the gate repoints it at session start. Then restart the")
+    print("                      watcher terminal so it reloads.")
+    if newest:
+        print("                      newest installed copy: %s" % newest)
 
 def _utf8_console():
     """Make output survive a legacy console codepage.

@@ -1379,6 +1379,24 @@ def _window(label, win, now, cfg=None, window_secs=None, stale=False):
 SLEEP_WORD = "SLEEP"
 
 
+def _watch_open(scroll):
+    """The bytes to emit once, before the first draw. Empty when scrolling.
+
+    ⛔ THE RESIDUE THIS REMOVES IS NOT THIS PROCESS'S. A rewriting watcher overwrites its own
+    row for ever, so the row it starts on is the only one it can reach - and the line left
+    behind by the PREVIOUS run sits above that, out of reach, for the life of the terminal.
+    Seen in a screenshot: a one-row draw from the old version stranded above a two-row draw
+    from the new one, which reads as the two-row layout being broken when it is not.
+
+    ⭐ CLEARING IS SAFE HERE PRECISELY BECAUSE IT REWRITES. A surface that rewrites one row
+    has no scrollback worth keeping; anybody who wants the history passes `--scroll`, and
+    that path emits nothing from here. ⚠ It also takes the task's "Executing task" header
+    with it, which is the cost, and the reason this is tied to rewriting rather than done
+    unconditionally.
+    """
+    return "" if scroll else "\033[2J\033[H"
+
+
 def _rewrite(prev_rows, lines, erase="\033[K"):
     """The bytes that redraw `lines` in place over a previous draw of `prev_rows` rows.
 
@@ -1449,8 +1467,9 @@ def _watch_line(stamp, data, v, note, cfg, idle=False, burn=None):
     # ⛔ THE SPLIT IS FORCED ONLY WHEN THERE IS A BURN SEGMENT TO MOVE. Forcing it
     # unconditionally would push the note and the model onto a second row on a wide
     # terminal, which nobody asked for and which the existing checks pin.
-    # ⚠ WATCHER ONLY. _line() - the CLI statusline - does not pass always_split, because
-    # Claude Code renders one row and a second would be discarded.
+    # ⚠ WATCHER ONLY, by the owner's instruction - not because the statusline cannot do it.
+    # line_rows() measured that Claude Code splits the command's output on newlines and
+    # counts them, so a statusline may be two rows; it simply is not asked to spend one.
     split = bool(windows) and windows[-1].startswith("Burn")
     if split:
         extras.insert(0, windows.pop())
@@ -1568,16 +1587,17 @@ def _rows(windows, extras, width, head="", tail="", two_rows=True, always_split=
 
     ⭐ `always_split` spends the second row even when everything WOULD fit. The watcher asks
     for it so the burn gauge has a fixed home instead of appearing and vanishing with the
-    terminal width - a segment that moves is a segment nobody trusts. ⛔ It is not a
-    statusline option: that surface gets ONE row from Claude Code and a second would be
-    thrown away.
+    terminal width - a segment that moves is a segment nobody trusts. ⚠ The statusline does
+    NOT ask for it, and the reason is the owner's instruction rather than a platform limit:
+    a statusline CAN be two rows - see line_rows(), where that was measured out of the
+    shipped binary - it simply is not made to spend one it does not need.
     """
     if not width:
         # ⚠ A forced split has to survive here too, or the second row would appear only on
         # terminals whose width could be detected - which is the machines, not the intent.
         if always_split and two_rows and extras:
             return [head + _fit(windows, None) + tail,
-                    " " * _visible_len(head) + _fit(extras, None)]
+                    " " * _second_row_indent(head, windows, extras) + _fit(extras, None)]
         return [head + _fit(windows + extras, None) + tail]
     one = head + _fit(windows + extras, None) + tail
     if not always_split and _visible_len(one) <= width:
@@ -1589,9 +1609,41 @@ def _rows(windows, extras, width, head="", tail="", two_rows=True, always_split=
                                  - _visible_len(tail)) + tail, width)]
     room = width - _visible_len(head) - _visible_len(tail)
     first = _cut(head + _fit(windows, room) + tail, width)
-    pad = " " * _visible_len(head)
+    pad = " " * _second_row_indent(head, windows, extras)
     second = _cut(pad + _fit(extras, width - len(pad)), width)
     return [first, second] if second.strip() else [first]
+
+
+def _bar_col(part):
+    """Which column a segment's bar starts in, or None if it has no bar.
+
+    ⚠ ANSI first. A coloured segment carries escape bytes before the bar, and counting those
+    as columns puts the answer several places to the right of where the eye sees it.
+    """
+    plain = _STRIP_ANSI.sub("", part or "")
+    for i, ch in enumerate(plain):
+        if ch in (BAR_FULL, BAR_EMPTY, BAR_MARK, "─"):
+            return i
+    return None
+
+
+def _second_row_indent(head, windows, extras):
+    """Columns of padding that put the second row's bar under the first row's bar.
+
+    ⛔ THE OLD RULE WAS "indent by the head", and it does not align anything: the labels are
+    different lengths (`5h` against `Burn`), so the bars landed two columns apart and the
+    two rows read as two unrelated lines. ⭐ Measured from the STRINGS rather than from a
+    table of label widths, so a new label needs nothing added here.
+
+    ⚠ Never negative, and never less than nothing: a second row pulled left of column zero
+    would collide with the timestamp above it rather than line up with it.
+    """
+    base = _visible_len(head)
+    top, bottom = _bar_col(windows[0] if windows else None), _bar_col(extras[0] if extras
+                                                                     else None)
+    if top is None or bottom is None:
+        return base
+    return max(0, base + top - bottom)
 
 
 def _cut(text, width):
@@ -1640,10 +1692,15 @@ def _burn_part(burn, remain, rate, cfg, stale=False):
     if stale or burn is None or not remain:
         # ⚠ `--` matches every other segment's "no usable number", and the dashes are a
         # different glyph from an empty bar on purpose.
-        return "Burn %s %s" % ("─" * BAR_WIDTH, "--")
+        return "Burn %s %s" % ("─" * (BAR_WIDTH + 1), "--")
     ratio = burn / float(remain)
-    filled = min(BAR_WIDTH, int(round(min(ratio, 1.0) * BAR_WIDTH)))
-    bar = BAR_FULL * filled + BAR_EMPTY * (BAR_WIDTH - filled)
+    # ⚠ BAR_WIDTH + 1, exactly like the Ctx segment. The three usage bars carry the elapsed
+    # marker, which sits BETWEEN cells and so costs them one extra column; a bar without one
+    # is a column narrower and will not line up under them. Widening here is what lets the
+    # watcher's second row sit squarely beneath the first.
+    width = BAR_WIDTH + 1
+    filled = min(width, int(round(min(ratio, 1.0) * width)))
+    bar = BAR_FULL * filled + BAR_EMPTY * (width - filled)
     if on is None:
         key = "ok" if ratio >= 1 else ("alarm" if ratio < 0.5 else "warn")
         on, off = ANSI[key], ANSI["reset"]
@@ -2294,6 +2351,12 @@ def watch(sdir, cfg, argv):
     ERASE_TO_EOL = "\033[K"        # so a shorter line cannot leave the old tail behind
     drawn_idle = False             # has this quiet spell's SLEEP line been drawn already?
     rows = 1                       # how many rows the last draw occupied; see the write below
+    # ⛔ ONCE, BEFORE ANYTHING IS DRAWN. See _watch_open(): the line the previous run left
+    # behind is above the row this one can reach, so nothing later can remove it.
+    opening = _watch_open(scroll)
+    if opening:
+        sys.stdout.write(opening)
+        sys.stdout.flush()
     try:
         while True:
             # ⭐ Pause the FETCH when nobody is working - never the redraw. A frozen
@@ -2740,6 +2803,14 @@ def selftest():
     assert len(_two) == 2, _two
     assert "Burn" not in _two[0] and "Burn" in _two[1], _two
     assert "5h" in _two[0] and "GO" in _two[0], _two[0]
+    # ⛔ AND THE TWO BARS SIT IN THE SAME COLUMN. Indenting the second row by the timestamp
+    # was the old rule and it aligned nothing: `5h` and `Burn` are different lengths, so the
+    # bars landed two columns apart and the rows read as two unrelated lines. ⚠ The widths
+    # have to match too - the usage bars carry the elapsed marker, which costs them a column
+    # a plain bar does not have, so _burn_part draws BAR_WIDTH + 1.
+    assert _bar_col(_two[0]) == _bar_col(_two[1]), (
+        "the bars are not in one column: %r vs %r"
+        % (_bar_col(_two[0]), _bar_col(_two[1])))
     # ...and both rows still fit, at every width, which is the defect this area exists for.
     for _w in (200, 150, 120, 100, 80, 60, 40, 25):
         for _idle in (True, False):
@@ -3069,6 +3140,14 @@ def selftest():
     # the watcher and overwrites it, and every later 1-to-2 growth eats another line.
     # ⚠ The bytes are asserted rather than the intent, because "moved up by one" and "moved
     # up by one too many" produce the same shape and different screens.
+    # ⛔ THE OPENING CLEAR, and which surface gets it. A rewriting watcher cannot reach the
+    # row above the one it starts on, so the previous run's last line would sit there for
+    # ever - the screenshot that prompted this showed exactly that, and it reads as the
+    # two-row layout being broken. ⚠ Scrolling must emit NOTHING: that mode exists to keep
+    # history, and clearing it would throw away the thing it was chosen for.
+    assert _watch_open(False) == "\033[2J\033[H", _watch_open(False)
+    assert _watch_open(True) == "", _watch_open(True)
+
     _r, _n = _rewrite(1, ["a"], "<K>")
     assert _r == "\ra<K>" and _n == 1, (_r, _n)
     # ⭐ GROWING NEEDS NO CLIMB: row 1 lands on the row the cursor is on, and the newline
@@ -3191,6 +3270,14 @@ def selftest():
     # what the full bar already says. ⚠ 188 minutes with 106 left, so the number printed is
     # deliberately LONGER than the window has - that is when burn-out lands, not a promise.
     assert "3h-8m left" in _full and BAR_EMPTY not in _STRIP_ANSI.sub("", _full), _full
+    # ⛔ AND IT IS BAR_WIDTH + 1 WIDE, like the Ctx segment and unlike a bare bar. The three
+    # usage bars carry the elapsed marker, which sits between cells and costs them a column;
+    # a burn bar one narrower cannot line up beneath them however the row is indented.
+    # ⚠ Column equality alone does NOT catch this - both start in the same place and end in
+    # different ones - so it is asserted separately. Mutation-checked: BAR_WIDTH here and the
+    # alignment check still passes while the rows visibly disagree.
+    _glyphs = [c for c in _STRIP_ANSI.sub("", _full) if c in (BAR_FULL, BAR_EMPTY, BAR_MARK)]
+    assert len(_glyphs) == BAR_WIDTH + 1, (len(_glyphs), _full)
     assert "outlasts" not in _full and ANSI["ok"] in _full, _full
     assert "left" in _half and ANSI["warn"] in _half, _half
     assert ANSI["alarm"] in _dry, _dry
