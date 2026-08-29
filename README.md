@@ -90,12 +90,19 @@ skill 是模型看了描述之後**自己決定**要不要用；文件是模型*
 誠實列出的缺口、以及續跑怎麼運作。
 ⭐ **這份文件只描述現在的行為。** 什麼時候變的、為什麼變，在 **[CHANGELOG.md](CHANGELOG.md)**。
 
-⭐ **要驗證這份 repo：`python Tools/Debug/test_all.py`。** 它跑完八項檢查並回傳一個結束碼。
+⭐ **要驗證這份 repo：`python Tools/Debug/test_all.py`。** 它跑完十一項檢查並回傳一個結束碼。
 ⚠ 每一項都只針對「已經真的發生過、而且是安靜的」那種 bug —— 不是為了覆蓋率。
 它們不碰 `~/.claude`、不花 API 額度、也不會建立排程工作。
 ⭐ **產生的每一個檔案都關在 `Tools/Debug/scratch/`**（已 gitignore，而且跑完不刪 ——
 檢查失敗時它寫了什麼還在那裡）。⛔ 跑完之後 `git status` 必須是乾淨的，
 那本身就是「測試沒有寫到外面」的檢查。
+
+⭐ **`python Tools/Debug/burn_band_fit.py` —— 檢查 Burn 錶的顏色分段還準不準。**
+它讀「你目前設定的」`burn_x_yellow` / `burn_x_orange` / `burn_x_red`，用你自己的歷史
+算出四個顏色各佔多少時間，然後直接給判定：紅色掉到 0% 或超過約 15% 就該重新校準。
+⚠ 它只讀歷史檔的複本，不打 API、不動你的資料。⛔ 它放在這裡而不是任務資料夾，
+是因為「什麼情況要重新檢討這組門檻」必須是一個「跑得起來」的指令 ——
+任務資料夾是整包封存的。`--dir` 可以指到別的狀態目錄。
 
 ---
 
@@ -372,7 +379,9 @@ python install.py --check    # 只看它會做什麼，不會動任何東西
 不加抖動它們會慢慢對齊、同時撞到同一個間隔邊界 —
 那正是把呼叫額度一次燒掉的情況。
 
-⛔ **那個 120 秒下限是程式強制的，不是建議** — 設更小會被拉回來，而且會印一行告訴你。
+⛔ **下限是程式強制的，不是建議** — 設更小會被拉回來，而且會印一行告訴你。
+⚠ **下限是 60 秒，預設值仍然是 120 秒** —— 兩個不同的數字，什麼都沒設就是 120。
+下限在 2026-08-29 之前是 120，調低只為了讓下面這個說法「可以被實測」：
 這支端點每個 access token 大概只能打 **五次**
 （[onWatch](https://github.com/onllm-dev/onwatch)，它自己監控十家供應商，預設也是 120 秒），
 打完會拿到一直不退的 `429`
@@ -674,7 +683,12 @@ claude plugin install dispatch-guard@dispatch-guard --config announce_unattended
 12:02:02  5h ▓▓▓░░░┃░░░ 34% 1h52m 7d ▓▓▓▓┃▓░░░░ 54% 3d22h Fable ▓▓▓░┃░░░░░ 31% 3d22h Burn ▓▓▓▓▓▓▓▓▓▓ .17%/m 6h36m  🟢
 ```
 
-⭐ **判定字換成圓點**：🟢 GO、🟠 PACE、🔴 STOP、⚪ 還沒有資料。
+⭐ **判定字換成圓點**：🟢 GO、🟡 WARN、🟠 PACE、🔴 STOP、⚪ 還沒有資料。
+
+⭐ **WARN 是第四個狀態，而且它只有顏色。** 只要五小時長條圖的填滿「超過它自己的 ┃」
+—— 也就是你花得比時鐘快 —— 圓點就轉黃，長條圖也轉黃。⛔ **它不會進到 `verdict()`**：
+閘門讀的是那個「字」，多一個字會安靜地改變煞車的行為，所以 WARN 只活在畫面這一層。
+⚠ 它只會把綠色變黃，永遠不會把真正的 PACE 或 STOP 變軟。
 ⚠ **那只在畫面上** —— gate 拿到的還是 `GO`/`PACE`/`STOP` 那個字，換掉的話派工邏輯會收到
 一個它不認識的值。
 
@@ -694,7 +708,13 @@ claude plugin install dispatch-guard@dispatch-guard --config announce_unattended
 12:02:02  5h ▓▓▓░░░┃░░░ 34% 1h52m 7d ▓▓▓▓┃▓░░░░ 54% 3d22h Fable ▓▓▓░┃░░░░░ 31% 3d22h Burn ▓▓▓▓▓▓▓▓▓▓ .17%/m 6h36m  🟢
 ```
 
-⭐ **The verdict is a coloured dot**: 🟢 GO, 🟠 PACE, 🔴 STOP, ⚪ no data yet.
+⭐ **The verdict is a coloured dot**: 🟢 GO, 🟡 WARN, 🟠 PACE, 🔴 STOP, ⚪ no data yet.
+
+⭐ **WARN is a fourth state and it is colour only.** The dot and the bar turn yellow as soon as
+the five-hour bar's fill passes **its own ┃** — you are spending faster than the clock.
+⛔ **It never reaches `verdict()`**: the gate acts on the WORD, and a fifth word would silently
+change what the brake does, so WARN lives on the display side alone. ⚠ It can only turn a green
+dot yellow; it never softens a real PACE or STOP.
 ⚠ **Display only** — the gate still receives the word `GO`/`PACE`/`STOP`; a symbol reaching
 that side would be a value the dispatch logic does not know.
 
@@ -716,7 +736,7 @@ The dots stay: geometric shapes have far wider font coverage than an emoji.
 
 | 看到 | 意思 |
 |---|---|
-| `0.13%/m` | 最近 **30 分鐘**每分鐘燒掉 0.13% —— 不是整個視窗的平均 |
+| `0.13%/m` | 最近 **10 分鐘**（`burn_window_min`，預設 10）每分鐘燒掉 0.13% —— 不是整個視窗的平均 |
 | `11h-52m left` | 照這個速度，**11 小時 52 分後**會撞到 100% |
 
 ⚠ **這個時間可以比「視窗還剩多久」還長，那是正常的。** 上面那行剩 `4h-24m` 就重置，
@@ -724,15 +744,32 @@ The dots stay: geometric shapes have far wider font coverage than an emoji.
 
 **那條 bar 是「燒完 ÷ 重置」的比值**，⛔ 不是油量：
 
-| bar | 顏色 | 意思 |
-|---|---|---|
-| `▓▓▓▓▓▓▓▓▓` 滿 | 🟢 綠 | 撐得過重置 —— 放心花 |
-| 一半 | 🟡 黃 | 只撐得到剩餘時間的一半 |
-| 很短 | 🔴 紅 | ⛔ 快撞到上限了 |
+| 格數 | 意思 |
+|---|---|
+| `▓▓▓▓▓▓▓▓▓` 滿 | 撐得過重置 —— 額度夠用，不必降速 |
+| 一半 | 只撐得到剩餘時間的一半 |
+| 很短 | ⛔ 快撞到上限了，要降速或停 |
+| 零格 | 額度會在剩餘時間的 5% 內用完 —— 顏色一律紅色 |
+
+⭐ **顏色是「另一個」訊號，跟格數無關**：它講「現在燒得多快」，單位是**時鐘速度的倍數**
+（時鐘速度 = 100 ÷ 視窗分鐘數 = 0.333 %/min，也就是「剛好在重置那一刻用完」的速度）。
+
+| 速度 | 顏色 |
+|---|---|
+| < 1× | 🟢 綠 |
+| 1× ~ 1.75× | 🟡 黃 |
+| 1.75× ~ 2.25× | 🟠 橘 |
+| ≥ 2.25× | 🔴 紅 |
+
+⚠ **兩個訊號會不一致，而且兩個都要讀。** 滿格配紅色 = 燒很兇但視窗才剛開，還有本錢；
+短格配綠色 = 已經在龜速了，但還是撐不到。分段可以在 config 用
+`burn_x_yellow` / `burn_x_orange` / `burn_x_red` 自己改，
+改之前先跑 **`python Tools/Debug/burn_band_fit.py`** 看你自己的歷史算出來是什麼。
 
 ⚠ **兩個反直覺的地方：**
 - **bar 會往上跑。** 你慢下來它就變長 —— 它量的是「兩個時鐘會不會交叉」，不是還剩多少油。
-- **顏色是反的。** 這一段滿=好；旁邊那三條是數字越高越糟。
+- **格數滿 = 好，顏色是另一回事。** 這一段的「格數」滿=好；「顏色」則跟旁邊那三條一樣，
+  越高越糟 —— 因為它量的是速度，不是餘裕。
 
 ⚠ **`🔥────────── --` 代表「還沒有資料」** —— 同一個 5 小時視窗裡至少要兩筆紀錄才算得出速度。
 剛裝好、或剛過重置點就是這樣，等幾分鐘就有了。
@@ -1562,12 +1599,21 @@ conventions, what the hook actually enforces, the honest gaps, and how resume wo
 ⭐ **This document describes the present only.** When something changed, and why, is in
 **[CHANGELOG.md](CHANGELOG.md)**.
 
-⭐ **To verify the repository: `python Tools/Debug/test_all.py`.** It runs all five checks and
-returns one exit code. ⚠ Each exists for a bug that actually happened AND was silent — none is
+⭐ **To verify the repository: `python Tools/Debug/test_all.py`.** It runs all eleven checks
+and returns one exit code. ⚠ Each exists for a bug that actually happened AND was silent — none is
 there for coverage. They touch no `~/.claude`, spend no API call, and schedule no task.
 ⭐ **Every file they produce goes under `Tools/Debug/scratch/`** — gitignored, and kept after
 the run so a failing check's output is still there. ⛔ A run must leave `git status` clean;
 that is itself the check that the tests stayed inside their sandbox.
+
+⭐ **`python Tools/Debug/burn_band_fit.py` — is the Burn gauge's colour still calibrated?**
+It reads the `burn_x_yellow` / `burn_x_orange` / `burn_x_red` edges **you are actually
+running**, replays your own history through the product's own rate calculation, and reports
+what share of live time each colour holds, with a verdict: red falling to 0% or rising past
+about 15% means the bands need re-fitting. ⚠ It reads a copy of the history, spends no API
+call, and changes nothing. ⛔ It ships here rather than in the task folder that chose the
+bands because "when should this be reconsidered?" has to be a command somebody can run, and
+a task folder is archived as a unit. `--dir` points it at another state directory.
 
 ---
 
@@ -1847,8 +1893,11 @@ refused with a line saying so — so the wait can never dip below the floor. It 
 would otherwise drift into lockstep and hit the interval boundary together — which is exactly the
 burst that spends the budget.
 
-⛔ **That floor of 120 s is enforced in code, not advisory** — a smaller value is clamped and says
-so. The endpoint allows only about **five calls per access token**
+⛔ **The floor is enforced in code, not advisory** — a smaller value is clamped and says so.
+⚠ **The floor is 60 s; the default is still 120 s** — two different numbers, and a config that
+says nothing still polls at 120. The floor was 120 until 2026-08-29 and was lowered only to make
+the following claim measurable. The endpoint is documented as allowing about **five calls per
+access token**
 ([onWatch](https://github.com/onllm-dev/onwatch), whose own default poll is 120 s while it watches
 ten providers), and exhausting it returns a persistent `429`
 ([issue #31021](https://github.com/anthropics/claude-code/issues/31021), closed as not planned)
@@ -2197,7 +2246,7 @@ a panel narrower than that drops it.
 
 | you see | meaning |
 |---|---|
-| `0.13%/m` | 0.13% burned per minute over the **last 30 minutes** — not an average of the window |
+| `0.13%/m` | 0.13% burned per minute over the **last 10 minutes** (`burn_window_min`, default 10) — not an average of the window |
 | `11h-52m left` | at that rate you hit 100% in **11 hours 52 minutes** |
 
 ⚠ **That time can exceed the time left in the window, and that is correct.** The line above
@@ -2206,16 +2255,40 @@ first.** That is when the bar is full.
 
 **The bar is the ratio** (burn-out ÷ reset), ⛔ not a fuel gauge:
 
-| bar | colour | meaning |
-|---|---|---|
-| `▓▓▓▓▓▓▓▓▓` full | 🟢 green | it outlasts the reset — spend freely |
-| half | 🟡 amber | you get halfway through the time left |
-| short | 🔴 red | ⛔ you hit the ceiling soon |
+| cells | meaning |
+|---|---|
+| `▓▓▓▓▓▓▓▓▓` full | it outlasts the reset — no need to slow down |
+| half | you get halfway through the time left |
+| short | ⛔ you hit the ceiling soon — slow down or stop |
+| zero | the budget is gone inside 5% of the time left — the colour is forced to red |
+
+⭐ **The colour is a SECOND signal and does not follow the cells** — it reports how fast you
+are burning, as a multiple of **clock speed** (`100 ÷ window minutes` = 0.333 %/min, the pace
+that finishes the window exactly as it resets).
+
+| speed | colour |
+|---|---|
+| under 1× | 🟢 green |
+| 1× to 1.75× | 🟡 yellow |
+| 1.75× to 2.25× | 🟠 orange |
+| 2.25× and above | 🔴 red |
+
+⚠ **The two can disagree, and both must be read.** A full bar in red means "burning hard, but
+the window only just opened"; a short bar in green means "already crawling, and it still will
+not last". Tune the edges with `burn_x_yellow` / `burn_x_orange` / `burn_x_red` — and run
+**`python Tools/Debug/burn_band_fit.py`** first, to see what your own history says.
 
 ⚠ **Two things that surprise people:**
 - **The bar goes back UP.** Slow down and it grows — it measures whether two clocks cross, not
   how much is left in a tank.
-- **Its colour is inverted.** Full is good here; on the three bars beside it a high number is bad.
+- **Full cells are good; the colour is a separate signal.** The CELLS answer "will the budget
+  outlast this reset?" — full is good. The COLOUR answers "how fast am I burning?", as a
+  multiple of **clock speed** (100 ÷ window minutes = 0.333 %/min, the pace that finishes the
+  window exactly as it resets): 🟢 under 1×, 🟡 to 1.75×, 🟠 to 2.25×, 🔴 above. High is bad,
+  the same direction as the three bars beside it. ⚠ **The two can disagree and both must be
+  read** — a full bar in red is "burning hard, but there is room"; a short bar in green is
+  "already crawling and it still will not last". At zero cells the colour is forced to red.
+  Tune with `burn_x_yellow` / `burn_x_orange` / `burn_x_red`.
 
 ⚠ **`🔥────────── --` means "no data yet"** — a rate needs at least two readings inside the
 same five-hour window. Right after installing, or just past a reset, that is what you get; a few

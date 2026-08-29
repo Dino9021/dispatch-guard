@@ -91,7 +91,30 @@ DEFAULTS = {
     # ⚠ 0 means the WHOLE WINDOW - steady, and roughly `pct / minutes elapsed`, but it takes
     # over an hour to notice that the rate changed. See _burn_rate() for the trade this buys
     # and what it costs.
-    "burn_window_min": 30,
+    # ⚠ 10, THE OWNER'S CHOICE, AND IT BUYS REACTION AT THE COST OF RESOLUTION. It was 30.
+    # `used_percentage` arrives in WHOLE percent, so one step over a 10-minute baseline is
+    # 0.1 %/min against 0.033 at 30 - the gauge is three times twitchier, and on a quiet
+    # stretch it reads `--` rather than a small number, because _burn_rate() returns None
+    # when nothing moved. That is the intended trade, not a regression. ⛔ Safe for exactly
+    # one reason, the same one _burn_rate() names: NO BURN FIGURE REACHES GO/PACE/STOP.
+    "burn_window_min": 10,
+    # ⭐ THE BURN GAUGE'S COLOUR BANDS, as MULTIPLES OF CLOCK SPEED. Clock speed is
+    # 100 / window minutes - 0.333 %/min for a five-hour window - and means "at this pace you
+    # finish the window exactly as it resets". So 1.00 is "spending as fast as the clock",
+    # 2.25 is "two and a quarter times that".
+    # ⭐ FITTED, NOT PICKED. The owner asked for red 10% / orange 15% / yellow 25% / green 50%
+    # of the time and for the multiples that produce it; measured over 255 minutes of real
+    # history across two windows, these give 53 / 27 / 12 / 8. See
+    # Memory/tasks/20260829-133237-burn-two-signals/ for the fit and both review rounds.
+    # ⚠ THEY ARE CALIBRATED AGAINST burn_window_min = 10 AND ARE NOT INDEPENDENT OF IT. At 15
+    # or above the red band is never reached at all; `install.py --status` says so rather
+    # than this file warning on every render.
+    # ⛔ THREE SCALARS, NOT A LIST, AND THAT IS FORCED. config() copies a value from disk only
+    # `if isinstance(source.get(k), (int, float))`, so a list under a known key would be
+    # SILENTLY IGNORED and the reader would get the default while believing otherwise.
+    "burn_x_yellow": 1.00,   # at or above this multiple of clock speed: yellow
+    "burn_x_orange": 1.75,   # ...orange
+    "burn_x_red": 2.25,      # ...red
     "stale_min": 15,         # data older than this is not trusted
     "near_reset_min": 20,    # within this long of the reset, soften by one level
     "colour_warn_pct": 70,   # bar turns orange at or above this
@@ -99,6 +122,9 @@ DEFAULTS = {
     # How often the API may be asked. ⚠ THE REAL INTERVAL IS THIS PLUS UP TO
     # fetch_seconds_jitter of randomness - see _interval(). See FETCH_FLOOR_SECONDS:
     # values below that floor are clamped, and the reason is not a preference.
+    # ⚠ THE DEFAULT AND THE FLOOR ARE DIFFERENT NUMBERS. The floor is 60, deliberately, so
+    # the ~5-calls-per-token claim can be measured; this default stays 120, so nobody gets
+    # the faster poll without writing it into a config themselves.
     "fetch_seconds": 120,
     # Randomness ADDED to every interval, never subtracted. 0 disables it. See _interval()
     # for why it is not merely politeness, and config() for the two things it is clamped
@@ -243,7 +269,7 @@ def config(sdir):
     if cfg["fetch_seconds"] < FETCH_FLOOR_SECONDS:
         sys.stderr.write(
             "usage.py: fetch_seconds=%s raised to the %d s floor - the usage endpoint "
-            "allows only ~5 calls per token; see FETCH_FLOOR_SECONDS.\n"
+            "rate-limits hard and a 429 makes the brake fail OPEN; see FETCH_FLOOR_SECONDS.\n"
             % (cfg["fetch_seconds"], FETCH_FLOOR_SECONDS))
         cfg["fetch_seconds"] = FETCH_FLOOR_SECONDS
     # ⛔ CLAMPED UP, NOT REJECTED, and it SAYS SO. Below BURN_WINDOW_FLOOR_MIN the span guard
@@ -252,6 +278,19 @@ def config(sdir):
     # ⚠ 0 IS NOT CLAMPED: it is the documented way to ask for the whole window instead.
     if cfg["burn_window_min"] < 0:
         cfg["burn_window_min"] = DEFAULTS["burn_window_min"]
+    # ⛔ THE THREE BAND EDGES MUST ASCEND, AND ALL THREE FALL BACK TOGETHER. An out-of-order
+    # set does not error - it makes a band unreachable, and a colour that never appears is
+    # indistinguishable from a speed that never happened. ⚠ All three are restored, not just
+    # the offending one: a half-honoured set is a calibration nobody chose.
+    _edges = [cfg["burn_x_yellow"], cfg["burn_x_orange"], cfg["burn_x_red"]]
+    if not (0 < _edges[0] < _edges[1] < _edges[2]):
+        sys.stderr.write(
+            "usage.py: burn_x_yellow/orange/red = %g/%g/%g must be positive and ascending; "
+            "using the defaults %g/%g/%g.%s"
+            % tuple(_edges + [DEFAULTS["burn_x_yellow"], DEFAULTS["burn_x_orange"],
+                              DEFAULTS["burn_x_red"], chr(10)]))
+        for _k in ("burn_x_yellow", "burn_x_orange", "burn_x_red"):
+            cfg[_k] = DEFAULTS[_k]
     if 0 < cfg["burn_window_min"] < BURN_WINDOW_FLOOR_MIN:
         sys.stderr.write(
             "usage.py: burn_window_min=%g raised to the %d min floor - a shorter baseline "
@@ -393,15 +432,30 @@ OAUTH_BETA = "oauth-2025-04-20"
 # short timeout buys a cosmetic win with a blind brake.
 FETCH_TIMEOUT = 5
 
-# ⛔ NEVER LOWER THIS, AND IT IS NOT A TUNING PARAMETER.
+# ⛔ THIS IS THE FLOOR, NOT THE DEFAULT, AND THE TWO ARE NOT THE SAME NUMBER ANY MORE.
+# The floor is 60; DEFAULTS["fetch_seconds"] is still 120, and a config that says nothing
+# still gets 120. Lowering the floor bought exactly one thing: the ability to MEASURE the
+# claim below, which until 2026-08-29 rested entirely on somebody else's documentation.
+# ⚠ This banner used to read "NEVER LOWER THIS, AND IT IS NOT A TUNING PARAMETER". It is
+# still not a tuning parameter - going under 120 is an experiment with a stop rule, not a
+# setting to like better. See Memory/tasks/20260829-124223-fetch-floor-60s/ for the ADR.
 #
-# The endpoint allows only about FIVE CALLS PER ACCESS TOKEN. Source: onWatch, a Go quota
-# monitor covering ten providers - https://github.com/onllm-dev/onwatch - which documents
-# the endpoint as having "aggressive rate limits (~5 requests per token)" and whose OWN
-# default poll interval is 120 s (ONWATCH_POLL_INTERVAL) while it serves its dashboard
-# from a local SQLite cache rather than from the API.
+# ⛔ AND THE CITED FIGURE IS ALREADY CONTRADICTED, WHICH IS WHY THE FLOOR MOVED RATHER THAN
+# THE RATIONALE BEING PATCHED. The source below documents "~5 requests per token". MEASURED
+# 2026-08-29 on this account at fetch_seconds 120: at least 26 SUCCESSFUL calls inside 100
+# minutes, no fetch.log written at all (it exists only for failures), and no 429 anywhere in
+# the state tree. So the real limit is out by roughly an order of magnitude, is not known,
+# and cannot be learnt from a citation. ⚠ That is a reason to measure it, NOT a reason to
+# assume there is no limit: the failure mode in 1-4 below is unchanged and still fails OPEN.
 #
-# What goes wrong below ~120 s, in order:
+# The claim being tested: the endpoint allows only about FIVE CALLS PER ACCESS TOKEN.
+# Source: onWatch, a Go quota monitor covering ten providers -
+# https://github.com/onllm-dev/onwatch - which documents the endpoint as having "aggressive
+# rate limits (~5 requests per token)" and whose OWN default poll interval is 120 s
+# (ONWATCH_POLL_INTERVAL) while it serves its dashboard from a local SQLite cache rather
+# than from the API.
+#
+# What goes wrong below ~120 s, in order, IF that claim is right:
 #   1. `usage.py --statusline` re-runs on a timer and `--watch` loops, so a short interval
 #      turns into a steady stream of calls rather than an occasional one.
 #   2. The allowance is exhausted within minutes, and every later call in that session
@@ -416,7 +470,19 @@ FETCH_TIMEOUT = 5
 # ⚠ And the recovery onWatch uses is not available here: it answers a 429 by refreshing
 # the OAuth token to mint a fresh window. See _token_and_expiry() for why this file
 # must not - and fetch(), which refuses to spend a call on a token that file shows is dead.
-FETCH_FLOOR_SECONDS = 120
+#
+# ⛔ HOW THE EXPERIMENT ENDS, so it does not just quietly become the new normal. Run with
+# debug.API_response_usage on, then read API_response_usage_<date>.jsonl and fetch.log:
+#   - a 429 inside the first hour at fetch_seconds 60 -> the documented limit is real for
+#     this account; PUT THIS BACK TO 120 and record the measurement beside the citation.
+#   - no 429 across a full five-hour window -> keep 60 and rewrite the rationale around the
+#     measurement instead of the citation.
+# ⚠ AND THE RESULT IS ONLY VALID IF THE FASTER POLL ACTUALLY HAPPENED. The inter-call gaps
+# in that log must read ~60-90 s (60 plus the jitter). If they read ~120-150, the process
+# that ran was an older installed copy carrying the old floor - see shim.recorded() and
+# `install.py --status` - and the run measured NOTHING. A false negative written back into
+# this comment would be worse than the citation it replaced.
+FETCH_FLOOR_SECONDS = 60
 
 # ⭐ Randomness is ADDED to every interval - never subtracted, so the effective wait is
 # always fetch_seconds..fetch_seconds+jitter and can never dip under the floor. The amount
@@ -1270,22 +1336,113 @@ BAR_WIDTH = 9
 # colour:false - a terminal that does not understand ANSI would otherwise print the
 # escape codes as visible rubbish.
 ANSI = {"reset": "\033[0m",
-        "ok": "\033[32m",          # green
-        "warn": "\033[38;5;208m",  # orange, 256-colour
-        "alarm": "\033[31m"}       # red
+        "ok": "\033[32m",           # green   - GO
+        "caution": "\033[38;5;220m",  # yellow  - WARN, 256-colour
+        "warn": "\033[38;5;208m",   # orange  - PACE, 256-colour
+        "alarm": "\033[31m"}        # red     - STOP
+
+# ⭐ ONE PALETTE FOR THE WHOLE DISPLAY, the owner's instruction: the bars and the verdict dot
+# carry the same four colours, so a glance at either says the same thing. ⚠ The ANSI keys are
+# named for the COLOUR and the states for the MEANING, and they do not line up one-to-one -
+# state WARN is `caution`/yellow while state PACE is `warn`/orange. That is why the mapping is
+# written out here rather than left to a name collision nobody would notice going wrong.
+# ⛔ NO-DATA has no colour: it is drawn as ⚪, which needs none.
+STATE_ANSI = {"GO": "ok", "WARN": "caution", "PACE": "warn", "STOP": "alarm"}
 
 
-def _colour(pct, cfg):
+def _state(pct, cfg, time_pct=None):
+    """The DISPLAY state for a percentage: GO / WARN / PACE / STOP.
+
+    ⛔ DISPLAY ONLY, AND IT IS NOT verdict(). The gate reads verdict() and acts on its word;
+    `dispatch_gate.py` tests that word against literal tuples in four places (`not in ("GO",
+    "PACE")` at the stand-down, `not in ("PACE", "STOP")` at three others), so a fifth word
+    arriving from here would silently change what the brake DOES. The owner's instruction was
+    "只變色不做任何處理" - colour only, no handling - and this function is how that is kept.
+
+    ⭐ WARN IS "SPENDING FASTER THAN THE CLOCK", which is exactly what the ┃ marker already
+    draws: the bar's fill is what you have spent, the marker is how far through the window you
+    are, so fill PAST the marker is the whole condition. It costs no new input - `_bar()` is
+    handed the same `time_pct`.
+
+    ⚠ The two upper tiers keep reading colour_warn_pct / colour_alarm_pct rather than
+    soft_pct / hard_pct. Those keys are documented, configurable, and default to the same 70
+    and 85 the verdict uses, so the default display agrees with the verdict while somebody who
+    tuned them keeps what they tuned.
+    """
+    # ⚠ 85, matching DEFAULTS. It read 90 here for a partial-dict caller while DEFAULTS said
+    # 85, so the fallback and the documented default disagreed - invisible whenever cfg came
+    # from config(), which is why it survived.
+    if pct >= cfg.get("colour_alarm_pct", 85):
+        return "STOP"
+    if pct >= cfg.get("colour_warn_pct", 70):
+        return "PACE"
+    if isinstance(time_pct, (int, float)) and pct > time_pct:
+        return "WARN"
+    return "GO"
+
+
+def _colour(pct, cfg, time_pct=None):
+    """⚠ `time_pct` is optional and its ABSENCE is meaningful, not a default: without it there
+    is no marker to be past, so the WARN tier cannot fire and a caller that never had a time
+    axis (the context bar) keeps exactly the three colours it always had."""
     if not cfg.get("colour", True):
         return "", ""
-    if pct >= cfg.get("colour_alarm_pct", 90):
-        key = "alarm"
-    elif pct >= cfg.get("colour_warn_pct", 70):
-        key = "warn"
-    else:
-        key = "ok"
-    return ANSI[key], ANSI["reset"]
+    return ANSI[STATE_ANSI[_state(pct, cfg, time_pct)]], ANSI["reset"]
 
+
+def _state_colour(state, cfg):
+    """The palette entry for a display state, so the dot and its colour cannot disagree.
+
+    ⚠ An unknown state gets NO colour rather than a guess - NO-DATA and SLEEP both land here,
+    and both are drawn as something that already says "no number" on its own."""
+    if not cfg.get("colour", True):
+        return "", ""
+    key = STATE_ANSI.get(state)
+    return (ANSI[key], ANSI["reset"]) if key else ("", "")
+
+
+def _five_hour_time_pct(record, now=None):
+    """How far through the five-hour window the clock has travelled, 0-100, or None.
+
+    ⚠ This is the ┃ marker's position on the 5h bar and nothing else. It is computed from the
+    SAME `resets_at` and the SAME FIVE_HOUR_SECONDS that `_line_parts()` hands `_window()`, so the dot
+    and the bar cannot end up disagreeing about where the marker is.
+    """
+    five = (record or {}).get("five_hour") if isinstance(record, dict) else None
+    resets = five.get("resets_at") if isinstance(five, dict) else None
+    if not resets:
+        return None
+    now = time.time() if now is None else now
+    return 100.0 * (1.0 - (resets - now) / float(FIVE_HOUR_SECONDS))
+
+
+def display_state(v, record, cfg, now=None):
+    """The word the SCREEN shows: GO / WARN / PACE / STOP / NO-DATA.
+
+    ⛔ IT ONLY EVER ADDS WARN, AND ONLY ON TOP OF GO. A real PACE, STOP or NO-DATA is returned
+    untouched - the display must never soften a verdict the gate is acting on, and this is the
+    one direction that could. ⇒ The dot can differ from the verdict in exactly one way: green
+    becomes yellow, which changes nothing anybody does.
+
+    ⚠ WARN is decided on the FIVE-HOUR window, not on whichever bar happens to be worst. That
+    is the window verdict() gates on and the one the dot has always tracked; a dot that
+    followed the seven-day bar would be answering a different question from the word beside it.
+    """
+    word = v.get("verdict") if isinstance(v, dict) else None
+    if word != "GO":
+        return word
+    pct = v.get("pct")
+    if not isinstance(pct, (int, float)):
+        return word
+    return "WARN" if _state(pct, cfg, _five_hour_time_pct(record, now)) == "WARN" else "GO"
+
+
+# ⭐ THE FIVE-HOUR WINDOW, ONCE. It was a bare `5 * 3600` in three places, and the burn
+# gauge's colour now needs it too - clock speed is 100 / window minutes - so a fourth copy
+# was about to be written. ⚠ The three existing sites keep their behaviour exactly; naming
+# the literal is what stops the colour, the bars and the rate drifting onto different ideas
+# of how long the window is.
+FIVE_HOUR_SECONDS = 5 * 3600
 
 BAR_MARK = "┃"    # the elapsed-time marker
 
@@ -1310,7 +1467,10 @@ SEVEN_DAY_LABEL = "7d"
 # map is applied where the row is assembled and nowhere else - the same rule SLEEP_WORD
 # already follows. ⚠ Anything not in the map keeps its word, so a new verdict shows up as
 # text rather than vanishing.
-VERDICT_ICON = {"GO": "\U0001f7e2", "PACE": "\U0001f7e0",
+# ⭐ WARN IS IN THIS MAP AND NOT IN verdict(). It is derived at render time by _state() from
+# the five-hour bar's own marker, exactly like SLEEP - see _state() for why a fifth word
+# reaching the gate would change what the brake does.
+VERDICT_ICON = {"GO": "\U0001f7e2", "WARN": "\U0001f7e1", "PACE": "\U0001f7e0",
                 "STOP": "\U0001f534", "NO-DATA": "\u26aa"}
 # Module-level because _bar is called from several places and threading a flag through
 # all of them for one boolean is noise. Set from config once, at entry.
@@ -1353,13 +1513,23 @@ def duration(mins):
     on that row, so the old form cost about sixteen columns to say nothing extra. ⚠ The
     MINUTES go, not the hours: four days out, a minute is noise; three hours out, it is not,
     which is why the two-unit rule keeps them below a day.
+
+    ⭐ AND A ZERO UNIT IS NOT PRINTED AT ALL - the owner's instruction. `0h32m` was always
+    `32m`, `3h0m` is `3h`, `4d0h` is `4d`. ⚠ It is the SMALLER unit that can vanish, never
+    the larger one: dropping a leading `3h` from `3h0m` would read as three minutes.
+    ⛔ The three-unit case cannot arise - `mins < 60` already returns bare minutes - so a
+    zero can only ever be trailing, which is why one trim covers all three branches.
     """
     mins = max(0, int(mins))
     if mins < 60:
         return "%dm" % mins
     if mins < 1440:
-        return "%dh%dm" % (mins // 60, mins % 60)
-    return "%dd%dh" % (mins // 1440, (mins % 1440) // 60)
+        big, small, bu, su = mins // 60, mins % 60, "h", "m"
+    else:
+        big, small, bu, su = mins // 1440, (mins % 1440) // 60, "d", "h"
+    if not small:
+        return "%d%s" % (big, bu)
+    return "%d%s%d%s" % (big, bu, small, su)
 
 
 def _window(label, win, now, cfg=None, window_secs=None, stale=False):
@@ -1397,7 +1567,11 @@ def _window(label, win, now, cfg=None, window_secs=None, stale=False):
     time_pct = None
     if resets and window_secs:
         time_pct = 100.0 * (1.0 - (resets - now) / float(window_secs))
-    on, off = _colour(pct, cfg)
+    # ⭐ THE SAME time_pct FEEDS THE MARKER AND THE COLOUR, which is the whole point: the bar
+    # turns yellow exactly when its fill passes its own ┃, so the colour never disagrees with
+    # the picture beside it. ⚠ It is None for a window with no reset, and then _state() simply
+    # cannot reach WARN - see there.
+    on, off = _colour(pct, cfg, time_pct)
     out = "%s %s%s %d%%%s" % (label, on, _bar(pct, BAR_WIDTH, time_pct), round(pct), off)
     if resets:
         out += " " + duration((resets - now) / 60)
@@ -1496,13 +1670,19 @@ def _watch_line(stamp, data, v, note, cfg, idle=False, burn=None):
     """
     # ⚠ THE ICON IS CHOSEN HERE, where the row is assembled, and nowhere else: the gate
     # acts on the WORD, and a symbol reaching that side is a value it does not know.
-    word = SLEEP_WORD if idle else VERDICT_ICON.get(v["verdict"], v["verdict"])
+    # ⭐ WARN JOINS THE LADDER HERE TOO, via display_state() - see there for why it can only
+    # ever turn a GO yellow and never touch a PACE or a STOP.
+    state = SLEEP_WORD if idle else display_state(v, data, cfg)
+    word = SLEEP_WORD if idle else VERDICT_ICON.get(state, state)
     lcfg = dict(cfg)
     if idle:
         # ⭐ ONE key carries the whole idle appearance: _colour() already honours it, so "no
         # colour anywhere" costs a setting rather than a second code path.
         lcfg["colour"] = False
-    von, voff = _colour(v.get("pct") if isinstance(v.get("pct"), (int, float)) else 0, lcfg)
+    # ⛔ COLOURED BY THE STATE, NOT BY THE PERCENTAGE. They used to be computed separately and
+    # could therefore disagree - a yellow dot on a green ladder is a contradiction the reader
+    # has to resolve, and there is nothing to resolve it with.
+    von, voff = _state_colour(state, lcfg)
     head = "%s  " % stamp
     tail = "  %s%s%s  " % (von, word, voff)
     windows, extras = _line_parts(data, note, lcfg, None,
@@ -1756,6 +1936,52 @@ def _cut(text, width):
     return "".join(kept) + (ANSI["reset"] if _STRIP_ANSI.search(text) else "")
 
 
+def _burn_band(rate, cfg, filled):
+    """Which ANSI key the burn bar wears: it answers HOW FAST, not whether the budget lasts.
+
+    ⭐ THE WHOLE POINT OF THIS FUNCTION IS THAT IT DOES NOT LOOK AT `ratio`. The cells already
+    draw `ratio` - "will the budget outlast this reset?" - and the colour used to draw it too,
+    so two visual channels carried one number and one of them was wasted. The colour now
+    answers the other question: am I going fast? ⇒ The two can DISAGREE, and that is the
+    feature. A full bar in red means "burning hard, but the window opened recently and there
+    is room"; a short bar in green means "already crawling, and it still will not last".
+    The owner accepted that trade explicitly: both channels must now be read.
+
+    ⚠ MEASURED AGAINST CLOCK SPEED, `100 / window minutes` - 0.333 %/min for a five-hour
+    window - which means "at this pace you finish the window exactly as it resets". Fixed,
+    external, and derived from the window itself. ⛔ Deliberately NOT the account's own recent
+    median, which was the obvious alternative and which DRIFTS: measured on real history the
+    median was 1.20x clock, so a median anchor would have let a heavy session define "normal"
+    and read the identical burn as green the next day.
+
+    ⛔ ZERO CELLS IS FORCED TO `alarm`, WHATEVER THE RATE SAYS, and this is not the colour
+    sliding back into repeating the bar. Zero cells is `ratio < 0.05`: the budget is gone in
+    under 5% of the time that remains. MEASURED at remain=119 min, that covers burnout_min 0
+    through 5, and returning to a full bar from there needs a slowdown of 24x to 119x - or is
+    impossible at burnout 0. ⇒ No achievable change of pace alters the outcome, so "should I
+    slow down?" has no answer that helps, and an empty bar wearing green would say the
+    opposite of the truth in a column where empty already means DANGER.
+
+    ⛔ AND IT DOES NOT USE _colour(), WHICH IS STILL RIGHT BUT FOR A NEW REASON. It used to be
+    that the direction was inverted here. It is not any more - high is bad on both. The reason
+    now is that _colour() bands a USAGE PERCENTAGE against colour_warn_pct / colour_alarm_pct,
+    and this is a RATE banded against clock speed: different quantity, different thresholds.
+    """
+    if not filled:
+        return "alarm"
+    clock = 100.0 / (FIVE_HOUR_SECONDS / 60.0)
+    x = (rate or 0) / clock
+    # ⚠ Read in falling order, and the defaults are read through cfg.get so a caller passing a
+    # partial dict gets the shipped calibration rather than a KeyError.
+    if x >= cfg.get("burn_x_red", DEFAULTS["burn_x_red"]):
+        return "alarm"
+    if x >= cfg.get("burn_x_orange", DEFAULTS["burn_x_orange"]):
+        return "warn"
+    if x >= cfg.get("burn_x_yellow", DEFAULTS["burn_x_yellow"]):
+        return "caution"
+    return "ok"
+
+
 def _burn_part(burn, remain, rate, cfg, stale=False):
     """`Burn ▓▓▓▓░░░░░░ 1.20%/m · 44m left` - how long the budget lasts, and how fast.
 
@@ -1774,8 +2000,16 @@ def _burn_part(burn, remain, rate, cfg, stale=False):
     and an empty bar in a column where empty means DANGER would read as the opposite. It
     gets its own glyph and its own words.
 
-    ⚠ COLOUR IS INVERTED HERE and does not use _colour(). Everywhere else a HIGH percentage
-    is bad; here a high ratio is good, so the same thresholds would paint safety red.
+    ⭐ THE BAR AND THE COLOUR ARE TWO INDEPENDENT SIGNALS, and that is the point. The CELLS
+    answer "will the budget outlast this reset?"; the COLOUR answers "how fast am I burning?"
+    - see _burn_band(). ⚠ They can therefore disagree, and both must be read: a full bar in
+    red is "burning hard, but there is room", a short bar in green is "already crawling and
+    it still will not last".
+
+    ⛔ THIS DOCSTRING USED TO SAY "COLOUR IS INVERTED HERE ... a high ratio is good". That is
+    no longer true and would now be actively misleading: the colour reads a RATE, where high
+    is bad, the same direction as everywhere else. _colour() is still not used, but the reason
+    changed - see _burn_band().
     """
     if not cfg.get("colour", True):
         on = off = ""
@@ -1794,8 +2028,7 @@ def _burn_part(burn, remain, rate, cfg, stale=False):
     filled = min(width, int(round(min(ratio, 1.0) * width)))
     bar = BAR_FULL * filled + BAR_EMPTY * (width - filled)
     if on is None:
-        key = "ok" if ratio >= 1 else ("alarm" if ratio < 0.5 else "warn")
-        on, off = ANSI[key], ANSI["reset"]
+        on, off = ANSI[_burn_band(rate, cfg, filled)], ANSI["reset"]
     # ⛔ ALWAYS A TIME, NEVER WORDS. The owner's instruction: "outlasts reset" cost
     # fourteen columns to say something the BAR already says - a full bar IS "the reset
     # arrives first" - and it made the reader translate a phrase into a number anyway.
@@ -1857,7 +2090,8 @@ def _line_parts(record, stale_note=None, cfg=None, payload=None, stale=None, bur
     # it as a percentage would mislead? By default that is "there is a note", which the
     # caller sets from the file's age; a caller that knows better says so explicitly.
     stale = bool(stale_note) if stale is None else bool(stale)
-    parts = [_window(FIVE_HOUR_LABEL, rec.get("five_hour"), now, cfg, 5 * 3600, stale)]
+    parts = [_window(FIVE_HOUR_LABEL, rec.get("five_hour"), now, cfg,
+                     FIVE_HOUR_SECONDS, stale)]
     if isinstance(rec.get("seven_day"), dict):
         parts.append(_window(SEVEN_DAY_LABEL, rec["seven_day"], now, cfg, 7 * 86400, stale))
     # ⭐ THE MODEL-SCOPED WINDOW, when the account has one running. It goes THROUGH _window()
@@ -2190,7 +2424,8 @@ def burn_triple(sdir, cfg, record, now=None):
 BURN_WINDOW_FLOOR_MIN = 5           # under this, a 1% reading cannot resolve a rate
 
 
-def _burn_rate(sdir, cfg, pct, resets, now, window_secs=5 * 3600):
+
+def _burn_rate(sdir, cfg, pct, resets, now, window_secs=FIVE_HOUR_SECONDS):
     """Percent per SECOND over the last `burn_window_min` minutes, or None if unknowable.
 
     ⭐ Split out so the projection and the burn-out time are computed from ONE sampling of
@@ -3405,13 +3640,70 @@ def selftest():
     # alignment check still passes while the rows visibly disagree.
     _glyphs = [c for c in _STRIP_ANSI.sub("", _full) if c in (BAR_FULL, BAR_EMPTY, BAR_MARK)]
     assert len(_glyphs) == BAR_WIDTH + 1, (len(_glyphs), _full)
-    assert "outlasts" not in _full and ANSI["ok"] in _full, _full
-    assert "1h20m" in _half and ANSI["warn"] in _half, _half
-    assert ANSI["alarm"] in _dry, _dry
-    # ⚠ COLOUR IS INVERTED HERE, and _colour() must not be used: everywhere else a HIGH
-    # number is bad, so the shared thresholds would paint safety red. Pinned by asserting
-    # the FULL bar is ok-coloured, which _colour() would never do for a large value.
-    assert ANSI["alarm"] not in _full and ANSI["warn"] not in _full, _full
+    assert "outlasts" not in _full, _full
+    assert "1h20m" in _half, _half
+    # ⛔ THESE FOUR ASSERTIONS WERE REWRITTEN, NOT DELETED, AND THE DISTINCTION IS THE POINT.
+    # They used to read the colour off `ratio` - `ANSI["ok"] in _full`, `ANSI["warn"] in
+    # _half`, `ANSI["alarm"] in _dry`, and a fourth pinning that a FULL bar is never warn- or
+    # alarm-coloured. ⚠ MEASURED when the split landed: only the FIRST of them failed. The
+    # other three went on PASSING FOR A NEW REASON - `_half` and `_dry` happened to land in
+    # the same colours by rate, and the fourth survived only because a full bar became
+    # `caution`, a key that did not exist when it was written. ⇒ A green suite would have
+    # reported four guarded properties while guarding none of them.
+    #
+    # ⭐ WHAT THEY PIN NOW: the colour is a function of the RATE and of nothing else, so it is
+    # asserted with the cells held CONSTANT. Same bar, three rates, three colours - which no
+    # ratio-derived colour could ever produce.
+    _bx = dict(_bcfg2, burn_x_yellow=1.0, burn_x_orange=1.75, burn_x_red=2.25)
+    _clock = 100.0 / (FIVE_HOUR_SECONDS / 60.0)
+    for _mult, _want in ((0.5, "ok"), (1.2, "caution"), (2.0, "warn"), (3.0, "alarm")):
+        _row = _burn_part(188, 106, _mult * _clock, _bx)     # 188/106 -> a FULL bar every time
+        _cells = [c for c in _STRIP_ANSI.sub("", _row) if c in (BAR_FULL, BAR_EMPTY)]
+        assert _cells.count(BAR_EMPTY) == 0, ("the fixture stopped being a full bar", _row)
+        assert ANSI[_want] in _row, ("%.1fx clock wanted %s: %r" % (_mult, _want, _row))
+    # ⛔ AND A FULL BAR IN RED IS NOW LEGAL - the old fourth assertion forbade exactly this,
+    # and forbidding it is what made the colour redundant. Burning hard with a window that
+    # only just opened is a real state and the gauge must be able to say so.
+    assert ANSI["alarm"] in _burn_part(188, 106, 3.0 * _clock, _bx), "a full bar cannot go red"
+    # ⛔ ZERO CELLS IS alarm WHATEVER THE RATE, because at ratio < 0.05 no achievable slowdown
+    # changes the crossing - and an empty bar wearing green would say the opposite of the
+    # truth in a column where empty already means DANGER.
+    _empty = _burn_part(0, 119, 0.1 * _clock, _bx)
+    assert BAR_FULL not in _empty and ANSI["alarm"] in _empty, _empty
+    assert ANSI["ok"] not in _empty, ("an empty bar was painted green: %r" % _empty)
+    # ⚠ ...and the guard is on the CELLS, not on a burnout of zero. Zero cells covers
+    # burnout_min 0 through 5 at remain=119, and five of those six are not "already over" -
+    # they are "you would have to slow by 24x to 119x", which is the same answer.
+    for _b in (0, 1, 5):
+        _e = _burn_part(_b, 119, 0.1 * _clock, _bx)
+        assert ANSI["alarm"] in _e and ANSI["ok"] not in _e, (_b, _e)
+    # ...and six cells is where it stops being forced, or the check above proves nothing.
+    assert ANSI["ok"] in _burn_part(6, 119, 0.1 * _clock, _bx), _burn_part(6, 119, 0.1 * _clock, _bx)
+
+    # ⛔ THE THREE EDGES MUST ASCEND, AND ALL THREE FALL BACK TOGETHER. A half-honoured set is
+    # a calibration nobody chose, and an unreachable band is indistinguishable from a speed
+    # that never happened.
+    _btmp = tempfile.mkdtemp()
+    for _bad in ({"burn_x_yellow": 3.0, "burn_x_orange": 1.0, "burn_x_red": 2.0},
+                 {"burn_x_yellow": 0, "burn_x_orange": 1.0, "burn_x_red": 2.0},
+                 {"burn_x_yellow": 1.0, "burn_x_orange": 2.0, "burn_x_red": 2.0}):
+        with open(os.path.join(_btmp, "config.json"), "w", encoding="utf-8") as _f:
+            json.dump(_bad, _f)
+        _got = config(_btmp)
+        assert (_got["burn_x_yellow"], _got["burn_x_orange"], _got["burn_x_red"]) == (
+            DEFAULTS["burn_x_yellow"], DEFAULTS["burn_x_orange"], DEFAULTS["burn_x_red"]), (
+            "a bad edge set was half-honoured: %r -> %r" % (_bad, _got))
+    # ...and a GOOD set is honoured, or the check above passes by rejecting everything.
+    with open(os.path.join(_btmp, "config.json"), "w", encoding="utf-8") as _f:
+        json.dump({"burn_x_yellow": 0.5, "burn_x_orange": 1.5, "burn_x_red": 4.0}, _f)
+    _got = config(_btmp)
+    assert (_got["burn_x_yellow"], _got["burn_x_orange"], _got["burn_x_red"]) == (0.5, 1.5, 4.0), _got
+    # ⛔ AND A LIST IS STILL IGNORED, which is WHY these are three scalars. Pinned so nobody
+    # "tidies" them into one key and hands the reader a default they did not choose.
+    with open(os.path.join(_btmp, "config.json"), "w", encoding="utf-8") as _f:
+        json.dump({"burn_x_yellow": [1.0, 1.75, 2.25]}, _f)
+    assert config(_btmp)["burn_x_yellow"] == DEFAULTS["burn_x_yellow"], config(_btmp)
+    shutil.rmtree(_btmp, ignore_errors=True)
 
     # ⛔ UNKNOWABLE IS NEVER AN EMPTY BAR AND NEVER A ZERO. In a column where empty means
     # DANGER, drawing "no data" as empty says the opposite of the truth.
@@ -3512,6 +3804,95 @@ def selftest():
     # ⭐ ...and it still WARNS, which is the whole design: a sentence, never a decision.
     assert "SPENT in ~1 min" in _forced["text"], _forced["text"]
     shutil.rmtree(_pdir, ignore_errors=True)
+
+    # ------------------------------------------------- WARN: a colour, never a decision
+    # ⛔ THE ONE THING THAT MUST NOT DRIFT: WARN is a DISPLAY state and verdict() must never
+    # emit it. dispatch_gate.py tests the word against literal tuples in four places, so a
+    # fifth word silently changes what the brake DOES - the owner asked for 只變色不做任何處理.
+    # ⚠ Pinned across the whole percentage range against a half-spent window, not at one
+    # value: a single sample would pass against a verdict() that emitted WARN above 51%.
+    _wnow = 1_700_000_000.0
+    _wresets = _wnow + 2.5 * 3600                    # the 5h window is exactly half over
+    _wdir = tempfile.mkdtemp()
+    _wcfg = dict(DEFAULTS)
+    for _p in (10, 49, 50, 51, 69, 70, 84, 85, 99):
+        _wrec = {"ts": int(_wnow * 1000),
+                 "five_hour": {"used_percentage": float(_p), "resets_at": int(_wresets)}}
+        _wv = verdict(_wdir, _wcfg, data=_wrec, now=_wnow)
+        assert _wv["verdict"] in ("GO", "PACE", "STOP"), (
+            "verdict() emitted a display-only word at %d%%: %r" % (_p, _wv["verdict"]))
+        assert _wv["verdict"] != "WARN", _wv
+    shutil.rmtree(_wdir, ignore_errors=True)
+
+    # ⭐ AND THE MARKER IS THE WHOLE CONDITION. Half the window gone, so the fill passes the
+    # ┃ at 50%: below it GO, above it WARN, and the two upper tiers unchanged.
+    assert _state(49, _wcfg, 50.0) == "GO", _state(49, _wcfg, 50.0)
+    assert _state(50, _wcfg, 50.0) == "GO", "equal is not PAST the marker"
+    assert _state(51, _wcfg, 50.0) == "WARN", _state(51, _wcfg, 50.0)
+    assert _state(69, _wcfg, 50.0) == "WARN", _state(69, _wcfg, 50.0)
+    assert _state(70, _wcfg, 50.0) == "PACE", _state(70, _wcfg, 50.0)
+    assert _state(85, _wcfg, 50.0) == "STOP", _state(85, _wcfg, 50.0)
+    # ⛔ NO MARKER, NO WARN - the tier cannot fire on a window with no time axis, and this is
+    # what keeps every pre-existing _colour() caller on exactly the three colours it had.
+    assert _state(99.0, _wcfg, None) == "STOP" and _state(51, _wcfg, None) == "GO", (
+        "the WARN tier fired without a time_pct")
+
+    # ⭐ THE DOT ONLY EVER TURNS A GREEN YELLOW. A real PACE or STOP reaching display_state()
+    # comes back unchanged, because the display must not soften a word the gate is acting on.
+    _dr = {"five_hour": {"used_percentage": 60.0, "resets_at": int(_wresets)}}
+    assert display_state({"verdict": "GO", "pct": 60.0}, _dr, _wcfg, _wnow) == "WARN"
+    assert display_state({"verdict": "PACE", "pct": 60.0}, _dr, _wcfg, _wnow) == "PACE"
+    assert display_state({"verdict": "STOP", "pct": 60.0}, _dr, _wcfg, _wnow) == "STOP"
+    assert display_state({"verdict": "NO-DATA"}, _dr, _wcfg, _wnow) == "NO-DATA"
+    # ...and a GO that is BEHIND its marker stays a GO, or the test above proves nothing.
+    _dr2 = {"five_hour": {"used_percentage": 20.0, "resets_at": int(_wresets)}}
+    assert display_state({"verdict": "GO", "pct": 20.0}, _dr2, _wcfg, _wnow) == "GO"
+
+    # ⛔ AND IT IS THE FIVE-HOUR WINDOW THAT DECIDES, not whichever bar happens to be worst.
+    # ⚠ Pinned with the two windows on OPPOSITE sides of their own markers, because that is
+    # the only fixture that can tell them apart: with a record carrying five_hour alone, a
+    # _five_hour_time_pct() that read the seven-day window would return None and simply never
+    # warn - passing this check for the wrong reason. Here, reading the wrong window flips the
+    # answer instead of silencing it.
+    _w7resets = _wnow + 3.5 * 86400                  # a 7d window half over: marker at 50%
+    _dr3 = {"five_hour": {"used_percentage": 20.0, "resets_at": int(_wresets)},
+            "seven_day": {"used_percentage": 90.0, "resets_at": int(_w7resets)}}
+    assert display_state({"verdict": "GO", "pct": 20.0}, _dr3, _wcfg, _wnow) == "GO", (
+        "the dot followed the seven-day bar; it must follow the five-hour one")
+    _dr4 = {"five_hour": {"used_percentage": 60.0, "resets_at": int(_wresets)},
+            "seven_day": {"used_percentage": 10.0, "resets_at": int(_w7resets)}}
+    assert display_state({"verdict": "GO", "pct": 60.0}, _dr4, _wcfg, _wnow) == "WARN", (
+        "a quiet seven-day window suppressed a five-hour WARN")
+
+    # ⭐ FIVE STATES, FIVE ICONS, AND THE BAR WEARS THE SAME COLOUR AS THE DOT. Asserted on the
+    # rendered row rather than on the map, because the row is what the owner reads.
+    # ⚠ THIS FIXTURE USES THE REAL CLOCK, unlike the ones above. _watch_line() reaches
+    # time.time() through _line_parts(), so a record stamped at a frozen _wnow renders as a
+    # window that reset long ago - dashes, no colour, and an assertion that passes or fails
+    # for a reason that has nothing to do with WARN.
+    _rnow = time.time()
+    _drl = {"ts": int(_rnow * 1000),
+            "five_hour": {"used_percentage": 60.0, "resets_at": int(_rnow + 2.5 * 3600)}}
+    _wl = _watch_line("13:20:00", _drl, {"verdict": "GO", "pct": 60.0}, None,
+                      dict(_wcfg, width=200))[0]
+    assert VERDICT_ICON["WARN"] in _wl and VERDICT_ICON["GO"] not in _wl, _wl
+    # ⛔ THE DOT'S OWN COLOUR, ASSERTED AGAINST THE DOT AND NOT AGAINST THE ROW. ⚠ Measured:
+    # `ANSI["caution"] in _wl` passed against a build that coloured the dot by percentage,
+    # because the BAR beside it was yellow for its own reasons. The escape must sit
+    # immediately before the icon, which is the one arrangement only _state_colour() produces.
+    assert ANSI["caution"] + VERDICT_ICON["WARN"] in _wl, (
+        "the WARN dot is not wearing the WARN colour: %r" % _wl)
+    assert set(VERDICT_ICON) == {"GO", "WARN", "PACE", "STOP", "NO-DATA"}, VERDICT_ICON
+    assert len(set(VERDICT_ICON.values())) == 5, "two states share an icon: %r" % VERDICT_ICON
+    assert len(set(ANSI[k] for k in STATE_ANSI.values())) == 4, (
+        "two states share a colour: %r" % STATE_ANSI)
+
+    # ⭐ A ZERO UNIT IS NEVER PRINTED, and the larger unit never is. ⚠ The `%dd%dh` branch is
+    # included: it is the same defect and the owner's examples did not reach it.
+    for _m, _want in ((0, "0m"), (32, "32m"), (59, "59m"), (60, "1h"), (92, "1h32m"),
+                      (180, "3h"), (188, "3h8m"), (1439, "23h59m"), (1440, "1d"),
+                      (1500, "1d1h"), (5760, "4d")):
+        assert duration(_m) == _want, (_m, duration(_m), _want)
 
     print("selftest OK")
     return 0

@@ -673,6 +673,28 @@ def status():
         print("                      what each one writes, and what it costs a day:")
         print("                      %s" % os.path.join(HERE, "config.example.json"))
 
+    # ⛔ THE ONE COUPLING THE SETTINGS THEMSELVES CANNOT SHOW. The burn gauge's colour bands
+    # are multiples of clock speed and were CALIBRATED against burn_window_min = 10; measured
+    # over real history, at 15 or above the red band is never reached at all, and 0 (the whole
+    # window) is smoother still. ⇒ Somebody who raises that dial silently loses a colour, and
+    # a colour that never appears is indistinguishable from a speed that never happened.
+    # ⚠ REPORTED HERE AND NOT AS A usage.py WARNING: config() runs on every statusline render,
+    # so a line there would print continuously. This file is where this repository already
+    # says "the setting you wrote is not doing what you think".
+    try:
+        _bw = _uu.config(STATE_DIR).get("burn_window_min")
+    except Exception:
+        _bw = None
+    if _bw is not None and (_bw == 0 or _bw >= 15):
+        print("burn colour bands   : ⚠ burn_window_min = %s, and the bands are calibrated"
+              % _bw)
+        print("                      for 10. At this value the RED band is never reached,")
+        print("                      so the gauge has three colours, not four.")
+        print("                      Set burn_window_min back to 10, or re-fit the")
+        print("                      burn_x_yellow / burn_x_orange / burn_x_red edges:")
+        print("                      python %s"
+              % os.path.join(HERE, "Tools", "Debug", "burn_band_fit.py"))
+
     try:
         r = subprocess.run([sys.executable, os.path.join(HERE, "hooks", "usage.py"),
                             "--verdict"], capture_output=True, timeout=30,

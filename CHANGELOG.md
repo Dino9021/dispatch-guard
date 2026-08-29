@@ -33,6 +33,77 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.46.0
+
+- ⭐ **Burn 錶的「格數」和「顏色」拆成兩個獨立訊號。** 以前兩個都是同一個 `ratio` 算出來的
+  —— 兩個視覺通道講同一件事，其中一個是浪費，而且會出現「滿格但黃色」這種難以解讀的組合。
+  - **格數**（不變）：這個額度撐不撐得到重置。
+  - **顏色**（新）：現在燒得多快，單位是「時鐘速度」的倍數（100 ÷ 視窗分鐘數 =
+    0.333 %/min，也就是「剛好在重置那一刻用完」的速度）。
+- ⭐ **預設分段 1.00× / 1.75× / 2.25×，是「算出來的，不是挑的」。** 擁有者要求
+  紅 10% / 橘 15% / 黃 25% / 綠 50% 的時間佔比並要我回推倍數；用真實歷史（兩個五小時視窗、
+  298 個有速率的分鐘）實測是 **49 / 29 / 14 / 7**，而且在四分之一倍數的搜尋裡是最佳解。
+- ⭐ **三個分段可以自己改**：`burn_x_yellow` / `burn_x_orange` / `burn_x_red`。
+  ⛔ 三個「獨立數字」而不是一個陣列，這是被既有程式碼逼的：`config()` 只在值是
+  `int`／`float` 時才從磁碟複製，陣列會被「安靜忽略」，使用者會拿到預設值卻以為改到了。
+  ⚠ 必須遞增，不遞增就印一行並且「三個一起」退回預設 —— 半套是誰都沒選過的校準。
+- ⛔ **零格一律紅色，不管速度多少。** 零格是 `ratio < 0.05`：實測 remain=119 分時涵蓋
+  burnout 0～5 分，要回到滿格需要減速 **24～119 倍**，或根本不可能。⇒ 任何做得到的減速都
+  改變不了結果，所以「要不要降速」沒有有用的答案；而在「空 = 危險」的欄位裡，空長條配綠色
+  說的是跟事實相反的話。
+- ⚠ **代價，擁有者明確接受了：光看顏色不能下判斷，兩個訊號都要讀。** 滿格配紅 = 燒很兇但
+  視窗剛開，不用降速；短格配綠 = 已經龜速但撐不到，降速也救不了。
+- ⛔ **`burn_window_min` 和分段是綁在一起的。** 實測：15 以上紅色「永遠不會出現」，5 則有
+  15～16% 的時間根本算不出速率。所以校準用 10。改了這個值，`install.py --status` 會提醒你。
+- ⭐ 新增 `Tools/Debug/burn_band_fit.py`：讀「你目前設定的」分段，用你自己的歷史算出各色
+  佔比並給判定。⚠ 它放在這裡而不是任務資料夾，因為 ADR 的「什麼情況要重新檢討」需要一個
+  「跑得起來」的指令 —— 任務資料夾是整包封存的。
+- ⭐ 兩輪對抗式審查，兩輪都 REJECT，五個 blocking 全部修掉：空長條變綠色、「不用接新東西」
+  是錯的、F5「只有 10 會出四色」是錯的（5 也會）、B1 的理由對六個狀態裡的五個不成立、
+  以及漏掉發版機制。ADR 和兩份報告在
+  `Memory/tasks/20260829-133237-burn-two-signals/`。
+- ⭐ 七個變異全部被殺，對照組通過。⚠ 那四條舊斷言是「改寫」不是刪掉 —— 實測拆開之後
+  **只有第一條會失敗**，另外三條會「因為新的理由而繼續通過」，整套測試變綠但一條都沒在守。
+  `Tools/Debug/test_all.py` 11/11。
+
+---
+
+## 0.45.0
+
+- ⭐ **多了一個 WARN 狀態，而且它只有顏色。** 只要五小時長條圖的填滿「超過它自己的 ┃」
+  —— 也就是你花得比時鐘快 —— 圓點和長條圖一起轉黃。
+  🟢 GO、🟡 WARN、🟠 PACE、🔴 STOP、⚪ 還沒有資料。
+  ```
+  13:20:00  5h ▓▓▓▓▓┃░░░░ 51% 2h29m 7d ▓▓▓▓░┃░░░░ 40% 2d23h Burn ────────── --  🟡
+  ```
+- ⛔ **WARN 進不到 `verdict()`，這是刻意的。** `dispatch_gate.py` 有「四個地方」拿判定字
+  去比字面 tuple（`not in ("GO", "PACE")`、`not in ("PACE", "STOP")`），多一個字會
+  **安靜地改變煞車的行為**。擁有者的話是「只變色不做任何處理」，所以 WARN 在
+  `_state()` / `display_state()` 這一層產生，跟 `SLEEP` 走同一條路。
+  ⚠ 它只把綠變黃，永遠不會把真正的 PACE 或 STOP 變軟。
+- ⭐ **長條圖和圓點現在共用同一組配色**，所以看哪一個都是同一個答案。
+  上面兩層仍然讀 `colour_warn_pct` / `colour_alarm_pct`（預設 70 / 85，跟判定一致），
+  WARN 沒有自己的門檻設定值 —— 那個 ┃ 標記本身就是條件。
+- ⭐ **時間格式不再印出 0。** `0h32m` 現在是 `32m`，`3h0m` 是 `3h`，`4d0h` 是 `4d`。
+  ⚠ 消失的永遠是「小的那個單位」：把 `3h0m` 的 `3h` 拿掉會被讀成三分鐘。
+- ⭐ **API 撈取的強制下限從 120 秒降到 60 秒，預設值仍然是 120。** 下限和預設是兩個不同的
+  數字了。⛔ 這不是調校，是為了讓「每個 token 大約只能打五次」那個說法「可以被實測」——
+  它一直完全建立在別人的文件上。實測 2026-08-29、120 秒間隔：100 分鐘內至少 26 次成功
+  呼叫，`fetch.log` 從來沒被建立過，整個狀態目錄裡找不到 429。⇒ 那個數字大概差了一個
+  數量級。⚠ 停止條件寫在 `FETCH_FLOOR_SECONDS` 上面：一小時內出現 429 就改回 120。
+  ADR 和一輪對抗式審查在 `Memory/tasks/20260829-124223-fetch-floor-60s/`。
+- ⭐ **`burn_window_min` 預設從 30 改成 10。** 讀數是「整數百分比」，所以 10 分鐘基線一階
+  是 0.1%/m（30 分鐘是 0.033），錶會靈敏三倍，安靜的時候直接顯示 `--`。
+  ⚠ 安全只有一個理由，跟 `_burn_rate()` 本來就寫著的一樣：**任何燃燒率數字都到不了
+  GO/PACE/STOP。**
+- ⭐ 六個變異全部被殺（`_state()` 的 WARN 層、`>` 變 `>=`、`display_state()` 蓋掉
+  PACE/STOP、圓點改用百分比上色、`duration()` 的去零、`verdict()` 吐出 WARN），
+  對照組通過。⚠ 其中「圓點顏色」那個第一次是**活下來的** —— 因為旁邊的長條圖剛好也是
+  黃的，斷言分不出來；現在改成斷言跳脫碼「緊貼在圖示前面」。
+  `Tools/Debug/test_all.py` 11/11。
+
+---
+
 ## 0.44.1
 
 - ⛔ **段落標籤的圖示收回來了 —— 在擁有者的終端機上，它們畫不出來。** 螢幕截圖:
@@ -1427,6 +1498,91 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.46.0
+
+- ⭐ **The Burn gauge's CELLS and its COLOUR are now two independent signals.** Both used to
+  be computed from the same `ratio` — two visual channels carrying one number, one of them
+  wasted, and it produced the unreadable "full bar, yellow" combination.
+  - **Cells** (unchanged): will the budget outlast this reset?
+  - **Colour** (new): how fast am I burning, as a multiple of **clock speed** (100 ÷ window
+    minutes = 0.333 %/min, the pace that finishes the window exactly as it resets).
+- ⭐ **The default bands 1.00× / 1.75× / 2.25× were FITTED, not picked.** The owner asked for
+  red 10% / orange 15% / yellow 25% / green 50% of the time and for the multiples that produce
+  it. Measured over real history (two five-hour windows, 298 minutes with a rate) they give
+  **49 / 29 / 14 / 7**, and they are the best set a quarter-multiple search finds.
+- ⭐ **All three edges are configurable**: `burn_x_yellow` / `burn_x_orange` / `burn_x_red`.
+  ⛔ Three separate scalars rather than one list, and that is forced by existing code:
+  `config()` copies a value from disk only when it is an `int` or `float`, so a list under a
+  known key would be **silently ignored** and the reader would get the defaults while
+  believing otherwise. ⚠ They must ascend; a set that does not prints a line and **all three**
+  fall back — a half-honoured set is a calibration nobody chose.
+- ⛔ **Zero cells is forced to red whatever the rate says.** Zero cells is `ratio < 0.05`:
+  measured at remain=119 min it covers burnout 0-5 minutes, and returning to a full bar from
+  there needs a **24× to 119×** slowdown, or is impossible. ⇒ No achievable change of pace
+  alters the outcome, so "should I slow down?" has no answer that helps — and in a column
+  where empty already means DANGER, an empty bar wearing green says the opposite of the truth.
+- ⚠ **The price, accepted explicitly by the owner: a glance at the colour alone no longer
+  decides anything.** Full bar + red is "burning hard, but the window just opened — no action
+  needed"; short bar + green is "already crawling, and slowing further will not save it".
+- ⛔ **The bands are coupled to `burn_window_min`.** Measured: at 15 and above red **never**
+  fires; at 5, 15-16% of the time has no rate at all. Hence 10. Change that dial and
+  `install.py --status` tells you what it cost.
+- ⭐ New `Tools/Debug/burn_band_fit.py` reads the **configured** edges and reports their
+  achieved shares against your own history, with a verdict. ⚠ It ships here rather than in the
+  task folder because the ADR's reconsideration criterion needs a command that can actually be
+  run — a task folder is archived as a unit.
+- ⭐ Two adversarial review rounds, both REJECT, five blocking findings all fixed: an empty bar
+  painted green, a false "no new wiring" claim, F5's false "only 10 produces all four colours"
+  (5 does too), B1's reason being untrue for five of six states, and the omitted release
+  mechanics. ADR and both reports in `Memory/tasks/20260829-133237-burn-two-signals/`.
+- ⭐ Seven mutations, all killed, control passing. ⚠ The four old assertions were **rewritten,
+  not deleted** — measured, only the FIRST of them fails after the split; the other three go on
+  **passing for a new reason**, so the suite would have gone green while guarding nothing.
+  `Tools/Debug/test_all.py` 11/11.
+
+---
+
+## 0.45.0
+
+- ⭐ **A WARN state, and it is colour only.** The dot and the bar turn yellow as soon as the
+  five-hour bar's fill passes **its own ┃** — you are spending faster than the clock.
+  🟢 GO, 🟡 WARN, 🟠 PACE, 🔴 STOP, ⚪ no data yet.
+  ```
+  13:20:00  5h ▓▓▓▓▓┃░░░░ 51% 2h29m 7d ▓▓▓▓░┃░░░░ 40% 2d23h Burn ────────── --  🟡
+  ```
+- ⛔ **WARN never reaches `verdict()`, deliberately.** `dispatch_gate.py` tests the verdict
+  word against literal tuples in **four** places (`not in ("GO", "PACE")`, `not in ("PACE",
+  "STOP")`), so a fifth word would **silently change what the brake does**. The owner's
+  instruction was 只變色不做任何處理 — colour only, no handling — so WARN is derived at the
+  display layer by `_state()` / `display_state()`, the same route `SLEEP` already takes.
+  ⚠ It can only turn a green dot yellow; it never softens a real PACE or STOP.
+- ⭐ **The bars and the dot now share one palette**, so either one answers the same question.
+  The two upper tiers still read `colour_warn_pct` / `colour_alarm_pct` (70 / 85 by default,
+  matching the verdict); WARN has no threshold key because the ┃ marker IS the condition.
+- ⭐ **A zero unit is no longer printed.** `0h32m` is `32m`, `3h0m` is `3h`, `4d0h` is `4d`.
+  ⚠ It is always the SMALLER unit that vanishes: dropping the `3h` from `3h0m` would read as
+  three minutes.
+- ⭐ **The enforced fetch floor drops from 120 s to 60 s; the default is still 120 s.** The
+  floor and the default are now different numbers. ⛔ Not a tuning change — it exists so the
+  "~5 calls per access token" claim can be MEASURED, having rested entirely on somebody else's
+  documentation. Measured 2026-08-29 at a 120 s interval: at least 26 successful calls in 100
+  minutes, `fetch.log` never created at all, and no 429 anywhere in the state tree. ⇒ The
+  figure is out by roughly an order of magnitude. ⚠ The stop rule sits above
+  `FETCH_FLOOR_SECONDS`: a 429 inside the first hour puts it back to 120. The ADR and its
+  adversarial review round are in `Memory/tasks/20260829-124223-fetch-floor-60s/`.
+- ⭐ **`burn_window_min` default 30 → 10.** Readings arrive in WHOLE percent, so one step over
+  a 10-minute baseline is 0.1 %/min against 0.033 at 30 — three times twitchier, and `--` on a
+  quiet stretch. ⚠ Safe for one reason only, the same one `_burn_rate()` already states: **no
+  burn figure reaches GO/PACE/STOP.**
+- ⭐ Six mutations, all killed (the WARN tier in `_state()`, `>` to `>=`, `display_state()`
+  overwriting PACE/STOP, the dot coloured by percentage, the `duration()` zero-trim, and
+  `verdict()` emitting WARN), with a passing control. ⚠ The dot-colour one **survived the
+  first attempt** — the bar beside it happened to be yellow too, so the assertion could not
+  tell them apart; it now asserts the escape sits immediately before the icon.
+  `Tools/Debug/test_all.py` 11/11.
 
 ---
 
