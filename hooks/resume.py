@@ -535,7 +535,22 @@ def do_run(sdir, cfg):
     # NEXT reset, so deriving the reopening from it is arithmetic that is easy to get
     # backwards - a first version did exactly that, compared against a future timestamp,
     # and the check never fired. Recency is what the question actually reduces to.
+    # ⛔ THE SECOND SIGNAL IS CONSULTED HERE AND NOWHERE ELSE IN THIS FILE, and the
+    # restriction is the point. This call asks "is ANYBODY at the keyboard?" and passes no
+    # session_id; origin_session_note() asks about ONE NAMED session and must keep reading
+    # that session's own .alive file, or it would tell the owner a week-dead conversation is
+    # still there.
+    # ⛔ AND IT CAN ONLY EVER MAKE THIS RUN STAND DOWN MORE, never less: min() of the two
+    # ages, so the answer only gets SMALLER, and smaller is what trips the check below.
+    # ⚠ Why it is needed at all: this file's signal is written by our own gate hook, and when
+    # that hook is not wired up the signal goes flat while somebody is working. MEASURED
+    # 2026-08-30 - .alive frozen at 1225 minutes on a machine in continuous use. The failure
+    # direction here is the OPPOSITE of the watcher's and worse: the watcher merely goes
+    # quiet, this decides nobody is present and RUNS THE WORK underneath somebody typing.
     alive = session_alive_minutes(sdir)
+    user = usage._user_activity_min()
+    if user is not None and (alive is None or user < alive):
+        alive = user
     if alive is not None and alive < ALIVE_WITHIN_MIN:
         do_cancel(sdir, quiet=True)
         log_line("RUN-SKIPPED a Claude session was active %.0f min ago (< %d), so somebody "

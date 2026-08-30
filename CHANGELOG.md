@@ -33,6 +33,43 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.47.0
+
+- ⛔ **watcher 不會再把「我們的 hook 死掉」讀成「你回家了」。** 實測 2026-08-30：`.alive`
+  卡在 1225 分鐘、機器一直在用、watcher 睡了 20 小時，而 `install.py --status` 全程說
+  「everything is live」。原因是 `installed_plugins.json` 指著一個被刪掉的安裝目錄，
+  Claude Code 展開 `${CLAUDE_PLUGIN_ROOT}` 之後每個 hook 都靜靜失效。
+- ⭐ **「有沒有人在工作」現在看兩個來源，取比較新的**：gate 自己的 `state/*.alive`，
+  以及 `~/.claude.json` 的修改時間 —— 後者是 Claude Code 自己寫的，跟我們的 hook 無關。
+  ⭐ **記錄器剛好錄到那次失效**：hook 被修好之前那 22 分鐘裡（`.alive` 已經超過 1000 分鐘、
+  確定是死的），`~/.claude.json` 被寫了九次，年齡從沒超過 **3.71 分鐘**。
+- ⭐ **兩個來源不一致時，時鐘旁邊會出現 `HOOK?`。** ⛔ 放在 `head` 不是放在判定圓點旁邊，
+  這是量出來的：`_cut()` 從右邊裁，而圓點是整行最右邊的東西 —— 25 和 30 欄時它會被丟掉，
+  而且整行回傳得比終端機還短，沒有任何痕跡說東西被拿掉了。`head` 裡的東西每個寬度都活著。
+- ⛔ **`resume.py` 也修了，而且它的失效方向相反、後果更嚴重。** 訊號死掉時 watcher 只是
+  安靜下來；排程 resume 會判定「沒人在」然後**照樣跑**，跑在正在打字的人底下。只接到
+  stand-down 那個呼叫點（它不帶 session_id），而且**只可能讓它更容易退場，不會更不容易**。
+- ⛔ **兩個被否決的候選訊號，理由都只有量測才給得出來：**
+  - `projects/*/*.jsonl`（逐字稿）是「一個 turn 寫一次」，所以一個二十分鐘的 turn 有二十分鐘
+    什麼都不寫，而 `idle_after_min` 是 15 —— 同一個 bug 換一件衣服。
+  - `~/.claude/backups` 是「五個檔案的輪替、會被裁剪」：活下來最新的那個檔案本身可能就是舊的，
+    所以它的年齡不等於最後一次寫入的年齡。一個「清理程式跑過就換意思」的訊號不是訊號。
+- ⭐ **`$CLAUDE_USER_CONFIG` / `$CLAUDE_CONFIG_DIR` 可以指定第二個來源的位置。**
+  ⛔ 用環境變數不是偏好：`test_usage_watch.py` 用 `subprocess.Popen` 起 watcher，
+  monkeypatch 一個模組常數過不了行程邊界。**實測**：在這個接縫存在之前，對著一個空的暫存
+  狀態目錄 `last_heartbeat_min()` 回傳 0.68 分鐘（真實 `~/.claude.json` 的年齡），
+  於是**沒有任何 fixture 能表達「一台閒置的機器」**，四個測試變成寫不出來或走錯分支。
+- ⭐ 新增一個測試：`case_dead_gate_beside_live_person`。它讓兩個來源「不一致」，所以只有新的
+  那個能產生結果 —— ⚠ 而原本的對照組 `case_active_keeps_drawing` 把兩個來源都設成 0，
+  分不出是誰讓 watcher 醒著（實測：它在第二個來源什麼都沒做的版本上照樣通過）。
+  ⭐ 這個新測試自己就抓到一個真的顯示問題：`DRAW` 那個正規表示式只認時鐘開頭，
+  所以帶 `HOOK?` 的一行「不算一次繪製」，報成「畫了 0 次」。
+- ⭐ 三輪對抗式審查，全部 REJECT，七個 blocking 全部修掉。`Tools/Debug/test_all.py` 11/11，
+  六個變異全部被殺。ADR 和三份報告在
+  `Memory/tasks/20260830-163713-heartbeat-second-signal/`。
+
+---
+
 ## 0.46.0
 
 - ⭐ **Burn 錶的「格數」和「顏色」拆成兩個獨立訊號。** 以前兩個都是同一個 `ratio` 算出來的
@@ -1498,6 +1535,54 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.47.0
+
+- ⛔ **The watcher no longer reads "our hooks are dead" as "you went home".** Measured
+  2026-08-30: `.alive` frozen at 1225 minutes on a machine in continuous use, the watcher
+  asleep for 20 hours, and `install.py --status` printing `OVERALL : everything is live`
+  throughout. The cause was `installed_plugins.json` pointing at a deleted install directory,
+  so `${CLAUDE_PLUGIN_ROOT}` expanded to nothing and every hook silently failed to fire.
+- ⭐ **"Is anybody working?" now reads two sources, whichever is newer**: the gate's own
+  `state/*.alive`, and the mtime of `~/.claude.json`, which Claude Code writes whether or not
+  any hook of ours is wired. ⭐ **The recorder happened to capture the failure itself**: across
+  the 22 minutes before the hooks were repaired — `.alive` over 1000 minutes old, so provably
+  dead — `~/.claude.json` was written nine times and never got older than **3.71 minutes**.
+- ⭐ **When the two disagree, `HOOK?` appears beside the clock.** ⛔ In `head`, not beside the
+  verdict dot, and that was measured: `_cut()` trims from the right and the dot is the
+  rightmost thing on the line — at 25 and 30 columns it is DROPPED and the row comes back
+  shorter than the terminal with nothing saying anything was suppressed. Anything in `head`
+  survives every width.
+- ⛔ **`resume.py` is fixed too, and its failure direction is the opposite and worse.** When
+  the signal dies the watcher merely goes quiet; the scheduled resume decides nobody is
+  present and **runs the work anyway**, underneath somebody who is typing. Wired only into the
+  stand-down call site (which passes no `session_id`), and it can **only ever make the resume
+  MORE likely to stand down, never less**.
+- ⛔ **Two candidate signals rejected, both for reasons only measurement could give:**
+  - `projects/*/*.jsonl` (the transcript) is written at TURN boundaries, so a twenty-minute
+    turn writes nothing for twenty minutes against an `idle_after_min` of 15 — the same defect
+    in a new coat.
+  - `~/.claude/backups` is a **rotating, pruned ring of five files**: the newest survivor can
+    itself be old, so its age is not the age of the last write. A signal whose meaning changes
+    when a cleaner runs is not a signal.
+- ⭐ **`$CLAUDE_USER_CONFIG` and `$CLAUDE_CONFIG_DIR` point the second source elsewhere.**
+  ⛔ An environment variable rather than a constant is not a preference: `test_usage_watch.py`
+  starts the watcher through `subprocess.Popen`, where a monkeypatched module constant does
+  not cross the process boundary. **Measured** before the seam existed: against an empty
+  temporary state directory `last_heartbeat_min()` returned 0.68 minutes — the age of the real
+  `~/.claude.json` — so **no fixture could express "an idle machine"** and four assertions
+  became unwritable or passed through the wrong branch.
+- ⭐ New check `case_dead_gate_beside_live_person`, in which the two sources **disagree**, so
+  only the new one can produce the result. ⚠ The existing control `case_active_keeps_drawing`
+  ages both sources to zero and therefore cannot tell which kept the watcher awake — measured,
+  it passed against a build whose second source did nothing at all. ⭐ The new check
+  immediately caught a real display defect of its own: the `DRAW` pattern anchored on the
+  clock, so a row carrying `HOOK?` counted as **no draw at all** and reported "drew 0 times".
+- ⭐ Three adversarial review rounds, all REJECT, seven blocking findings all fixed.
+  `Tools/Debug/test_all.py` 11/11; six mutations, all killed. ADR and all three reports in
+  `Memory/tasks/20260830-163713-heartbeat-second-signal/`.
 
 ---
 

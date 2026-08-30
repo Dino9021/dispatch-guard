@@ -1641,7 +1641,7 @@ def _redraw(lines, erase="\033[K"):
     return "\r" + lines[0] + erase
 
 
-def _watch_line(stamp, data, v, note, cfg, idle=False, burn=None):
+def _watch_line(stamp, data, v, note, cfg, idle=False, burn=None, hook_silent=None):
     """The row(s) `--watch` prints, fitted to the terminal ONCE. A list; pure, no I/O.
 
     ⛔ THE BUG THIS FUNCTION EXISTS FOR. `_line()` fits ITSELF to the terminal width - and
@@ -1683,7 +1683,18 @@ def _watch_line(stamp, data, v, note, cfg, idle=False, burn=None):
     # could therefore disagree - a yellow dot on a green ladder is a contradiction the reader
     # has to resolve, and there is nothing to resolve it with.
     von, voff = _state_colour(state, lcfg)
-    head = "%s  " % stamp
+    # ⛔ THE DIAGNOSIS GOES IN `head`, NOT BESIDE THE VERDICT, and that was measured rather
+    # than chosen. _cut() trims the row from the RIGHT, and the verdict icon is the rightmost
+    # thing on the line: at 25 and 30 columns it is DROPPED and the row comes back shorter
+    # than the terminal, with nothing saying anything was suppressed. Anything in `head`
+    # survives every width the row is drawn at.
+    # ⚠ Five columns, and only when there IS a disagreement - see hook_silent_min(), whose
+    # None means "nothing to report", never "healthy".
+    mark = ""
+    if hook_silent is not None and hook_silent > (cfg.get("idle_after_min", 15) or 15):
+        hon, hoff = ("", "") if not lcfg.get("colour", True) else (ANSI["alarm"], ANSI["reset"])
+        mark = "%sHOOK?%s " % (hon, hoff)
+    head = "%s%s  " % (mark, stamp)
     tail = "  %s%s%s  " % (von, word, voff)
     windows, extras = _line_parts(data, note, lcfg, None,
                                   stale=False if idle else None, burn=burn)
@@ -2588,13 +2599,42 @@ def burnout_min(sdir, cfg, pct, resets, now):
 
 # --------------------------------------------------------------------------- main
 
-def last_heartbeat_min(sdir, now=None):
-    """Minutes since any session last fired a hook, or None if none ever has.
+# ⭐ THE SECOND HEARTBEAT SOURCE, AND IT IS NOT THIS PLUGIN'S FILE. Claude Code writes
+# ~/.claude.json while a person works, whether or not any hook of ours is wired - which is
+# exactly the independence that makes it useful here, because the failure it covers is our
+# own hooks not firing at all.
+# ⛔ READ THROUGH THE ENVIRONMENT, and that is not a preference. test_usage_watch.py launches
+# the watcher through subprocess.Popen, so a monkeypatched module constant does not cross the
+# process boundary - and without a seam a fixture cannot express "an idle machine" at all,
+# because last_heartbeat_min() would stop being a function of `sdir`. MEASURED: against an
+# empty temp state directory it returned 0.68 minutes, the age of the REAL file, and four
+# tests became unwritable. ⚠ $CLAUDE_CONFIG_DIR support falls out of the same seam.
+CLAUDE_JSON_ENV = "CLAUDE_USER_CONFIG"
+
+
+def _claude_json_path():
+    """Where Claude Code's own config lives. $CLAUDE_USER_CONFIG wins, then
+    $CLAUDE_CONFIG_DIR/.claude.json, then ~/.claude.json."""
+    env = os.environ.get(CLAUDE_JSON_ENV)
+    if env:
+        return env
+    cfg_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    if cfg_dir:
+        return os.path.join(cfg_dir, ".claude.json")
+    return os.path.join(os.path.expanduser("~"), ".claude.json")
+
+
+def _gate_heartbeat_min(sdir, now=None):
+    """Minutes since any session last fired one of OUR hooks, or None if none ever has.
 
     ⭐ The gate writes `state/<session-id>.alive` on EVERY hook event, so the newest of
-    those files is the answer to "is anybody actually working?" - no new bookkeeping, no
-    new file, and it already survives pruning: prune_state() keeps the .alive files by
-    COUNT, newest first, so a live session's own file can never be the one dropped.
+    those files is the answer to "did a hook run?" - no new bookkeeping, no new file, and it
+    already survives pruning: prune_state() keeps the .alive files by COUNT, newest first, so
+    a live session's own file can never be the one dropped.
+
+    ⚠ THIS IS NO LONGER THE ANSWER TO "is anybody working?" - see last_heartbeat_min(). It
+    answers the narrower question it always really answered, and the rename is the point: a
+    silent hook made the two look like one question for as long as the hooks worked.
     """
     now = time.time() if now is None else now
     newest = None
@@ -2606,6 +2646,68 @@ def last_heartbeat_min(sdir, now=None):
         if newest is None or m > newest:
             newest = m
     return None if newest is None else max(0.0, (now - newest) / 60.0)
+
+
+def _user_activity_min(now=None):
+    """Minutes since Claude Code last wrote its own config, or None if it is unreadable."""
+    now = time.time() if now is None else now
+    try:
+        m = os.path.getmtime(_claude_json_path())
+    except OSError:
+        return None
+    return max(0.0, (now - m) / 60.0)
+
+
+def last_heartbeat_min(sdir, now=None):
+    """Minutes since anybody last WORKED here, or None if there is no evidence either way.
+
+    ⛔ TWO SOURCES, BECAUSE ONE OF THEM IS THE THING THAT BREAKS. This used to read only the
+    gate's own `.alive` files - so when the gate hook was not wired up, the signal went flat
+    while the owner was still working and the watcher read the flatness as "gone home".
+    MEASURED 2026-08-30: `.alive` frozen at 1225 minutes, the machine in continuous use, the
+    watcher asleep for 20 hours, and `install.py --status` printing "everything is live".
+
+    ⭐ THE SECOND SOURCE IS NOT OURS, and the recording caught it surviving the exact failure:
+    across the 22 minutes before the hooks were repaired - `.alive` over 1000 minutes old, so
+    provably dead - ~/.claude.json was written nine times and its MAXIMUM age was 3.71
+    minutes, against an idle_after_min of 15.
+
+    ⛔ REJECTED ALTERNATIVES, both for reasons that only measurement could give:
+      - `projects/*/*.jsonl` (the transcript) is written at TURN boundaries, so a twenty-
+        minute turn writes nothing for twenty minutes. Same defect, new coat.
+      - `~/.claude/backups` is a 5-file ROTATING, PRUNED ring: the newest surviving file can
+        itself be old, so its age is not the age of the last write. A signal whose meaning
+        changes when a cleaner runs is not a signal.
+
+    ⚠ `None` keeps its old meaning - "nothing has ever run here" - which should_fetch() treats
+    as a fresh state directory rather than an idle machine. Only a NEWER answer can come out
+    of the second source, never an older one.
+    """
+    now = time.time() if now is None else now
+    ages = [a for a in (_gate_heartbeat_min(sdir, now), _user_activity_min(now))
+            if a is not None]
+    return min(ages) if ages else None
+
+
+def hook_silent_min(sdir, now=None):
+    """How far the GATE's signal lags the independent one, or None when they agree.
+
+    ⭐ THE DISAGREEMENT IS ITSELF A DIAGNOSIS, and it has exactly one explanation: somebody is
+    working and our hooks are not firing. Nothing else makes Claude Code's own file fresh
+    while every `.alive` is stale.
+
+    ⛔ A SEPARATE FUNCTION ON PURPOSE. last_heartbeat_min() returns ONE number, so the two
+    sources are collapsed before any caller sees them and the diagnosis cannot be recovered
+    from it. Splitting is what makes the marker computable at all.
+
+    ⚠ Returns None when there is nothing to report: the signals agree, or either is missing.
+    A caller must not read None as "healthy" - it is "no disagreement to show".
+    """
+    now = time.time() if now is None else now
+    gate, user = _gate_heartbeat_min(sdir, now), _user_activity_min(now)
+    if gate is None or user is None:
+        return None
+    return gate - user if gate - user > 0 else None
 
 
 def should_fetch(sdir, cfg, now=None):
@@ -2768,7 +2870,11 @@ def watch(sdir, cfg, argv):
                 time.sleep(every)
                 continue
             drawn_idle = idle
+            # ⭐ COMPUTED HERE, not inside the row builder, so the two filesystem reads that
+            # decide it happen at the same moment as the rest of the row. ⚠ They are still a
+            # moment apart from should_fetch()'s own read above - see hook_silent_min().
             lines = _watch_line(time.strftime("%H:%M:%S"), data, v, note, cfg, idle=idle,
+                                hook_silent=hook_silent_min(sdir),
                                 burn=burn_triple(sdir, cfg, data))
             # ⛔ NO CLIMBING. See _redraw(): the watcher cleared the screen at startup and
             # redraws all of it from an absolute home, because a relative move is only right
@@ -2843,28 +2949,98 @@ def selftest():
     # ⛔ THE WATCHER'S IDLE PAUSE, both directions. It is invisible when right and expensive
     # when wrong: never pausing burns the five calls per token overnight, pausing too
     # eagerly freezes the number during real work. Neither failure announces itself.
+    # ⛔ EVERY CASE BELOW POINTS $CLAUDE_USER_CONFIG AT A FILE THE FIXTURE OWNS, and without
+    # that the block cannot be written at all. MEASURED when the second source landed:
+    # against an empty temp state directory last_heartbeat_min() returned 0.68 minutes - the
+    # age of the REAL ~/.claude.json - so no fixture could express "an idle machine" and four
+    # assertions here became unwritable or, worse, passed through the wrong branch.
+    # ⚠ An env var rather than a module constant BECAUSE test_usage_watch.py launches the
+    # watcher through subprocess.Popen, where a monkeypatched constant does not cross the
+    # process boundary.
+    _saved_cj = os.environ.get(CLAUDE_JSON_ENV)
     with tempfile.TemporaryDirectory() as sdir:
         os.makedirs(os.path.join(sdir, "state"))
         cfg_i = {"idle_after_min": 15}
         now = time.time()
-        # A fresh state directory has never seen a hook. That is not idleness, and refusing
-        # to fetch there would leave the very first render empty for ever.
-        assert should_fetch(sdir, cfg_i, now)[0] is True, "an empty state dir must fetch"
+        user_cfg = os.path.join(sdir, "claude.json")
+        os.environ[CLAUDE_JSON_ENV] = user_cfg
+        try:
+            # ⛔ NEITHER SOURCE EXISTS: nothing has ever run here. That is not idleness, and
+            # refusing to fetch would leave the very first render empty for ever.
+            # ⚠ Asserted on the REASON, not only on the boolean - this assertion used to pass
+            # through the wrong branch once a second source existed, which is the failure
+            # class this file keeps meeting.
+            assert last_heartbeat_min(sdir, now) is None, "an empty machine must be unknowable"
+            assert should_fetch(sdir, cfg_i, now)[0] is True, "an empty state dir must fetch"
 
-        beat = os.path.join(sdir, "state", "abc.alive")
-        for back_min, expect in ((0, True), (14, True), (16, False), (600, False)):
-            with open(beat, "w") as f:
+            beat = os.path.join(sdir, "state", "abc.alive")
+            for back_min, expect in ((0, True), (14, True), (16, False), (600, False)):
+                for f_path in (beat, user_cfg):
+                    with open(f_path, "w") as f:
+                        f.write("x")
+                    os.utime(f_path, (now - back_min * 60, now - back_min * 60))
+                got, note = should_fetch(sdir, cfg_i, now)
+                assert got is expect, "%d min idle -> %s" % (back_min, got)
+                assert (note is None) is expect, note
+            # ⚠ The NEWEST heartbeat wins: one live session among twenty dead ones is activity.
+            with open(os.path.join(sdir, "state", "live.alive"), "w") as f:
                 f.write("x")
-            os.utime(beat, (now - back_min * 60, now - back_min * 60))
+            assert should_fetch(sdir, cfg_i, now)[0] is True, "a live session was ignored"
+            # 0 or negative switches the pause off entirely.
+            assert should_fetch(sdir, {"idle_after_min": 0}, now)[0] is True
+
+            # ⭐ THE WHOLE POINT: a DEAD GATE beside a WORKING PERSON must not read as idle.
+            # This is the 2026-08-30 failure, reproduced - .alive frozen at 21 hours while
+            # Claude Code's own file was written every minute or two.
+            os.utime(beat, (now - 1225 * 60, now - 1225 * 60))
+            os.utime(os.path.join(sdir, "state", "live.alive"),
+                     (now - 1225 * 60, now - 1225 * 60))
+            os.utime(user_cfg, (now - 60, now - 60))
             got, note = should_fetch(sdir, cfg_i, now)
-            assert got is expect, "%d min idle -> %s" % (back_min, got)
-            assert (note is None) is expect, note
-        # ⚠ The NEWEST heartbeat wins: one live session among twenty dead ones is activity.
-        with open(os.path.join(sdir, "state", "live.alive"), "w") as f:
-            f.write("x")
-        assert should_fetch(sdir, cfg_i, now)[0] is True, "a live session was ignored"
-        # 0 or negative switches the pause off entirely.
-        assert should_fetch(sdir, {"idle_after_min": 0}, now)[0] is True
+            assert got is True, "a dead gate beside a live person read as idle: %r" % (note,)
+            assert hook_silent_min(sdir, now) > 1000, hook_silent_min(sdir, now)
+            # ...and when BOTH are stale it is genuinely idle, or the check above proves
+            # nothing: the owner refused a change that polls for ever.
+            os.utime(user_cfg, (now - 1225 * 60, now - 1225 * 60))
+            assert should_fetch(sdir, cfg_i, now)[0] is False, "a quiet machine kept fetching"
+            # ⛔ AND THE DIAGNOSIS IS SILENT WHEN THE SIGNALS AGREE. None here means "nothing
+            # to report", never "healthy" - the docstring says so and this pins it.
+            assert hook_silent_min(sdir, now) is None, hook_silent_min(sdir, now)
+            # ⚠ A missing user file must not fabricate a disagreement either. ⛔ Asserted
+            # with the gate deliberately STALE, so a build that forgot the None guard reaches
+            # the subtraction and fails on the ASSERTION rather than crashing on a TypeError -
+            # a crash is a bug found by accident, not a property held by a check.
+            os.remove(user_cfg)
+            assert _user_activity_min(now) is None
+            got = None
+            try:
+                got = hook_silent_min(sdir, now)
+            except TypeError:
+                got = "TypeError - the None guard is gone"
+            assert got is None, got
+        finally:
+            if _saved_cj is None:
+                os.environ.pop(CLAUDE_JSON_ENV, None)
+            else:
+                os.environ[CLAUDE_JSON_ENV] = _saved_cj
+
+    # ⛔ THE PATH SEAM ITSELF, all three branches. $CLAUDE_CONFIG_DIR support falls out of it,
+    # which is why it is pinned rather than left to be rediscovered.
+    _saved_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    try:
+        os.environ.pop(CLAUDE_JSON_ENV, None)
+        os.environ.pop("CLAUDE_CONFIG_DIR", None)
+        assert _claude_json_path() == os.path.join(os.path.expanduser("~"), ".claude.json")
+        os.environ["CLAUDE_CONFIG_DIR"] = os.path.join("X", "cfg")
+        assert _claude_json_path() == os.path.join("X", "cfg", ".claude.json")
+        os.environ[CLAUDE_JSON_ENV] = os.path.join("Y", "explicit.json")
+        assert _claude_json_path() == os.path.join("Y", "explicit.json"), "the env must win"
+    finally:
+        for _k, _v in ((CLAUDE_JSON_ENV, _saved_cj), ("CLAUDE_CONFIG_DIR", _saved_dir)):
+            if _v is None:
+                os.environ.pop(_k, None)
+            else:
+                os.environ[_k] = _v
 
     # ⛔ Ctx: zero and unknown are different answers, decided by whether the KEY is there.
     # Rendering "cannot read" as 0% would be a confident wrong answer erring LOW.

@@ -36,7 +36,12 @@ RUN_SECONDS = 6
 # hold everything, so "how many lines came out" answers the wrong question - and it answers
 # it differently depending on how long the note happens to be, which made this check depend
 # on whether an OAuth token was near expiry. Only the first row of a draw carries the clock.
-DRAW = re.compile(r"^\d\d:\d\d:\d\d\s")
+# ⚠ THE CLOCK IS NO LONGER ALWAYS THE FIRST THING ON THE ROW. Since 0.47.0 a `HOOK?`
+# marker can precede it - it sits in `head` precisely so it survives every width - so a
+# pattern anchored on the clock alone counts a diagnosed row as NO DRAW AT ALL.
+# MEASURED: the dead-gate case reported "drew 0 times" against a watcher that was drawing
+# correctly three times and saying so.
+DRAW = re.compile(r"^(?:HOOK\?\s+)?\d\d:\d\d:\d\d\s")
 
 
 def _fixture(sdir, idle_minutes):
@@ -47,12 +52,21 @@ def _fixture(sdir, idle_minutes):
         json.dump({"ts": int(now * 1000),
                    "five_hour": {"used_percentage": 55, "resets_at": int(now) + 3000},
                    "seven_day": {"used_percentage": 32, "resets_at": int(now) + 300000}}, f)
-    # ⭐ The heartbeat IS the idle clock: should_fetch() reads the newest state/*.alive.
-    beat = os.path.join(sdir, "state", "fixture.alive")
-    with open(beat, "w", encoding="utf-8") as f:
-        f.write("x")
+    # ⭐ THE HEARTBEAT IS THE IDLE CLOCK, AND SINCE 0.47.0 IT HAS TWO SOURCES: the gate's own
+    # state/*.alive AND Claude Code's ~/.claude.json, whichever is newer. Both must be aged
+    # here or the fixture cannot express an idle machine at all.
+    # ⛔ THE SECOND ONE IS SET THROUGH THE ENVIRONMENT BECAUSE OF _run(), which starts the
+    # watcher in a SEPARATE PROCESS - a monkeypatched module constant would not cross that
+    # boundary. MEASURED before the seam existed: this very check drew 0 times instead of 1,
+    # because the watcher was reading the real ~/.claude.json of the machine running the
+    # tests, which is fresh whenever somebody is at the keyboard.
     old = now - idle_minutes * 60
-    os.utime(beat, (old, old))
+    beat = os.path.join(sdir, "state", "fixture.alive")
+    user_cfg = os.path.join(sdir, "claude.json")
+    for path in (beat, user_cfg):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("x")
+        os.utime(path, (old, old))
     with open(os.path.join(sdir, "config.json"), "w", encoding="utf-8") as f:
         # ⚠ Colour off so the assertions compare text rather than escape sequences, and a
         # FIXED width so "did it fit?" means the same thing wherever this runs.
@@ -74,7 +88,11 @@ def _run(sdir):
          # active watcher drew only once, which is the opposite of what it measured.
          "--every", "2", "--dir", sdir],
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1"))
+        # ⛔ CLAUDE_USER_CONFIG points the second heartbeat source at a file THIS fixture
+        # owns. Without it the watcher reads the real ~/.claude.json and every idle case
+        # silently becomes an active one - see _fixture().
+        env=dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1",
+                 CLAUDE_USER_CONFIG=os.path.join(sdir, "claude.json")))
     try:
         out, err = p.communicate(timeout=RUN_SECONDS)
     except subprocess.TimeoutExpired:
@@ -123,6 +141,31 @@ def case_active_keeps_drawing():
               "something" % len(drew))
 
 
+def case_dead_gate_beside_live_person():
+    """⛔ THE 2026-08-30 FAILURE, AS A CHECK. The gate's own signal frozen at 21 hours while
+    somebody is working - which is what an unwired hook looks like from here.
+
+    ⚠ AND IT IS WHAT MAKES case_active_keeps_drawing MEAN ANYTHING. That control ages BOTH
+    sources to zero, so it cannot tell which one kept the watcher awake; measured before this
+    existed, it passed against a build whose second source did nothing at all. Here the two
+    sources DISAGREE, so only the new one can produce the result.
+    """
+    with scratch_dir("dead-gate-live-person") as sdir:
+        _fixture(sdir, idle_minutes=1260)                    # 21 hours: gate long dead
+        now = time.time()
+        os.utime(os.path.join(sdir, "claude.json"), (now, now))   # ...but somebody is here
+        lines, err = _run(sdir)
+        drew = draws(lines)
+        assert len(drew) >= 3, (
+            "a dead gate beside a working person put the watcher to sleep - it drew %d "
+            "time(s):%s%s" % (len(drew), chr(10), err[:400]))
+        assert "SLEEP" not in lines[0], lines[0]
+        # ⭐ ...and it SAYS SO, in the one slot that survives every width.
+        assert "HOOK?" in lines[0], (
+            "the watcher kept working but never said the gate was silent: %r" % lines[0])
+        print("ok - a dead gate beside a live person keeps drawing AND shows HOOK?")
+
+
 def case_line_never_wraps():
     """⛔ AND NOTHING IT DRAWS MAY EXCEED THE TERMINAL. The stranded rows came from a line
     sixteen columns wider than the width `_line()` had been given."""
@@ -140,6 +183,7 @@ def main():
     fresh_scratch()
     case_idle_draws_once()
     case_active_keeps_drawing()
+    case_dead_gate_beside_live_person()
     case_line_never_wraps()
     print("all watch checks passed")
     return 0

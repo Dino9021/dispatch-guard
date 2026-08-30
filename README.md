@@ -782,7 +782,15 @@ The dots stay: geometric shapes have far wider font coverage than an emoji.
 | 情況 | watcher 做什麼 |
 |---|---|
 | 有 session 在動 | 正常撈，最快每 `fetch_seconds` 一次 |
-| 超過 `idle_after_min`（預設 15 分）沒有任何 hook 事件 | ⭐ **停止撈**，而且從 0.33.0 起**停止重畫** |
+| 超過 `idle_after_min`（預設 15 分）「沒有任何人在工作的跡象」 | ⭐ **停止撈**，而且從 0.33.0 起**停止重畫** |
+
+⭐ **0.47.0 起「有沒有人在工作」看兩個來源，取比較新的：** gate 自己的 `state/*.alive`，
+以及 `~/.claude.json` 的修改時間 —— 後者是 Claude Code 自己寫的，跟我們的 hook 有沒有掛上無關。
+⚠ **為什麼**：hook 沒掛上的時候（安裝目錄被刪、更新中斷），第一個訊號會在你還在工作時變平，
+watcher 就把它讀成「人走了」。實測 2026-08-30：`.alive` 卡在 1225 分鐘、機器一直在用、
+watcher 睡了 20 小時，而 `install.py --status` 全程說一切正常。
+⭐ 兩個來源**不一致**時，watcher 會在時鐘旁邊顯示 `HOOK?` —— 有人在工作但我們的 hook 沒在跑。
+修法是 `/plugin update` 或重裝，**然後重開**。
 | 心跳回來 | ⭐ 立刻恢復，而且只花**一次**呼叫，不補打一串 |
 
 ⭐ **0.33.0 起：閒置時只畫一次，然後安靜。** 那一次會把判定字換成 **`SLEEP`**、
@@ -2302,7 +2310,17 @@ used to poll all night against an endpoint that allows about **five** calls per 
 | Situation | What the watcher does |
 |---|---|
 | a session is working | fetches normally, at most once per `fetch_seconds` |
-| no hook event for `idle_after_min` (default 15) | ⭐ **stops fetching**, and from 0.33.0 **stops redrawing** |
+| no sign of anybody working for `idle_after_min` (default 15) | ⭐ **stops fetching**, and from 0.33.0 **stops redrawing** |
+
+⭐ **Since 0.47.0 "is anybody working?" reads two sources, whichever is newer:** the gate's own
+`state/*.alive`, and the mtime of `~/.claude.json` — which Claude Code writes whether or not any
+hook of ours is wired. ⚠ **Why**: when the hooks are not wired up (a deleted install directory, an
+interrupted update) the first signal goes flat while you are still working, and the watcher read
+that as "gone home". Measured 2026-08-30: `.alive` frozen at 1225 minutes on a machine in
+continuous use, the watcher asleep for 20 hours, and `install.py --status` reporting everything
+live throughout. ⭐ When the two **disagree** the watcher shows `HOOK?` beside the clock — somebody
+is working and our hooks are silent. The repair is `/plugin update` or a reinstall, **then a
+restart**.
 | a heartbeat comes back | ⭐ resumes at once, for **one** call — never a catch-up burst |
 
 ⭐ **From 0.33.0: idle draws once, then goes quiet.** That one render turns the verdict word
