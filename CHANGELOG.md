@@ -33,6 +33,23 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.51.5
+
+- ⭐ **`Ctx` 改名成 `CT`，兩個字母，這樣就結束了。** 擁有者的決定，而且它比前面兩版都對：
+  `CT ` 在圖表前面佔 3 欄，和 `5h `、`7d ` 完全一樣，所以這個段落**不管在第幾行**都落在第 3 欄。
+  ⇒ 空格永遠留著，不用看行數，也不用算任何東西。
+- ⛔ **`_tighten_extras()` 和它的正規表示式整段刪掉。** 0.51.4 那套「有第二行才拿掉空格」
+  的邏輯不需要存在了 —— ⚠ **四欄沒有辦法對齊到三欄**，這才是真正的問題，前面兩版都是在
+  繞過它，而不是解決它。
+- ⚠ **失敗的兩次都留在紀錄裡**（0.51.2 補第一行 → 被 harness 剪掉；0.51.3 一律不留空格 →
+  一行的時候標籤黏在自己的圖表上），而且檢查裡也留了斷言，所以不會再走回去。
+- ⭐ **狀態列和 VS Code 監看工作是同一段程式**（`_line_parts`），所以兩邊一起改到，
+  兩邊都實測過：狀態列兩行都在第 3 欄，監看工作兩行都在第 13 欄（它的時間戳記佔前面）。
+- ⚠ README 的兩種語言、範例行、表格欄名都跟著改。`longCtxCost` 沒有動 ——
+  那是 harness 自己的識別字，不是這個標籤。
+
+---
+
 ## 0.51.4
 
 - ⭐ **`Ctx` 後面那個空格，只在「有第二行」的時候才拿掉。** 0.51.3 一律不留空格，
@@ -1700,6 +1717,27 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.51.5
+
+- ⭐ **`Ctx` becomes `CT` - two letters - and that ends it.** The owner's decision, and it is
+  better than either of the previous two versions: `CT ` occupies three columns before its
+  bar, exactly like `5h ` and `7d `, so the segment lands in column 3 **whichever row it is
+  on**. ⇒ The space stays, always, with no row count and no arithmetic.
+- ⛔ **`_tighten_extras()` and its regex are deleted.** 0.51.4's "give up the space only on a
+  second row" logic no longer needs to exist. ⚠ **Four columns cannot be aligned to three** -
+  that was the actual problem, and both earlier versions worked around it instead of solving
+  it.
+- ⚠ **Both failures stay in the record** (0.51.2 padded the first row and the harness trimmed
+  it; 0.51.3 dropped the space and the label touched its own bar on one row) and both are
+  still asserted in the checks, so neither can come back.
+- ⭐ **The statusline and the VS Code watcher task are the same code** (`_line_parts`), so this
+  reaches both, and both were measured: the statusline puts both bars in column 3, the
+  watcher both in column 13 (its timestamp owns the columns before that).
+- ⚠ README follows in both languages - the example rows and the table's column name.
+  `longCtxCost` is untouched: that is a harness identifier, not this label.
 
 ---
 

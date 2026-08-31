@@ -1325,7 +1325,7 @@ def _dump_response(sdir, cfg, data):
 
 BAR_FULL, BAR_EMPTY = "▓", "░"      # single-width blocks; CJK would misalign
 
-# ⛔ ONE WIDTH FOR ALL THREE SEGMENTS. The 5h and 7d bars were 6 cells and Ctx was 4,
+# ⛔ ONE WIDTH FOR ALL THREE SEGMENTS. The 5h and 7d bars were 6 cells and CT was 4,
 # written as separate literals, which is how they drifted apart in the first place. A bar
 # exists to be compared at a glance, and two bars of different lengths cannot be: the same
 # fill ratio does not look like the same length.
@@ -1883,9 +1883,6 @@ def _rows(windows, extras, width, head="", tail="", two_rows=True, always_split=
         # ⚠ A forced split has to survive here too, or the second row would appear only on
         # terminals whose width could be detected - which is the machines, not the intent.
         if always_split and two_rows and extras:
-            # ⚠ TIGHTEN FIRST, then measure the pad: the indent is computed FROM the
-            # segment that will actually be drawn, and tightening moves its bar.
-            extras = _tighten_extras(head, windows, extras)
             return [head + _fit(windows, None) + tail,
                     " " * _second_row_indent(head, windows, extras) + _fit(extras, None)]
         return [head + _fit(windows + extras, None) + tail]
@@ -1897,9 +1894,6 @@ def _rows(windows, extras, width, head="", tail="", two_rows=True, always_split=
     if not two_rows or not extras:
         return [_cut(head + _fit(windows + extras, width - _visible_len(head)
                                  - _visible_len(tail)) + tail, width)]
-    # ⚠ AFTER the one-row return above, so a line that FITS keeps the space that separates
-    # `Ctx` from its bar mid-line. Only a second row gives that column up.
-    extras = _tighten_extras(head, windows, extras)
     room = width - _visible_len(head) - _visible_len(tail)
     first = _cut(head + _fit(windows, room) + tail, width)
     pad = " " * _second_row_indent(head, windows, extras)
@@ -1920,43 +1914,6 @@ def _bar_col(part):
     return None
 
 
-# A single space that sits immediately before a bar, with any colour escape between them.
-# ⚠ THE ESCAPE IS WHY THIS IS A REGEX AND NOT `.replace(" ", "")`. A coloured segment reads
-# `Ctx <ESC>[32m▓▓...`, so the space and the bar are not adjacent in the raw string.
-_SPACE_BEFORE_BAR = re.compile(
-    r" ((?:\x1b\[[0-9;]*m)*[%s%s%s─])" % (BAR_FULL, BAR_EMPTY, BAR_MARK))
-
-
-def _tighten_extras(head, windows, extras):
-    """`extras` with its first segment's label-space removed, IF that aligns the two bars.
-
-    ⛔ THE SPACE IS ONLY WORTH GIVING UP ON A SECOND ROW. `Ctx ` needs four columns before
-    its bar and `5h ` needs three, and a pad can only push RIGHT - so a second row can never
-    be brought left to meet the first, and padding the FIRST row was measured not to reach
-    the screen at all (see _second_row_indent). One column has to come out of the second
-    row's own label. ⚠ BUT ON ONE ROW `Ctx` is a segment in the middle of a line, and there
-    the space is what stops the label reading as part of its own bar - the owner saw both
-    forms and asked for exactly this split, 2026-08-31.
-
-    ⭐ NO SEGMENT IS NAMED HERE. The test is arithmetic - "is this bar exactly one column
-    right of the one above it, and is there a space to give up?" - so a new second-row
-    segment needs nothing added.
-
-    ⚠ It returns `extras` UNCHANGED unless removing the space really does land the bar in the
-    column above. A tightened segment whose bar still does not line up is a segment that gave
-    up its separator for nothing.
-    """
-    if not windows or not extras:
-        return extras
-    top, bottom = _bar_col(windows[0]), _bar_col(extras[0])
-    if top is None or bottom is None or bottom - (_visible_len(head) + top) != 1:
-        return extras
-    first = _SPACE_BEFORE_BAR.sub(r"\1", extras[0], count=1)
-    if _bar_col(first) != bottom - 1:
-        return extras
-    return [first] + list(extras[1:])
-
-
 def _second_row_indent(head, windows, extras):
     """Columns of padding that put the second row's bar under the first row's bar.
 
@@ -1973,8 +1930,8 @@ def _second_row_indent(head, windows, extras):
     row before drawing. No character can stand in either: every Unicode space is category Zs
     and a JavaScript `trim()` removes all of them, while a zero-width character occupies no
     column. ⇒ A segment that wants to line up under the first row must be NARROW ENOUGH to -
-    see the `Ctx` segment in _line_parts(), which gives up the space before its bar to reach
-    column 3. Do not reintroduce a first-row pad; it is silently discarded.
+    which is why the context segment's label is `CT` and not `Ctx`. Do not reintroduce a
+    first-row pad; it is silently discarded.
 
     ⚠ Never negative, and never less than nothing: a second row pulled left of column zero
     would collide with the timestamp above it rather than line up with it.
@@ -2100,7 +2057,7 @@ def _burn_part(burn, remain, rate, cfg, stale=False):
         # different glyph from an empty bar on purpose.
         return "%s %s %s" % (BURN_LABEL, "─" * (BAR_WIDTH + 1), "--")
     ratio = burn / float(remain)
-    # ⚠ BAR_WIDTH + 1, exactly like the Ctx segment. The three usage bars carry the elapsed
+    # ⚠ BAR_WIDTH + 1, exactly like the CT segment. The three usage bars carry the elapsed
     # marker, which sits BETWEEN cells and so costs them one extra column; a bar without one
     # is a column narrower and will not line up under them. Widening here is what lets the
     # watcher's second row sit squarely beneath the first.
@@ -2201,19 +2158,22 @@ def _line_parts(record, stale_note=None, cfg=None, payload=None, stale=None, bur
         # ⚠ ONE space before the number, exactly like 5h and 7d. Two used to sit there as a
         # pad, to make up the column the time marker costs the other two segments - but two
         # spaces is the separator BETWEEN segments in this line, so using it inside one made
-        # `Ctx` read as two items. The bar carries the extra cell instead: BAR_WIDTH + 1 is
+        # `CT` read as two items. The bar carries the extra cell instead: BAR_WIDTH + 1 is
         # the same width the marker'd bars occupy, so the columns still line up.
-        # ⭐ THE SPACE AFTER THE LABEL IS WRITTEN HERE AND TAKEN AWAY LATER, BY THE ONE PLACE
-        # THAT KNOWS WHETHER IT BUYS ANYTHING. On one row this is a segment in the middle of
-        # a line and the space is what separates it from its bar; on two rows it leads the
-        # second row, where giving the space up is the only way its bar can reach column 3
-        # and sit under `5h`. ⇒ _tighten_extras() removes it, and only when it aligns them.
+        # ⛔ THE LABEL IS TWO LETTERS, AND THAT IS WHAT MAKES THE BARS LINE UP. `CT ` is
+        # three columns before its bar, exactly like `5h ` and `7d `, so this segment sits
+        # in column 3 whether it leads a second row or sits mid-line - with no arithmetic
+        # and no dependence on the row count.
+        # ⚠ IT WAS `Ctx`, AND FOUR COLUMNS CANNOT BE ALIGNED TO THREE. Two attempts are
+        # recorded in CHANGELOG.md 0.51.2-0.51.4: padding the first row (silently trimmed
+        # by the harness) and dropping this space on a second row only (which left the
+        # label touching its bar on one row). The owner settled it by shortening the label.
         cpct = _context_pct(payload)
         if cpct is None:
-            extras.append("Ctx %s %s" % (BAR_EMPTY * (BAR_WIDTH + 1), "--"))
+            extras.append("CT %s %s" % (BAR_EMPTY * (BAR_WIDTH + 1), "--"))
         else:
             on, off = _colour(cpct, cfg)
-            extras.append("Ctx %s%s %d%%%s"
+            extras.append("CT %s%s %d%%%s"
                           % (on, _bar(cpct, BAR_WIDTH + 1), round(cpct), off))
     # ⛔ THE NOTE OUTRANKS THE MODEL NAME, and it used to be the other way round. Parts are
     # dropped from the RIGHT when they do not fit, so with the model last a narrow display
@@ -3116,7 +3076,7 @@ def selftest():
             else:
                 os.environ[_k] = _v
 
-    # ⛔ Ctx: zero and unknown are different answers, decided by whether the KEY is there.
+    # ⛔ CT: zero and unknown are different answers, decided by whether the KEY is there.
     # Rendering "cannot read" as 0% would be a confident wrong answer erring LOW.
     assert _context_pct({"model": {}}) is None, "an absent key must be unknown"
     assert _context_pct({CONTEXT_KEY: {"used_percentage": 41.0}}) == 41.0
@@ -3130,8 +3090,8 @@ def selftest():
     _zero = _line(_rec, None, {"width": None}, {CONTEXT_KEY: {"used_percentage": 0}})
     _absent = _line(_rec, None, {"width": None}, {"model": {}})
     _real = _line(_rec, None, {"width": None}, {CONTEXT_KEY: {"used_percentage": 41.0}})
-    assert "Ctx" in _zero and " 0%" in _zero, _zero
-    assert "Ctx" in _absent and "--" in _absent and "0%" not in _absent, _absent
+    assert "CT " in _zero and " 0%" in _zero, _zero
+    assert "CT " in _absent and "--" in _absent and "0%" not in _absent, _absent
     assert _zero != _absent, "a real zero and an unreadable one rendered the same"
     assert "41%" in _real, _real
 
@@ -3846,12 +3806,15 @@ def selftest():
     assert len(line_rows(_tr, None, {"width": 200, "two_rows": True})) == 1
 
     # ⛔ THE TWO BARS SIT IN THE SAME COLUMN, AND NEITHER ROW MAY START WITH A SPACE.
-    # `Ctx` gives up the separator before its bar so that both bars land in column 3.
-    # ⚠ THE OBVIOUS FIX DOES NOT WORK AND THIS ASSERTION IS WHAT REMEMBERS THAT: padding the
-    # first row by one column was shipped in 0.51.2 and MEASURED not to reach the screen -
-    # the plugin emitted it (`lead=1`) and Claude Code trimmed it off the row. Anything
-    # leading is trimmed, so alignment has to come from the second row being narrower.
-    # Owner-reported twice, 2026-08-31.
+    # The context label is `CT` - TWO letters, so `CT ` is three columns before its bar,
+    # exactly like `5h `. That is the whole mechanism: no arithmetic, no dependence on how
+    # many rows there are.
+    # ⚠ TWO OBVIOUS FIXES FAILED FIRST AND THIS BLOCK IS WHAT REMEMBERS THEM. Padding the
+    # first row by one column shipped in 0.51.2 and MEASURED not to reach the screen - the
+    # plugin emitted it (`lead=1`) and Claude Code trimmed it off the row, so anything
+    # leading is discarded. Dropping the space before the bar shipped in 0.51.3 and left the
+    # label touching its own bar on a one-row terminal. Owner-reported both, 2026-08-31, and
+    # then settled it by shortening the label.
     # ⚠ 70, not 100: at 100 this fixture fits on one row and there is nothing to align.
     _cpay = {"model": {"display_name": "Opus 5 (1M context)"},
              CONTEXT_KEY: {"used_percentage": 0}}
@@ -3862,16 +3825,17 @@ def selftest():
         assert not _STRIP_ANSI.sub("", _r).startswith(" "), \
             "a leading space is trimmed by the harness, so it aligns nothing: %r" % (_r,)
         assert _visible_len(_r) <= 70, (_visible_len(_r), _r)
-    assert "Ctx" + BAR_EMPTY in _STRIP_ANSI.sub("", _al[1]), \
-        "the second row kept the space and so cannot align: %r" % (_al[1],)
-    # ⛔ ...AND THE SPACE COMES BACK ON ONE ROW, where `Ctx` sits mid-line and the separator
-    # is the only thing stopping the label reading as part of its own bar. Owner-asked
-    # 2026-08-31, having seen both forms.
+    # ⚠ THE SPACE IS ASSERTED, not just the column. Without it the label touches its own bar,
+    # which is what 0.51.3 shipped and what was rejected on sight.
+    assert "CT " + BAR_EMPTY in _STRIP_ANSI.sub("", _al[1]), _al[1]
+    # ⭐ ...and the one-row form is the SAME segment, space and all - which is the point of
+    # solving this in the label rather than at row-assembly time.
     _wide = _STRIP_ANSI.sub("", line_rows(_tr, None, {"width": 400, "two_rows": True},
                                           _cpay)[0])
-    assert "Ctx " + BAR_EMPTY in _wide, "the one-row form lost the space: %r" % (_wide,)
+    assert "CT " + BAR_EMPTY in _wide, "the one-row form lost the space: %r" % (_wide,)
+    assert _bar_col(_wide[_wide.index("CT "):]) == 3, _wide
     # ⚠ The watcher's head still owns column zero - the pad goes on the SECOND row there,
-    # because the timestamp already pushes the first row's bar to the right of `Ctx`.
+    # because the timestamp already pushes the first row's bar to the right of `CT`.
     _wl = _rows(*_line_parts(_tr, None, {}, {"model": {"display_name": "Opus 5"},
                                              CONTEXT_KEY: {"used_percentage": 0}}),
                 width=100, head="07:26:12  ", always_split=True)
@@ -3951,7 +3915,7 @@ def selftest():
     # ⛔ AND THE LEADING ZERO GOES ONLY WHEN IT IS A ZERO. A rate above one carries magnitude
     # in that digit, and dropping it would read as a hundredth of the real burn.
     assert "1.20%/m" in _burn_part(80, 119, 1.20, _bcfg2), _burn_part(80, 119, 1.20, _bcfg2)
-    # ⛔ AND IT IS BAR_WIDTH + 1 WIDE, like the Ctx segment and unlike a bare bar. The three
+    # ⛔ AND IT IS BAR_WIDTH + 1 WIDE, like the CT segment and unlike a bare bar. The three
     # usage bars carry the elapsed marker, which sits between cells and costs them a column;
     # a burn bar one narrower cannot line up beneath them however the row is indented.
     # ⚠ Column equality alone does NOT catch this - both start in the same place and end in

@@ -669,16 +669,16 @@ claude plugin install dispatch-guard@dispatch-guard --config announce_unattended
 ## 怎麼看那些數字
 
 ⛔ **兩個介面印的不是同一行，所以這裡有兩個例子。**
-之前這裡只有一行，而那一行**沒有任何介面印得出來** —— 它同時有 Ctx（只有狀態列畫得出來）
+之前這裡只有一行，而那一行**沒有任何介面印得出來** —— 它同時有 CTx（只有狀態列畫得出來）
 和沒有判定字（只有 `--watch` 會印）。
 
 **CLI 狀態列（`--statusline`）**
 
 ```
-5h ▓▓▓▓┃░░░░░ 43% 2h-47m  7d ▓▓▓▓┃▓▓░░░ 64% 4d-3h-59m  Ctx ▓▓▓▓░░░░░  41%  Opus 5·high
+5h ▓▓▓▓┃░░░░░ 43% 2h-47m  7d ▓▓▓▓┃▓▓░░░ 64% 4d-3h-59m  CT ▓▓▓▓░░░░░  41%  Opus 5·high
 ```
 
-⭐ 有 Ctx、模型和 effort，因為那三樣來自 Claude Code 餵給狀態列指令的 payload。
+⭐ 有 CT、模型和 effort，因為那三樣來自 Claude Code 餵給狀態列指令的 payload。
 ⚠ **沒有判定字**（GO/PACE/STOP）：session 開場那一行已經報告過「Usage braking is active (GO)」，
 而且判定真正的讀者是 hook，不是眼睛。
 
@@ -703,7 +703,7 @@ claude plugin install dispatch-guard@dispatch-guard --config announce_unattended
 ⇒ 一個字型可能沒有的字不是節省，是空白。圓點留著，因為那是幾何符號，字型覆蓋率高得多。
 
 ⭐ 有判定字，因為對擴充套件使用者來說**這是唯一看得到用量的地方**，旁邊沒有開場那一行。
-⛔ 它畫不出 Ctx、模型和 effort —— 它只是終端機裡的一個迴圈，沒有任何東西餵 payload 給它。
+⛔ 它畫不出 CT、模型和 effort —— 它只是終端機裡的一個迴圈，沒有任何東西餵 payload 給它。
 
 ### `Burn` 那一段：`11h-52m left` 是什麼意思
 
@@ -824,15 +824,15 @@ Context 長條、模型、說明移到第二列，**兩列各自裁到寬度**�
 | 段 | 來源 | 範圍 | `--statusline` | `--watch` |
 |---|---|---|---|---|
 | `5h` / `7d` | `token_usage.json`（API 撈的） | ⭐ 每個**帳號** | ✅ | ✅ |
-| `Ctx` | payload 的 `context_window` | ⚠ 每個 **session** | ✅ | ⛔ |
+| `CT` | payload 的 `context_window` | ⚠ 每個 **session** | ✅ | ⛔ |
 | 模型 · effort | payload 的 `model` / `effort` | 每個 session | ✅ | ⛔ |
 | 判定字 | 由 `token_usage.json` 算出 | 每個帳號 | ⛔（開場那一行報過） | ✅ |
 
-⭐ **這一條界線解釋了其他每件事：** 為什麼 Ctx 是每個 session、
+⭐ **這一條界線解釋了其他每件事：** 為什麼 CT 是每個 session、
 為什麼 5h/7d 是每個帳號（所以一台機器跑一個 watcher 就夠），
 以及為什麼擴充套件那一行講不出你在用哪個模型。
 
-⭐ **Ctx 從第一秒就在，讀 0%。** 它以前是開始工作之後才「跳出來」，
+⭐ **CT 從第一秒就在，讀 0%。** 它以前是開始工作之後才「跳出來」，
 那會讓整行寬度變動，而且分不出「這個介面沒有這個東西」跟「這個 session 還沒開始」。
 ⛔ 但 payload 裡**沒有那個欄位**的時候畫的是 `--`，永遠不是 `0%` ——
 把「讀不到」畫成 0% 是一個有自信的錯答案，而且錯在低的那一邊。
@@ -2218,16 +2218,16 @@ would believe the rules were in force while nothing had loaded them.
 ## Seeing the numbers
 
 ⛔ **The two interfaces do not print the same line, so there are two examples.**
-There used to be one, and no interface printed it: it carried Ctx (only the statusline can draw
+There used to be one, and no interface printed it: it carried CT (only the statusline can draw
 that) and no verdict word (only `--watch` prints one).
 
 **The CLI statusline (`--statusline`)**
 
 ```
-5h ▓▓▓▓┃░░░░░ 43% 2h-47m  7d ▓▓▓▓┃▓▓░░░ 64% 4d-3h-59m  Ctx ▓▓▓▓░░░░░  41%  Opus 5·high
+5h ▓▓▓▓┃░░░░░ 43% 2h-47m  7d ▓▓▓▓┃▓▓░░░ 64% 4d-3h-59m  CT ▓▓▓▓░░░░░  41%  Opus 5·high
 ```
 
-⭐ It has Ctx, the model and the effort, because those three come from the payload Claude Code
+⭐ It has CT, the model and the effort, because those three come from the payload Claude Code
 feeds the statusline command. ⚠ **It has no verdict word.** The session's opening line already
 reports "Usage braking is active (GO)", and the real consumer of a verdict is the hook rather
 than a pair of eyes.
@@ -2239,7 +2239,7 @@ than a pair of eyes.
 ```
 
 ⭐ It has the verdict word, because for an extension user **this is the only place usage appears
-at all** and there is no opening line beside it. ⛔ It cannot draw Ctx, the model or the effort:
+at all** and there is no opening line beside it. ⛔ It cannot draw CT, the model or the effort:
 it is a loop in a terminal, and nothing feeds it a payload.
 
 ### The `Burn` segment: what `11h-52m left` means
@@ -2364,15 +2364,15 @@ interacting, so a test there would suppress the refresh precisely when it is due
 | Segment | Source | Scope | `--statusline` | `--watch` |
 |---|---|---|---|---|
 | `5h` / `7d` | `token_usage.json`, fetched from the API | ⭐ per **account** | ✅ | ✅ |
-| `Ctx` | the payload's `context_window` | ⚠ per **session** | ✅ | ⛔ |
+| `CT` | the payload's `context_window` | ⚠ per **session** | ✅ | ⛔ |
 | model · effort | the payload's `model` / `effort` | per session | ✅ | ⛔ |
 | verdict word | computed from `token_usage.json` | per account | ⛔ (the opening line has it) | ✅ |
 
-⭐ **That one boundary explains the rest:** why Ctx is per-session, why 5h and 7d are
+⭐ **That one boundary explains the rest:** why CT is per-session, why 5h and 7d are
 per-account — which is why one watcher per machine serves every project — and why the
 extension's line cannot tell you which model you are on.
 
-⭐ **Ctx is there from the first second, reading 0%.** It used to appear only once work had
+⭐ **CT is there from the first second, reading 0%.** It used to appear only once work had
 begun, which changed the width of the whole line and left the reader unable to tell "this
 interface has no such thing" from "this session has not started". ⛔ But when the payload has no
 such field at all it draws `--`, never `0%`: rendering "cannot read it" as zero is a confident
