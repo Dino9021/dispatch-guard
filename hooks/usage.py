@@ -1883,6 +1883,9 @@ def _rows(windows, extras, width, head="", tail="", two_rows=True, always_split=
         # ⚠ A forced split has to survive here too, or the second row would appear only on
         # terminals whose width could be detected - which is the machines, not the intent.
         if always_split and two_rows and extras:
+            # ⚠ TIGHTEN FIRST, then measure the pad: the indent is computed FROM the
+            # segment that will actually be drawn, and tightening moves its bar.
+            extras = _tighten_extras(head, windows, extras)
             return [head + _fit(windows, None) + tail,
                     " " * _second_row_indent(head, windows, extras) + _fit(extras, None)]
         return [head + _fit(windows + extras, None) + tail]
@@ -1894,6 +1897,9 @@ def _rows(windows, extras, width, head="", tail="", two_rows=True, always_split=
     if not two_rows or not extras:
         return [_cut(head + _fit(windows + extras, width - _visible_len(head)
                                  - _visible_len(tail)) + tail, width)]
+    # ⚠ AFTER the one-row return above, so a line that FITS keeps the space that separates
+    # `Ctx` from its bar mid-line. Only a second row gives that column up.
+    extras = _tighten_extras(head, windows, extras)
     room = width - _visible_len(head) - _visible_len(tail)
     first = _cut(head + _fit(windows, room) + tail, width)
     pad = " " * _second_row_indent(head, windows, extras)
@@ -1912,6 +1918,43 @@ def _bar_col(part):
         if ch in (BAR_FULL, BAR_EMPTY, BAR_MARK, "─"):
             return i
     return None
+
+
+# A single space that sits immediately before a bar, with any colour escape between them.
+# ⚠ THE ESCAPE IS WHY THIS IS A REGEX AND NOT `.replace(" ", "")`. A coloured segment reads
+# `Ctx <ESC>[32m▓▓...`, so the space and the bar are not adjacent in the raw string.
+_SPACE_BEFORE_BAR = re.compile(
+    r" ((?:\x1b\[[0-9;]*m)*[%s%s%s─])" % (BAR_FULL, BAR_EMPTY, BAR_MARK))
+
+
+def _tighten_extras(head, windows, extras):
+    """`extras` with its first segment's label-space removed, IF that aligns the two bars.
+
+    ⛔ THE SPACE IS ONLY WORTH GIVING UP ON A SECOND ROW. `Ctx ` needs four columns before
+    its bar and `5h ` needs three, and a pad can only push RIGHT - so a second row can never
+    be brought left to meet the first, and padding the FIRST row was measured not to reach
+    the screen at all (see _second_row_indent). One column has to come out of the second
+    row's own label. ⚠ BUT ON ONE ROW `Ctx` is a segment in the middle of a line, and there
+    the space is what stops the label reading as part of its own bar - the owner saw both
+    forms and asked for exactly this split, 2026-08-31.
+
+    ⭐ NO SEGMENT IS NAMED HERE. The test is arithmetic - "is this bar exactly one column
+    right of the one above it, and is there a space to give up?" - so a new second-row
+    segment needs nothing added.
+
+    ⚠ It returns `extras` UNCHANGED unless removing the space really does land the bar in the
+    column above. A tightened segment whose bar still does not line up is a segment that gave
+    up its separator for nothing.
+    """
+    if not windows or not extras:
+        return extras
+    top, bottom = _bar_col(windows[0]), _bar_col(extras[0])
+    if top is None or bottom is None or bottom - (_visible_len(head) + top) != 1:
+        return extras
+    first = _SPACE_BEFORE_BAR.sub(r"\1", extras[0], count=1)
+    if _bar_col(first) != bottom - 1:
+        return extras
+    return [first] + list(extras[1:])
 
 
 def _second_row_indent(head, windows, extras):
@@ -2160,21 +2203,17 @@ def _line_parts(record, stale_note=None, cfg=None, payload=None, stale=None, bur
         # spaces is the separator BETWEEN segments in this line, so using it inside one made
         # `Ctx` read as two items. The bar carries the extra cell instead: BAR_WIDTH + 1 is
         # the same width the marker'd bars occupy, so the columns still line up.
-        # ⛔ NO SPACE BETWEEN THE LABEL AND THE BAR, and it is the only way this bar can line
-        # up with the one above it. `5h ` occupies three columns before its bar; `Ctx ` needs
-        # four, and a pad can only push RIGHT - so the second row can never be brought left
-        # to meet the first. Padding the FIRST row by one was tried and MEASURED not to
-        # work: the plugin emits the space (`lead=1` from the installed 0.51.2) and Claude
-        # Code trims it off the row before drawing. ⚠ Nor can an invisible character stand
-        # in: every Unicode space is category Zs and a JavaScript `trim()` strips all of
-        # them, and a zero-width character occupies no column. ⇒ The label gives up its
-        # separator instead, which puts this bar in column 3 exactly like `5h`.
+        # ⭐ THE SPACE AFTER THE LABEL IS WRITTEN HERE AND TAKEN AWAY LATER, BY THE ONE PLACE
+        # THAT KNOWS WHETHER IT BUYS ANYTHING. On one row this is a segment in the middle of
+        # a line and the space is what separates it from its bar; on two rows it leads the
+        # second row, where giving the space up is the only way its bar can reach column 3
+        # and sit under `5h`. ⇒ _tighten_extras() removes it, and only when it aligns them.
         cpct = _context_pct(payload)
         if cpct is None:
-            extras.append("Ctx%s %s" % (BAR_EMPTY * (BAR_WIDTH + 1), "--"))
+            extras.append("Ctx %s %s" % (BAR_EMPTY * (BAR_WIDTH + 1), "--"))
         else:
             on, off = _colour(cpct, cfg)
-            extras.append("Ctx%s%s %d%%%s"
+            extras.append("Ctx %s%s %d%%%s"
                           % (on, _bar(cpct, BAR_WIDTH + 1), round(cpct), off))
     # ⛔ THE NOTE OUTRANKS THE MODEL NAME, and it used to be the other way round. Parts are
     # dropped from the RIGHT when they do not fit, so with the model last a narrow display
@@ -3814,15 +3853,23 @@ def selftest():
     # leading is trimmed, so alignment has to come from the second row being narrower.
     # Owner-reported twice, 2026-08-31.
     # ⚠ 70, not 100: at 100 this fixture fits on one row and there is nothing to align.
-    _al = line_rows(_tr, None, {"width": 70, "two_rows": True},
-                    {"model": {"display_name": "Opus 5 (1M context)"},
-                     CONTEXT_KEY: {"used_percentage": 0}})
+    _cpay = {"model": {"display_name": "Opus 5 (1M context)"},
+             CONTEXT_KEY: {"used_percentage": 0}}
+    _al = line_rows(_tr, None, {"width": 70, "two_rows": True}, _cpay)
     assert len(_al) == 2, _al
     assert _bar_col(_al[0]) == _bar_col(_al[1]), (_bar_col(_al[0]), _bar_col(_al[1]), _al)
     for _r in _al:
         assert not _STRIP_ANSI.sub("", _r).startswith(" "), \
             "a leading space is trimmed by the harness, so it aligns nothing: %r" % (_r,)
         assert _visible_len(_r) <= 70, (_visible_len(_r), _r)
+    assert "Ctx" + BAR_EMPTY in _STRIP_ANSI.sub("", _al[1]), \
+        "the second row kept the space and so cannot align: %r" % (_al[1],)
+    # ⛔ ...AND THE SPACE COMES BACK ON ONE ROW, where `Ctx` sits mid-line and the separator
+    # is the only thing stopping the label reading as part of its own bar. Owner-asked
+    # 2026-08-31, having seen both forms.
+    _wide = _STRIP_ANSI.sub("", line_rows(_tr, None, {"width": 400, "two_rows": True},
+                                          _cpay)[0])
+    assert "Ctx " + BAR_EMPTY in _wide, "the one-row form lost the space: %r" % (_wide,)
     # ⚠ The watcher's head still owns column zero - the pad goes on the SECOND row there,
     # because the timestamp already pushes the first row's bar to the right of `Ctx`.
     _wl = _rows(*_line_parts(_tr, None, {}, {"model": {"display_name": "Opus 5"},

@@ -33,6 +33,22 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.51.4
+
+- ⭐ **`Ctx` 後面那個空格，只在「有第二行」的時候才拿掉。** 0.51.3 一律不留空格，
+  結果在「全部塞得進一行」的時候變成 `Burn ... Ctx░░░░` —— 標籤和自己的圖表黏成一團。
+  ⚠ 那個空格在一行的情況下是有用的：`Ctx` 在行中間，空格是唯一把標籤和圖表分開的東西。
+  ⇒ 現在一行保留、兩行才拿掉，因為只有第二行需要用那一欄去換對齊。
+- ⭐ **判斷是純算術的，沒有寫死任何段落名稱**：「這個圖表是不是剛好比上面那個右一欄，
+  而且前面有一個空格可以讓？」新的第二行段落不用在這裡加任何東西。
+- ⚠ **空格是在「組行」的時候拿掉的，不是在「做段落」的時候** —— 做段落的地方還不知道
+  會有幾行。而且拿掉之後才量縮排，因為縮排要從「真的會被畫出來的那個字串」算。
+- ⚠ **拿掉之後如果圖表還是對不齊，就不拿掉。** 讓出分隔符卻換不到對齊，是白讓的。
+- ⭐ 兩個方向都做了變異檢查：永遠不拿掉 → 兩行那個檢查以欄位 3 和 4 失敗；
+  永遠拿掉 → 一行那個檢查以「the one-row form lost the space」失敗。
+
+---
+
 ## 0.51.3
 
 - ⛔ **0.51.2 的做法「到不了畫面上」。** 那一版在第一行前面補了一個空格；
@@ -1684,6 +1700,27 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.51.4
+
+- ⭐ **The space after `Ctx` is given up only when there IS a second row.** 0.51.3 removed it
+  unconditionally, so on a terminal wide enough for one row it read `Burn ... Ctx░░░░` - the
+  label running into its own bar. ⚠ Mid-line that space is doing real work: it is the only
+  thing separating the label from the bar. ⇒ Kept on one row, given up on two, because only
+  a second row needs that column to buy alignment.
+- ⭐ **The test is arithmetic and names no segment**: "is this bar exactly one column right of
+  the one above it, and is there a space to give up?" A new second-row segment needs nothing
+  added.
+- ⚠ **The space is removed at ROW-ASSEMBLY time, not when the segment is built** - the builder
+  does not yet know how many rows there will be. And the indent is measured AFTER tightening,
+  because it must be computed from the string that will actually be drawn.
+- ⚠ **If removing the space does not land the bar in the column above, it is not removed.** A
+  segment that gives up its separator for nothing is worse than one that keeps it.
+- ⭐ Mutation-checked in both directions: never tighten and the two-row check fails with
+  columns 3 and 4; always tighten and the one-row check fails with "the one-row form lost the
+  space".
 
 ---
 
