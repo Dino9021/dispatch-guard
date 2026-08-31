@@ -148,6 +148,14 @@ DEFAULTS = {
     # The page the table is parsed from. Overridable so a mirror or a pinned copy can be used;
     # ⚠ whatever it points at must be that page's markdown, not an HTML rendering of it.
     "model_price_url": model_pricing.SOURCE_URL,
+    # ⭐ DID THE FILE THE PROMPT DEMANDED ACTUALLY APPEAR? Default ON. Two halves, one
+    # switch, because they answer one question: PreToolUse warns when a read-only
+    # `subagent_type` is paired with a prompt telling it to CREATE a file, and PostToolUse
+    # stats those files when the sub-agent returns. ⛔ NEITHER HALF EVER REFUSES - both are
+    # advisory. A read-only agent whose prompt merely mentions a path it must READ is
+    # perfectly legitimate, and refusing that would make this gate wrong more often than the
+    # dispatcher is. Set false to silence both.
+    "guard_agent_report_file": True,
 }
 
 # ⭐ ONE CONFIG READER, TWO FAMILIES. Merging the guard switches into DEFAULTS gives them
@@ -1181,7 +1189,20 @@ def prepend_head(cfg):
         else "an old version can be several times the family's current price")
 
 
-def allow_prepended(event, tool_input, cfg, note):
+def allow_prepended(event, tool_input, cfg, note, warn=None):
+    """Allow the dispatch with the protocol block prepended.
+
+    ⛔ `note` AND `warn` GO TO DIFFERENT AUDIENCES, and mixing them up is this plugin's most
+    repeated mistake - see context_note(). `note` is prepended to the SUB-AGENT's prompt, so
+    it can only say things the sub-agent should act on. `warn` is about the dispatch itself
+    and the DISPATCHER has to act on it, so it rides out as `additionalContext` (to the
+    dispatching model) and `systemMessage` (onto the person's screen). Putting a dispatcher
+    warning in `note` would send it to the one agent that cannot do anything about it.
+
+    ⚠ `additionalContext` beside `permissionDecision: "allow"` is deliberate and permitted:
+    the PreToolUse schema carries both, and the dispatcher attaches the context independently
+    of the permission behaviour.
+    """
     prompt = tool_input.get("prompt")
     if not isinstance(prompt, str):
         return
@@ -1190,10 +1211,14 @@ def allow_prepended(event, tool_input, cfg, note):
         head += "!! %s\n\n" % note
     updated = dict(tool_input)
     updated["prompt"] = head + prompt
-    print(json.dumps({"hookSpecificOutput": {
+    out = {"hookSpecificOutput": {
         "hookEventName": event, "permissionDecision": "allow",
         "permissionDecisionReason": "dispatch gate: protocol prepended",
-        "updatedInput": updated}}, ensure_ascii=False))
+        "updatedInput": updated}}
+    if warn:
+        out["hookSpecificOutput"]["additionalContext"] = warn
+        out["systemMessage"] = warn
+    print(json.dumps(out, ensure_ascii=False))
 
 
 def context_note(event, text, systemMessage=None):
@@ -1270,6 +1295,188 @@ def plan_for(root, cfg, prompt_text):
     if names:
         return None, names[0]
     return newest(os.path.join(root, tr.replace("/", os.sep), "*", cfg["plan_glob"]))[0], None
+
+
+# ⛔ A BEST-EFFORT SNAPSHOT, TAKEN 2026-08-31, OF THE BUILT-IN AGENT TYPES THAT DO NOT
+# PRODUCE FILES. ⚠ IT WILL ROT, WHICH IS WHY IT IS ONLY EVER USED TO WARN. Agent types are
+# user- and plugin-defined (`.claude/agents/*.md` frontmatter, SDK `agents`), so no table
+# compiled in here can stay correct. A type that is neither in this set nor defined under
+# `.claude/agents/` is UNKNOWN and this guard says nothing at all about it - silence is the
+# right answer for an unknown type, and a guess is not. The PostToolUse half covers it
+# anyway, and covers it better.
+#
+# ⛔ NAMES, NOT A RULE DERIVED FROM TOOL LISTS, and that is the load-bearing choice here.
+# `Explore` is declared as "all tools except Agent, Artifact, ExitPlanMode, Edit, Write,
+# NotebookEdit" - which leaves it holding **Bash**. A tool-list rule would therefore call
+# Explore able to write, and would have missed the exact incident this guard exists for:
+# measured 2026-08-31, an `Explore` round-2 reviewer said in its first line that it could
+# not create its report, returned the whole review as its final message, and its
+# verification table and five findings were permanently lost. The type is read-only by
+# INSTRUCTION, and an instruction is not visible in a tool list.
+# ⚠ `codex:codex-rescue` holds only `Bash` and is deliberately ABSENT from this set: it
+# writes files through the shell, so flagging it would be a false alarm.
+READ_ONLY_AGENT_TYPES = frozenset((
+    "explore", "plan", "claude-code-guide", "statusline-setup",
+    "feature-dev:code-architect", "feature-dev:code-explorer", "feature-dev:code-reviewer",
+))
+
+# ⭐ WHAT COUNTS AS BEING ABLE TO PRODUCE A FILE, for a type defined under `.claude/agents/`.
+# ⚠ `Edit` IS NOT IN HERE. Edit changes a file that already exists; it cannot bring one into
+# being, and "create <path> as your FIRST action" is exactly the instruction it cannot obey.
+# That is why `statusline-setup` (Read, Edit) is listed above as read-only.
+MAKES_FILES = ("write", "notebookedit", "bash", "*")
+
+# Words that turn a path in a prompt into a path the agent was told to CREATE.
+#
+# ⛔ WHOLE WORDS, NOT STEMS. `creat`/`writ`/`append` as bare stems also match inside
+# `creative`, `rewritten` and `appendix`, and the path that then gets picked up is whatever
+# `.md` file the sentence happened to mention - reported later as the agent's lost report.
+# ⚠ `written` IS here and `rewritten` is not, which a stem cannot express.
+_MAKE_VERB = re.compile(
+    r"\b(?:creates?|creating|writes?|writing|written|appends?|appending"
+    r"|saves?|saving|produces?|producing)\b|建立|寫入|寫到|寫成|產生", re.I)
+
+# ⛔ HOW FAR PAST THE VERB A PATH STILL COUNTS AS THE THING BEING CREATED, in characters.
+# ⚠ THE WINDOW CROSSES ONE LINE BREAK, AND THAT IS THE WHOLE POINT. This used to scan line
+# by line, and measured 2026-08-31 against this repository's own 18 work orders that cost it
+# almost everything: the incident that motivated the guard writes `**Your FIRST action:**
+# create` on one line and the path on the NEXT, so the guard was silent on its own example.
+# Two of eleven work orders demanding a report were seen.
+VERB_WINDOW_CHARS = 200
+
+# ⛔ ...AND THE WINDOW STOPS AT THE END OF THE SENTENCE, which is what keeps the reach above
+# from becoming a false-alarm machine. Measured on this repository's own fixture: "Create
+# <report> as your FIRST action, then append every finding." followed by "Read <plan> for the
+# plan." - without this cut the window ran on into the next instruction and named the PLAN as
+# a file the agent had been told to create. ⚠ A `.md` inside a path is NOT a sentence end,
+# because the period there is not followed by whitespace.
+_SENTENCE_END = re.compile(r"[.。！!?？]\s")
+
+
+def _verb_window(text, start):
+    """The span after a creation verb in which a path still belongs to that verb.
+
+    ⛔ TWO LIMITS, AND THE FIRST ONE WINS - line count and sentence, each computed on its
+    own. Folding them into one alternation is how this was wrong on its first attempt: a
+    single pattern `[.?!]\\s|\\n[^\\n]*\\n` matched at offset ZERO whenever the verb ended
+    its line, cutting the window to one character and hiding exactly the incident shape the
+    window exists to catch. Measured against the incident's own work order.
+    """
+    window = text[start:start + VERB_WINDOW_CHARS]
+    # The rest of the verb's line, plus ONE following line - no further.
+    nl = window.find("\n")
+    cut = len(window)
+    if nl >= 0:
+        nl2 = window.find("\n", nl + 1)
+        if nl2 >= 0:
+            cut = nl2
+    end = _SENTENCE_END.search(window)
+    if end:
+        cut = min(cut, end.start() + 1)       # keep the `.md` that ends the sentence
+    return window[:cut]
+
+# A `.md` path, with a left boundary so `MyMemory/tasks/x.md` is not read as a task-root
+# path. A leading drive letter or `/` is captured, so an absolute path stays absolute.
+# ⚠ THE STEM MUST END IN A REAL CHARACTER. With `[...]*\.md` the stem may be EMPTY, so a
+# bare `.md` written in prose ("name it `.md`") matched and produced `<task folder>\.md` -
+# a path that can never exist, reported for ever as a lost report. Measured against this
+# repository's own work orders.
+_MD_PATH = re.compile(r"(?<![A-Za-z0-9._/-])((?:[A-Za-z]:)?[A-Za-z0-9._/-]*[A-Za-z0-9_-]\.md)\b")
+
+
+def _project_agent_tools(root, name):
+    """The `tools:` value from `<root>/.claude/agents/<name>.md`, lower-cased, or None.
+
+    ⭐ A PROJECT DEFINITION BEATS THE SNAPSHOT ABOVE, because it is the live truth for that
+    name in that repository and the snapshot is a guess from another day.
+    """
+    if not name or not re.match(r"^[A-Za-z0-9._-]+$", name):
+        return None                    # a plugin-qualified name is not a project file
+    path = os.path.join(root, ".claude", "agents", name + ".md")
+    try:
+        with open(path, encoding="utf-8") as f:
+            head = f.read(4096)
+    except OSError:
+        return None
+    m = re.search(r"^tools:\s*(.+)$", head, re.M)
+    return m.group(1).strip().lower() if m else None
+
+
+def agent_can_make_files(root, subagent_type):
+    """True / False / None. ⛔ None means UNKNOWN and must stay silent, not be read as False.
+
+    ⚠ Three outcomes rather than a boolean on purpose. A boolean forces an unknown type into
+    one of the two answers, and both are wrong: False invents a warning about a type nobody
+    here has ever seen, True quietly promises a capability nobody checked.
+    """
+    if not isinstance(subagent_type, str) or not subagent_type.strip():
+        return None                    # omitted -> the harness default; not this guard's call
+    name = subagent_type.strip()
+    tools = _project_agent_tools(root, name)
+    if tools is not None:
+        return any(t in tools for t in MAKES_FILES)
+    if name.lower() in READ_ONLY_AGENT_TYPES:
+        return False
+    return None
+
+
+def demanded_files(root, cfg, prompt_text, folder=None):
+    """Paths this prompt tells its agent to CREATE. Returns (paths, verb_count).
+
+    ⭐ CONSERVATIVE ON PURPOSE, and the asymmetry is the design: a path this misses costs
+    nothing - the dispatch proceeds exactly as it does today - while a path it invents
+    produces a warning about work that was never asked for, and a guard that cries wolf is
+    a guard people switch off.
+
+    ⛔ CONSERVATIVE IS NOT THE SAME AS BLIND, and the first version confused the two. It
+    scanned line by line and so missed the shape of its own motivating incident - verb on
+    one line, path on the next - along with a bare `agent-01-x.md` filename and every other
+    real spelling in this repository except two. ⇒ The verb now carries forward
+    VERB_WINDOW_CHARS, across lines, and a bare filename resolves against the dispatch's own
+    task folder when one is known.
+
+    ⚠ AN ABSOLUTE PATH IS USED AS WRITTEN, never re-rooted. A prompt naming another
+    checkout's `Memory/tasks/...` was previously joined onto THIS repository's root and then
+    reported missing from a folder nobody had mentioned.
+
+    ⚠ A path containing `..` is skipped: this function cannot honestly claim such a path is
+    inside the task root, and a guard that reports on a file outside its own scope is one
+    nobody trusts.
+
+    ⭐ `verb_count` is returned so the caller can log the difference between "this prompt
+    demanded nothing" and "this prompt demanded something and no path was recognised". Those
+    two are the same silence and must not be the same log line.
+    """
+    tr = str(cfg["task_root"]).replace("\\", "/").strip("/")
+    text = str(prompt_text).replace("\\", "/")
+    out, verbs = [], 0
+    for verb in _MAKE_VERB.finditer(text):
+        verbs += 1
+        window = _verb_window(text, verb.end())
+        for hit in _MD_PATH.finditer(window):
+            cand = hit.group(1)
+            if ".." in cand.split("/"):
+                continue
+            at = ("/" + cand).find("/" + tr + "/")
+            if at >= 0:
+                if re.match(r"^([A-Za-z]:)?/", cand):
+                    p = cand               # a real absolute path: used as written
+                else:
+                    # ⚠ FROM THE TASK ROOT ONWARD, not from the start of what matched. Work
+                    # orders elide a long prefix as `...\Memory\tasks\...`, and joining that
+                    # onto the repository root produced `<root>\...\Memory\...` - a path
+                    # that never exists, so a report that WAS written read as missing.
+                    p = os.path.join(root, ("/" + cand)[at + 1:])
+            elif folder and "/" not in cand:
+                # A bare filename - real, and previously invisible: "Create
+                # `agent-01-implement.md` in this same folder as your FIRST action".
+                p = os.path.join(root, tr, folder, cand)
+            else:
+                continue
+            p = os.path.normpath(p.replace("/", os.sep))
+            if p not in out:
+                out.append(p)
+    return out[:8], verbs              # bounded: this gets stashed in a slot file
 
 
 ARM_MARK = "auto-arm.spawn"
@@ -1524,7 +1731,8 @@ def record_progress(root, cfg, folder, desc, started_at, response):
         pass
 
 
-def claim_slot(root, sdir, cfg, session_id, slots, tool_use_id, folder=None, desc=None):
+def claim_slot(root, sdir, cfg, session_id, slots, tool_use_id, folder=None, desc=None,
+               wants=None):
     """Atomically take one of `slots` numbered slots. True if one was free.
 
     O_CREAT|O_EXCL is atomic - 20 threads racing it produce exactly one winner - so two
@@ -1546,8 +1754,13 @@ def claim_slot(root, sdir, cfg, session_id, slots, tool_use_id, folder=None, des
             pass
         try:
             fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            # ⭐ `wants` IS STASHED AT CLAIM TIME rather than re-derived on the way out. The
+            # PostToolUse payload is not the place to go looking for the prompt again, and
+            # the answer must be the one the PreToolUse branch actually computed - two reads
+            # of the same prompt by two code paths is two chances to disagree.
             os.write(fd, json.dumps({"id": str(tool_use_id), "folder": folder,
-                                     "desc": desc, "at": time.time()}).encode("utf-8"))
+                                     "desc": desc, "at": time.time(),
+                                     "wants": list(wants or ())}).encode("utf-8"))
             os.close(fd)
             return True
         except FileExistsError:
@@ -2103,9 +2316,45 @@ def on_pre_agent(payload, root, sdir, cfg):
     except Exception as exc:
         log(root, "AUTO-ARM-FAILED %r" % (exc,))
 
+    # ⭐ WHICH FILES THIS PROMPT DEMANDS, AND WHETHER THIS TYPE CAN MAKE THEM. Advisory
+    # only - nothing below refuses. ⚠ Computed BEFORE claim_slot because the answer is
+    # stashed in the slot for the PostToolUse half to read back.
+    wants, warn = [], None
+    if cfg.get("guard_agent_report_file", DEFAULTS["guard_agent_report_file"]):
+        try:
+            stype = tool_input.get("subagent_type")
+            wants, verbs = demanded_files(root, cfg, tool_input.get("prompt") or "", folder)
+            if wants and agent_can_make_files(root, stype) is False:
+                warn = ("dispatch-guard: subagent_type %r is read-only, but this prompt "
+                        "tells the agent to CREATE %s. It cannot, and the failure is "
+                        "SILENT - a normal-looking summary still comes back while the "
+                        "report is lost. Dispatch general-purpose or claude instead, or "
+                        "drop the file requirement from the prompt. (Measured 2026-08-31: "
+                        "an Explore reviewer's verification table and five findings were "
+                        "lost exactly this way.)" % (stype, "; ".join(wants)))
+                log(root, "AGENT-TYPE-WARN(%s wants=%d) %s" % (stype, len(wants), desc))
+            else:
+                # ⛔ `verbs` IS IN THE LINE ON PURPOSE. wants=0 with verbs=0 means the prompt
+                # demanded nothing; wants=0 with verbs>0 means it demanded something and no
+                # path was recognised - a coverage gap in this guard, not a clean dispatch.
+                # One log line for both would hide the second behind the first.
+                log(root, "AGENT-TYPE-OK(%s wants=%d verbs=%d writes=%r)"
+                    % (stype, len(wants), verbs, agent_can_make_files(root, stype)))
+        except Exception as exc:
+            # ⚠ FAIL OPEN AND SAY SO. An advisory check that crashes must not stop a
+            # dispatch, and the log line is what keeps "no warning" from reading as
+            # "checked and clean".
+            log(root, "AGENT-TYPE-CHECK-FAILED %r" % (exc,))
+            wants, warn = [], None
+    else:
+        # ⛔ AN OFF SWITCH THAT LEAVES NO TRACE is the same defect as an absent denial that
+        # proves nothing: "no warning appeared" and "this guard never ran" must not look
+        # the same in the log.
+        log(root, "AGENT-TYPE-DISABLED")
+
     slots = approved_slots(root, cfg, started, folder, log_to=root)
     if not claim_slot(root, sdir, cfg, sid, slots, payload.get("tool_use_id"),
-                      folder, desc):
+                      folder, desc, wants=wants):
         log(root, "DENY(slots-full n=%d) %s" % (slots, desc))
         deny(event, "dispatch gate: %d sub-task(s) are already in flight, which is all "
                     "the owner approved. Dispatch one at a time - that needs no "
@@ -2115,7 +2364,7 @@ def on_pre_agent(payload, root, sdir, cfg):
         return
 
     log(root, "ALLOW(slots=%d) %s" % (slots, desc))
-    allow_prepended(event, tool_input, cfg, note)
+    allow_prepended(event, tool_input, cfg, note, warn=warn)
 
 
 # ------------------------------------------------------------------------------ main
@@ -2216,6 +2465,33 @@ def main():
             log(root, "RELEASE")
             record_progress(root, cfg, result.get("folder"), result.get("desc"),
                             result.get("at"), payload.get("tool_response"))
+            # ⭐ THE HALF THAT ACTUALLY HOLDS. It needs no knowledge of any agent's tool
+            # list, so it cannot go stale, and it catches the case the PreToolUse warning
+            # never can: an agent that COULD write and simply did not. ⚠ The failing agent
+            # on 2026-08-31 did say in its first line that it could not write, and it was
+            # still missed - because the summary looked normal. A missing file does not.
+            try:
+                missing = [p for p in (result.get("wants") or [])
+                           if isinstance(p, str) and not os.path.exists(p)]
+                if missing:
+                    log(root, "AGENT-FILE-MISSING %s" % "; ".join(missing))
+                    text = ("dispatch-guard: the sub-agent returned, but %s was never "
+                            "created. Its prompt required that file. Treat the summary as "
+                            "UNVERIFIED: either the agent could not write (check its "
+                            "subagent_type's tool list) or it did not. If it returned "
+                            "content that belonged on disk, transcribe it verbatim into "
+                            "the task folder NOW - that content lives in a turn you will "
+                            "not be able to reach again - and say in the file that it was "
+                            "transcribed and what is missing."
+                            % "; ".join(missing))
+                    return context_note(
+                        event, text,
+                        systemMessage=("dispatch-guard: sub-agent returned without writing "
+                                       "%s. Its report may be lost." % missing[0]))
+                if result.get("wants"):
+                    log(root, "AGENT-FILE-OK n=%d" % len(result["wants"]))
+            except Exception as exc:
+                log(root, "AGENT-FILE-CHECK-FAILED %r" % (exc,))
         elif result is not False:
             log(root, "RELEASE-FAILED %s" % result)
 

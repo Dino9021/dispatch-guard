@@ -62,6 +62,8 @@ skill 是模型看了描述之後**自己決定**要不要用；文件是模型*
 | ⭐ 沒載入 `unattended-work` 就派工，**拒絕一次** | 只是提醒。要變成閘門就開 `require_unattended_work` |
 | ⚠ `cd <相對路徑> && …` 出警告 | `cd` 失敗時，後面整串安靜地不執行 |
 | ⚠ 有更舊的 commit 沒推，會提醒 | 只提醒，不拒絕 |
+| ⚠ 子 agent 回來了，但**它的提示詞要求的檔案沒有出現** | `guard_agent_report_file`。摘要照樣回來、而且看起來很正常；檔案不存在看起來不正常 |
+| ⚠ **唯讀的 `subagent_type`** 配上一份叫它建立檔案的提示詞 | 同一個開關，派工前就警告。⭐ 不認識的型別什麼都不說 |
 | ⛔ 拒絕**模型太貴**的子代理派工 | `max_model_price`，預設 **5**（每百萬輸入 token 美元） |
 
 ⭐ **價格從 Anthropic 官方定價頁抓，不是手打的。**
@@ -1593,6 +1595,8 @@ one are byte-identical on screen. Each has its own switch; all default to on.
 | ⭐ refuses the **first** dispatch when `unattended-work` was never invoked | a nag, not a gate. `require_unattended_work` makes it a gate |
 | ⚠ warns on `cd <relative> && …` | when the `cd` fails, everything after it silently does not run |
 | ⚠ reports unpushed commits older than the one just made | advisory, never a refusal |
+| ⚠ a sub-agent returned, but **the file its prompt demanded never appeared** | `guard_agent_report_file`. The summary still comes back and still looks normal; a missing file does not |
+| ⚠ a **read-only `subagent_type`** paired with a prompt that tells it to create a file | same switch, warned before it runs. ⭐ An unknown type says nothing at all |
 | ⛔ refuses a sub-agent whose model **costs too much** | `max_model_price`, default **5** ($/M input tokens) |
 
 ⛔ **Every one of these exists because the rule was already written down, read, and broken

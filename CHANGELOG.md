@@ -33,6 +33,47 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.51.0
+
+- ⭐ **0.49.0 那條寫下來的規則變成 hook 了。** 新開關 `guard_agent_report_file`（預設開），
+  兩半、⛔ **兩半都不會拒絕**：
+  - **PostToolUse —— 真正守得住的那一半。** 提示詞叫子 agent「建立」的檔案，在派工前就算好、
+    存進它的 slot，agent 回來時 stat 一次。少了就對模型送一段說明、並在畫面上印一行。
+    ⭐ 它不需要知道任何 agent 的工具清單，所以不會過期；而且它抓得到 PreToolUse 那半永遠
+    抓不到的情況 —— **有能力寫、但就是沒有寫**。
+  - **PreToolUse —— 便宜的提前警告。** 唯讀的 `subagent_type` 配上一份叫它建立檔案的提示詞
+    就警告。⭐ **不認識的型別什麼都不說**：對未知型別而言沉默才是對的答案，猜不是。
+- ⛔ **唯讀型別是用「名字表」判斷的，不是從工具清單推出來的，而這是這裡最關鍵的一個選擇。**
+  `Explore` 宣告成「除了 Agent、Artifact、ExitPlanMode、Edit、Write、NotebookEdit 以外的全部
+  工具」—— 也就是說**它有 `Bash`**。所以「看工具清單」的規則會判定 Explore 寫得了檔案，
+  然後**剛好漏掉這個 guard 存在要抓的那一次事故**。那個型別是「被指示成唯讀」的，
+  而指示不會出現在工具清單裡。⚠ `codex:codex-rescue` 只有 `Bash`，刻意不在表裡 ——
+  它透過 shell 寫檔，標記它就是誤報。
+- ⚠ **`Edit` 不算「能建立檔案」。** Edit 改的是已經存在的檔案，變不出一個新的 ——
+  而「把 `<path>` 建起來當作你的第一個動作」正是它做不到的那一句。
+  這也是 `statusline-setup`（Read, Edit）被列進唯讀表的原因。
+- ⭐ **`.claude/agents/<name>.md` 的 `tools:` 勝過內建快照**，因為那是那個 repo 裡的現況，
+  快照只是另一天的猜測。
+- ⛔ **第一版讀提示詞的方式讀不到它自己那次事故 —— 對抗性審查用它自己的例子把它打掉。**
+  它是「一行一行」掃的，而那份事故工作單是 `**Your FIRST action:** create` 在一行、
+  路徑在「下一行」。拿這個 repo 自己的 18 份工作單實測：舊版只看得到 2 份。
+  ⇒ 改成「動詞往後 200 字元的視窗，跨行」，並且在「句子結束」或「跨過一個換行」兩者
+  先到的地方停 —— 那個停止點才是讓跨行不變成誤報機器的東西。另外，只寫檔名不寫路徑的
+  （`Create agent-01-implement.md`）會用這次派工自己的任務資料夾去解。
+  ⭐ **重新實測：抓到 19 個路徑，每一個都是真正的報告檔，零誤報**，18 份裡有 17 份被看到。
+- ⚠ **動詞改成「完整字」比對。** `creat`/`writ`/`append` 當字根也會命中 `creative`、
+  `rewritten`、`appendix`，然後把那句話剛好提到的 `.md` 當成「agent 遺失的報告」。
+- ⚠ **另外兩個實測出來的錯路徑：** 工作單會把長前綴省略成 `.../Memory/tasks/...`，
+  接到 repo 根目錄上會變成一個永遠不存在的路徑 —— 「寫好的報告」於是讀成「不見了」；
+  而一個沒有名字的 `.md` 會產生 `<資料夾>\.md`，那個路徑永遠不會存在。兩個都修了，
+  而且都有各自的檢查案例。
+- ⭐ **沉默是「被斷言」的，不是被假設的。** 檢查裡有四個「不該叫」的案例：只叫它「讀」的
+  唯讀型別、只有 Bash 的型別、未知型別、任務資料夾以外的路徑。⚠ 一個什麼都叫的 guard
+  沒有人會讀。兩半都做過變異檢查：拿掉 `os.path.exists` 那個判斷，「檔案存在時要安靜」
+  那條就失敗；拿掉 PreToolUse 的警告條件，Explore 那個案例就失敗。
+
+---
+
 ## 0.50.0
 
 - ⛔ **`fetch_seconds` 的下限改回 120，實驗結束。** 0.44.0 把下限調到 60，是為了實測
@@ -1595,6 +1636,56 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.51.0
+
+- ⭐ **0.49.0's written rule is a hook now.** New switch `guard_agent_report_file` (default
+  on), two halves, ⛔ **neither of which ever refuses**:
+  - **`PostToolUse` — the load-bearing half.** The files a prompt tells its sub-agent to
+    CREATE are resolved before the dispatch and stashed in its slot, then `stat`ed when the
+    agent returns. A missing one produces a note to the model and a line on the screen.
+    ⭐ It needs no knowledge of any agent's tool list, so it cannot go stale — and it catches
+    what the `PreToolUse` half never can: an agent that **could** write and simply did not.
+  - **`PreToolUse` — a cheap early warning** when a read-only `subagent_type` is paired with
+    a prompt telling it to create a file. ⭐ **An unknown type says nothing at all**: silence
+    is the right answer for a type nobody here has seen, and a guess is not.
+- ⛔ **Read-only types are matched by NAME, not by a rule derived from tool lists, and that is
+  the load-bearing choice.** `Explore` is declared as "all tools except Agent, Artifact,
+  ExitPlanMode, Edit, Write, NotebookEdit" — which leaves it holding **`Bash`**. A tool-list
+  rule would therefore call Explore able to write and would have **missed the exact incident
+  this guard exists for**. The type is read-only by *instruction*, and an instruction is not
+  visible in a tool list. ⚠ `codex:codex-rescue` holds only `Bash` and is deliberately absent
+  from the table: it writes through the shell, so flagging it would be a false alarm.
+- ⚠ **`Edit` does not count as being able to create a file.** Edit changes a file that already
+  exists; "create `<path>` as your FIRST action" is precisely the instruction it cannot obey.
+  That is why `statusline-setup` (Read, Edit) is in the read-only snapshot.
+- ⭐ **A project's `.claude/agents/<name>.md` `tools:` line beats the built-in snapshot**,
+  because it is the live truth for that name in that repository and the snapshot is a guess
+  from another day.
+- ⛔ **The first version's prompt-reading could not see its own incident — the adversarial
+  review knocked it down with its own example.** It scanned line by line, and that incident's
+  work order writes `**Your FIRST action:** create` on one line with the path on the NEXT.
+  Measured against this repository's 18 real work orders, the old rule saw **two**. ⇒ The
+  verb now carries forward 200 characters **across a line break**, stopping at the end of the
+  sentence or after one line break, whichever comes first — and that stop is what keeps the
+  extra reach from becoming a false-alarm machine. A bare filename (`Create agent-01-implement.md`) resolves against the dispatch's own task folder.
+  ⭐ **Re-measured: 19 paths, every one a genuine report file, no false positives**, and 17
+  of the 18 work orders are now seen.
+- ⚠ **Verbs are matched as WHOLE WORDS.** The stems `creat`/`writ`/`append` also fire inside
+  `creative`, `rewritten` and `appendix`, and then name whatever `.md` the sentence happened
+  to mention as the agent's lost report.
+- ⚠ **Two more wrong paths, both measured:** work orders elide a long prefix as
+  `.../Memory/tasks/...`, and joining that onto the repository root produced a path that can
+  never exist — so a report that WAS written read as missing; and a bare `.md` with no stem
+  produced `<task folder>\.md`, which can never exist either. Both fixed, each with its own
+  check.
+- ⭐ **Silence is asserted, not assumed.** Four no-alarm cases: a read-only type asked only to
+  READ, a Bash-only type, an unknown type, and a path outside the task root. ⚠ A guard that
+  fires on everything is a guard nobody reads. Both halves are mutation-checked — drop the
+  `os.path.exists` test and the "file present stays silent" case fails; drop the `PreToolUse`
+  condition and the Explore case fails.
 
 ---
 

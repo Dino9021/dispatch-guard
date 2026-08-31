@@ -123,12 +123,14 @@ plugin-defined (`.claude/agents/*.md` frontmatter, SDK `agents`), so any snapsho
 and then lies. Read the tool list the session declares for that type. A type carrying only
 `Bash` writes through the shell and is fine.
 
-⭐ **When the agent returns, `ls` the file its prompt named.** No file means it did not do the
-job, however clean the summary reads. This is the step that actually holds: the failing agent
-*did* say so in its first line and it was still missed, because the summary looked normal — a
-file's absence does not look normal. If a read-only agent returns content that belonged on
-disk, transcribe it verbatim into the task folder in the next turn, and say **in the file**
-that it was transcribed and what is missing.
+⭐ **The gate now checks this for you, and it is the half that holds.** When a sub-agent
+returns, the gate stats the files its prompt told it to create and says so if one is missing —
+it needs no knowledge of any agent's tool list, and it also catches an agent that *could*
+write and did not. ⚠ **Advisory, not a refusal**, and its prompt-reading is a conservative
+regex: a phrasing it does not recognise is silently missed, so `ls` the file yourself when the
+answer matters. If an agent returns content that belonged on disk, transcribe it verbatim into
+the task folder in the next turn, and say **in the file** that it was transcribed and what is
+missing.
 
 ## Usage: act on the word, never the numbers
 

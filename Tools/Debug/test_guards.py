@@ -27,6 +27,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -1076,6 +1077,201 @@ def case_model_price_limit(gate, sdir, root):
     print("ok - model ceiling holds; `best`, mythos, and a real availableModels file")
 
 
+def case_agent_report_file(gate, sdir, root):
+    """A prompt that demands a file, and whether that file ever appeared.
+
+    ⛔ THE POST HALF IS THE LOAD-BEARING ONE and these checks are ordered to say so. It needs
+    no knowledge of any agent's tool list, so it cannot rot, and it catches the case the PRE
+    warning never can: an agent that COULD write and simply did not.
+
+    ⛔ SILENCE IS ASSERTED, not assumed. A guard that fires on everything is a guard nobody
+    reads, so the four no-alarm cases below are the ones that keep this one useful: a
+    read-only type asked only to READ, a Bash-only type, an unknown type, and a path outside
+    the task root.
+    """
+    sid = "s-agent-type"
+    stamp_session(gate, sdir, sid)
+    load_skills(gate, root, sid, "dispatch-guard:dispatch-protocol",
+                "dispatch-guard:unattended-work")
+
+    task = "20260831-091500-agent-type"
+    folder = os.path.join(root, "Memory", "tasks", task)
+    os.makedirs(folder, exist_ok=True)
+    report = os.path.join(folder, "agent-01-review.md")
+    rel = "Memory/tasks/%s/agent-01-review.md" % task
+    # The plan on disk, or every dispatch below is refused before it reaches this guard.
+    with open(os.path.join(folder, "prompts.md"), "w", encoding="utf-8") as f:
+        f.write("the plan\n")
+
+    def pre(prompt, stype=None, uid="u1"):
+        ti = {"prompt": prompt, "description": "review"}
+        if stype is not None:
+            ti["subagent_type"] = stype
+        return run_gate(gate, {"hook_event_name": "PreToolUse", "tool_name": "Agent",
+                               "cwd": root, "session_id": sid, "tool_use_id": uid,
+                               "tool_input": ti})
+
+    def post(uid="u1"):
+        return run_gate(gate, {"hook_event_name": "PostToolUse", "tool_name": "Agent",
+                               "cwd": root, "session_id": sid, "tool_use_id": uid,
+                               "tool_input": {"prompt": "x"}, "tool_response": "done"})
+
+    def warned(r):
+        return "read-only" in (hso(r).get("additionalContext") or "")
+
+    creating = ("Create %s as your FIRST action, then append every finding.\n"
+                "Read Memory/tasks/%s/prompts.md for the plan." % (rel, task))
+
+    # 1. The real case: a read-only type told to CREATE a file. A NOTE, never a refusal.
+    r = pre(creating, "Explore")
+    assert decision(r) == "allow", "the warning must not refuse the dispatch: %r" % (r,)
+    assert warned(r), "no warning for an Explore agent told to create a file: %r" % (r,)
+    assert r.get("systemMessage"), "the person must see it; only they can change the type"
+    assert "AGENT-TYPE-WARN(Explore" in gitlog(root), gitlog(root)[-400:]
+
+    # 2. PostToolUse, the file never appeared -> a note naming it.
+    assert not os.path.exists(report)
+    r = post()
+    assert "was never created" in (hso(r).get("additionalContext") or ""), r
+    assert rel.replace("/", os.sep) in (hso(r).get("additionalContext") or ""), r
+    assert r.get("systemMessage"), "a lost report must reach the person"
+    assert "AGENT-FILE-MISSING" in gitlog(root), gitlog(root)[-400:]
+
+    # 3. ⛔ PostToolUse with the file PRESENT -> SILENCE, and the log says it checked.
+    # This is the mutation that matters: drop the os.path.exists test in the gate and this
+    # assertion is what fails.
+    with open(report, "w", encoding="utf-8") as f:
+        f.write("the report\n")
+    pre(creating, "general-purpose", uid="u2")
+    before = len(gitlog(root))
+    r = post(uid="u2")
+    assert not hso(r).get("additionalContext"), "it warned about a file that exists: %r" % (r,)
+    assert "AGENT-FILE-OK n=1" in gitlog(root)[before:], gitlog(root)[-400:]
+    os.remove(report)
+
+    # 4. No false alarm: a read-only type whose prompt only tells it to READ.
+    r = pre("Read %s and summarise it." % rel, "Explore", uid="u3")
+    assert not warned(r), "a read-only agent told only to READ was warned: %r" % (r,)
+    before = len(gitlog(root))
+    r = post(uid="u3")
+    assert not hso(r).get("additionalContext"), "nothing was demanded, so nothing is missing"
+    assert "AGENT-FILE-MISSING" not in gitlog(root)[before:], gitlog(root)[-400:]
+
+    # 5. No false alarm: Bash-only. `codex:codex-rescue` has no Write tool and writes
+    # through the shell, so flagging it would be wrong.
+    assert not warned(pre(creating, "codex:codex-rescue", uid="u4")), "Bash-only was flagged"
+    post(uid="u4")
+
+    # 6. An UNKNOWN type says nothing at PreToolUse - but the PostToolUse half still runs.
+    r = pre(creating, "some-custom-agent", uid="u5")
+    assert not warned(r), "an unknown type produced a guess: %r" % (r,)
+    assert gate.agent_can_make_files(root, "some-custom-agent") is None
+    r = post(uid="u5")
+    assert "was never created" in (hso(r).get("additionalContext") or ""), \
+        "the post check must not depend on knowing the type: %r" % (r,)
+
+    # 7. A path OUTSIDE the task root is not this guard's business.
+    r = pre("Create /etc/hosts.md and README.md as your first action.", "Explore", uid="u6")
+    assert not warned(r), "a path outside the task root was picked up: %r" % (r,)
+    before = len(gitlog(root))
+    r = post(uid="u6")
+    assert not hso(r).get("additionalContext"), r
+
+    # ⭐ A PROJECT DEFINITION BEATS THE BUILT-IN SNAPSHOT, in both directions.
+    adir = os.path.join(root, ".claude", "agents")
+    os.makedirs(adir, exist_ok=True)
+    with open(os.path.join(adir, "local-reader.md"), "w", encoding="utf-8") as f:
+        f.write("---\nname: local-reader\ntools: Read, Grep, Glob\n---\nbody\n")
+    with open(os.path.join(adir, "local-writer.md"), "w", encoding="utf-8") as f:
+        f.write("---\nname: local-writer\ntools: Read, Write\n---\nbody\n")
+    try:
+        assert gate.agent_can_make_files(root, "local-reader") is False
+        assert gate.agent_can_make_files(root, "local-writer") is True
+        assert warned(pre(creating, "local-reader", uid="u7"))
+        post(uid="u7")
+        assert not warned(pre(creating, "local-writer", uid="u8"))
+        post(uid="u8")
+    finally:
+        shutil.rmtree(adir, ignore_errors=True)
+
+    # ⛔ THE SHAPES THE FIRST VERSION COULD NOT SEE. Every row below is a REAL spelling taken
+    # from this repository's own `Memory/tasks/*/prompts*.md`, and the line-by-line scan that
+    # shipped first found two of eighteen work orders. The incident that motivated the whole
+    # guard is the first row: verb at the end of one line, path on the next.
+    cfg = {"task_root": "Memory/tasks"}
+
+    def demanded(text, fold=task):
+        return [os.path.basename(p) for p in gate.demanded_files(root, cfg, text, fold)[0]]
+
+    assert demanded("**Your FIRST action:** create\n`Memory/tasks/%s/r.md`\nwith a heading."
+                    % task) == ["r.md"], "the incident's own shape is still invisible"
+    assert demanded("Create `agent-01-implement.md` in this same folder as your FIRST "
+                    "action.") == ["agent-01-implement.md"], "a bare filename was missed"
+    # ⚠ ...and a bare filename with NO task folder resolved has nowhere to go: silence.
+    assert gate.demanded_files(root, cfg, "Create `x.md` now.", None)[0] == []
+
+    # ⛔ THE COST OF REACHING ACROSS A LINE, BOUNDED. The window stops at the end of the
+    # sentence, or after one line break - whichever comes first - so the NEXT instruction is
+    # not swallowed. Without the cut, "Read <plan>" became a file the agent had to create.
+    assert demanded("Create Memory/tasks/%s/r.md as your FIRST action.\n"
+                    "Read Memory/tasks/%s/prompts.md for the plan." % (task, task)) \
+        == ["r.md"], "the window ran on into the next instruction"
+
+    # ⚠ WORK ORDERS ELIDE THE PREFIX. `...\\Memory\\tasks\\...` joined onto the repository
+    # root gave `<root>\\...\\Memory\\...`, so a report that WAS written read as missing.
+    got = gate.demanded_files(root, cfg, "create `...\\Memory\\tasks\\%s\\r.md`" % task, task)[0]
+    assert got == [os.path.join(root, "Memory", "tasks", task, "r.md")], got
+
+    # ⚠ A BARE `.md` WITH NO NAME is not a path. It used to produce `<folder>\\.md`, which can
+    # never exist and would be reported as a lost report for ever.
+    assert demanded("Create a file whose name ends in .md somewhere.") == []
+
+    # ⛔ WHOLE WORDS. Stems matched inside `creative`, `appendix` and `rewritten`, and then
+    # named whatever `.md` the sentence mentioned as the agent's lost report.
+    for prose in ("Be creative about Memory/tasks/%s/r.md" % task,
+                  "The appendix lists Memory/tasks/%s/r.md" % task,
+                  "It was rewritten from Memory/tasks/%s/r.md" % task):
+        assert demanded(prose) == [], "a verb stem fired inside a word: %r" % prose
+
+    # An absolute path is used AS WRITTEN, never re-rooted into this repository.
+    other = os.path.join(root, "elsewhere").replace("\\", "/")
+    got = gate.demanded_files(root, cfg, "Create %s/Memory/tasks/%s/r.md" % (other, task))[0]
+    assert got == [os.path.normpath("%s/Memory/tasks/%s/r.md" % (other, task))], got
+    # ...and `..` is skipped: this cannot honestly be called scoped to the task root.
+    assert demanded("Create Memory/tasks/../../escape.md") == []
+    # A left boundary, so a directory merely ENDING in the task root is not one.
+    assert demanded("Create MyMemory/tasks/%s/r.md" % task) == []
+
+    # ⭐ THE LOG SEPARATES "demanded nothing" FROM "demanded something, path not recognised".
+    # Those are the same silence, and one line for both would hide the coverage gap.
+    before = len(gitlog(root))
+    pre("Summarise the repository. No files needed.", "Explore", uid="uA")
+    post(uid="uA")
+    assert "wants=0 verbs=0" in gitlog(root)[before:], gitlog(root)[-300:]
+    before = len(gitlog(root))
+    pre("Create that file as your FIRST action, then append.", "Explore", uid="uB")
+    post(uid="uB")
+    assert "wants=0 verbs=2" in gitlog(root)[before:], gitlog(root)[-300:]
+
+    # ⚠ `Edit` ALONE IS NOT A WAY TO CREATE A FILE, which is why statusline-setup (Read,
+    # Edit) is in the read-only snapshot. Asserted so a later "tidy-up" cannot quietly add
+    # Edit to MAKES_FILES.
+    assert "edit" not in gate.MAKES_FILES
+    assert gate.agent_can_make_files(root, "statusline-setup") is False
+
+    # The switch turns both halves off, and SAYS SO - an off switch that leaves no trace
+    # looks exactly like a guard nobody broke.
+    with project_cfg(root, guard_agent_report_file=False):
+        before = len(gitlog(root))
+        assert not warned(pre(creating, "Explore", uid="u9")), "the switch did not silence it"
+        assert "AGENT-TYPE-DISABLED" in gitlog(root)[before:], gitlog(root)[-400:]
+        r = post(uid="u9")
+        assert not hso(r).get("additionalContext"), "the post half survived the switch: %r" % (r,)
+
+    shutil.rmtree(folder, ignore_errors=True)
+    print("ok - a demanded report file is checked on the way out, and silence is asserted")
+
+
 def case_unpushed(gate, sdir, root):
     """PostToolUse advisory - and "no upstream" must stay silent rather than error."""
     before = len(gitlog(root))
@@ -1212,6 +1408,7 @@ def main():
         case_handoff_past_soft(gate, sdir, root)
         case_auto_arm(gate, sdir, root)
         case_model_price_limit(gate, sdir, root)
+        case_agent_report_file(gate, sdir, root)
         case_unpushed(gate, sdir, root)
         # ⚠ Last: it moves the fixture's branch, and the cases above assume `master`.
         case_branch(gate, sdir, root)
