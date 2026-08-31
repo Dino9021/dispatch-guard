@@ -45,6 +45,10 @@ project file is stricter, the stricter rule wins.
   **end by naming its output file**; and **require the report to be written AS THE AGENT
   GOES** ("create `<path>` as your FIRST action, then append every finding"). An agent that
   dies before its final write has produced nothing.
+- **Name the `subagent_type` and the capability the prompt needs from it** — a read-only type
+  cannot obey the write-as-you-go rule, and it fails it silently, because the summary still
+  arrives. `ls` the file when the agent returns. `dispatch-protocol` carries the measured
+  incident and what to do when a read-only agent returns work that belonged on disk.
 
 ## 3. The wave: implement → EXECUTING refuter → fix → refute the fix
 

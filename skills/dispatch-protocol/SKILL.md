@@ -106,6 +106,29 @@ can approve a count, then **start sequentially immediately** — never stall wai
    right plan).
 3. **Requires the report to be written AS THE AGENT GOES** — create the file first, append
    each finding. An agent that dies before its final write produced nothing.
+4. **Names the `subagent_type` AND the capability this prompt needs from it** —
+   `type: general-purpose  ← needs Write: this prompt requires it to create its own report`.
+   The type name alone carries no information; the capability clause cannot be written
+   without checking that type's tool list first.
+
+⛔ **Rule 3 is only a rule for an agent that HAS a way to write.** Measured 2026-08-31: a
+round-2 ADR review was dispatched as `Explore`, a read-only type. It could not create its
+report, so it returned the whole review as its final message — and its verification table and
+five of its findings were **permanently lost**, because they sat in an intermediate turn the
+dispatcher never received. The dispatch named the model and never the type, so the mismatch
+had nowhere to become visible.
+
+⚠ **Do not trust a list of read-only types typed into a file** — agent types are user- and
+plugin-defined (`.claude/agents/*.md` frontmatter, SDK `agents`), so any snapshot here rots
+and then lies. Read the tool list the session declares for that type. A type carrying only
+`Bash` writes through the shell and is fine.
+
+⭐ **When the agent returns, `ls` the file its prompt named.** No file means it did not do the
+job, however clean the summary reads. This is the step that actually holds: the failing agent
+*did* say so in its first line and it was still missed, because the summary looked normal — a
+file's absence does not look normal. If a read-only agent returns content that belonged on
+disk, transcribe it verbatim into the task folder in the next turn, and say **in the file**
+that it was transcribed and what is missing.
 
 ## Usage: act on the word, never the numbers
 

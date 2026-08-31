@@ -33,6 +33,26 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.49.0
+
+- ⛔ **每一份提示詞多了第 4 條：寫出 `subagent_type`，而且寫出這份提示詞需要它具備的能力。**
+  2026-08-31 實測的事故：一次 ADR 第二輪審查被派成 `Explore` —— 一個唯讀型別 ——
+  它建不出提示詞第一行就要求的報告檔，於是把整份審查當成最後一則訊息回傳，
+  而**驗證表格和其中五項發現永久遺失**，因為那些內容在派工端從來沒收到的中間回合裡。
+- ⭐ **「邊做邊寫」這條規則，對一個寫不了檔的 agent 從第一個動作就是無效的**，
+  而且從派工端看是**無聲**的：摘要照樣回來，而且看起來完全正常。
+  ⇒ 那次派工只寫了模型、完全沒寫型別，所以這個不匹配沒有任何地方可以現形；
+  「需要 Write」那句話，不先去查那個型別的工具清單就寫不出來。
+- ⭐ **agent 回來之後 `ls` 一次它的提示詞指名的檔案** —— 真正守得住的是這一步。
+  出問題的那個 agent *有*在第一行說了它寫不了檔，還是被漏掉，因為摘要看起來很正常；
+  檔案不存在看起來不正常。
+- ⚠ **這裡刻意不寫死唯讀型別的清單** —— 和價格表同一個理由。agent 型別由使用者和 plugin
+  自行定義（`.claude/agents/*.md`、SDK `agents`），寫進 skill 的快照會過期然後開始說謊。
+- ⛔ **這一版是「寫下來的規則」，不是 hook。** gate 既不讀 `subagent_type`，
+  也不檢查提示詞要求的檔案有沒有出現 —— 這一條進了 PROTOCOL.md 的「沒有強制」那張表。
+
+---
+
 ## 0.48.0
 
 - ⭐ **watcher 那一行的結尾照擁有者指定的樣子重排：** 圓點前面**一個**空格（原本兩個），
@@ -1556,6 +1576,30 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.49.0
+
+- ⛔ **Every prompt gains a fourth rule: state the `subagent_type`, and the capability that
+  prompt needs from it.** Measured 2026-08-31: a round-2 ADR review was dispatched as
+  `Explore`, a read-only type. It could not create the report its own first line demanded, so
+  it returned the whole review as its final message — and **its verification table and five
+  of its findings were permanently lost**, because they sat in an intermediate turn the
+  dispatcher never received.
+- ⭐ **The write-as-you-go rule is void from the first action for an agent that cannot write**,
+  and the failure is **silent** from the dispatcher's side: the summary still arrives and
+  still looks normal. ⇒ That dispatch named the model and never the type, so the mismatch had
+  nowhere to become visible. The words "needs Write" cannot be written without first reading
+  that type's tool list.
+- ⭐ **`ls` the file the prompt named when the agent returns** — this is the step that actually
+  holds. The failing agent *did* say in its first line that it could not write, and it was
+  still missed, because the summary looked normal. A file's absence does not.
+- ⚠ **No list of read-only types is written into the skill** — the same reason the prices are
+  not. Agent types are user- and plugin-defined (`.claude/agents/*.md`, SDK `agents`), so a
+  snapshot shipped in a skill rots and then lies.
+- ⛔ **This release is a written rule, not a hook.** The gate reads neither `subagent_type` nor
+  whether the demanded file appeared, and PROTOCOL.md's "NOT enforced" table now says so.
 
 ---
 

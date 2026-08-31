@@ -14,7 +14,7 @@ compatibility detection: first existing of `Memory/tasks`, `.agent-tasks`, `task
 | file | contents |
 |---|---|
 | `progress.md` | one row per sub-task: agent, model, status (`pending`/`running`/`done`/`failed`/`delegated`), output path |
-| `prompts*.md` | every sub-task's full prompt, written before any dispatch |
+| `prompts*.md` | every sub-task's full prompt, written before any dispatch — each stating its `subagent_type` **and the capability that prompt needs from it** (`← needs Write: it must create its own report`) |
 | `agent-NN-<subtask>.md` | one report per sub-task, numbered to match `progress.md` |
 | `PARALLEL-APPROVED` | present only when the owner approved concurrency |
 | `HANDOFF.md` | written on STOP; the resume's only input |
@@ -98,6 +98,7 @@ logs to `.claude/dispatch_gate.log` (fallback `%TEMP%/dispatch_gate_error.log`).
 | the `unattended-work` check refuses ONE dispatch, then stops | otherwise a broken skill loader deadlocks the session; it is also silent when `announce_unattended_work=false`. ⚠ It is what asks for that skill by default, since `require_unattended_work` is false. Turn that on and this never fires — the hard rule answers first |
 | the skill requirement CAN deadlock a session if the skill registry is broken | stated rather than hidden: that is what `require_dispatch_protocol: false` is for, and it belongs to the owner. The refusal does not name it, because a rule that names its own off switch gets switched off. ⭐ From the third refusal in a session the message names the other possibility — that the harness is not reporting `Skill` calls at all |
 | the gate cannot tell an INVOKED skill from an ADOPTED one | the `Skill` tool call is recorded; whether the agent then followed the skill is not knowable from a hook. `unattended-work`'s own ACTIVE line is the second half of that answer |
+| the gate reads neither `subagent_type` nor whether the file a prompt demanded ever appeared | so a read-only type dispatched with "create `<path>` as your FIRST action" fails that instruction **silently** — the summary still arrives and looks normal. Measured 2026-08-31: an `Explore` reviewer lost its verification table and five findings that way. Interim, and written-rule only: name the capability beside the type in `prompts*.md`, and `ls` the report file when the agent returns |
 | the model ceiling sees only an EXPLICIT `tool_input.model` | a model pinned in an agent definition's frontmatter, or a `subagent_type` default, is invisible to the hook |
 | an omitted model inherits the SESSION's model, whatever that is | deliberate — it is the model the owner chose; run the session below the ceiling if that matters |
 | `subagent_type: "fork"` always inherits the parent model | a ceiling cannot lower it |
