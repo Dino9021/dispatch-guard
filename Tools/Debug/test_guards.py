@@ -1184,7 +1184,22 @@ def case_agent_report_file(gate, sdir, root):
         f.write("---\nname: local-reader\ntools: Read, Grep, Glob\n---\nbody\n")
     with open(os.path.join(adir, "local-writer.md"), "w", encoding="utf-8") as f:
         f.write("---\nname: local-writer\ntools: Read, Write\n---\nbody\n")
+    # ⛔ A YAML BLOCK LIST IS THE OTHER LEGAL SPELLING OF `tools:`, and reading it wrong
+    # produced a FALSE WARNING - the pattern skipped the newline and captured only the first
+    # item, so an agent holding Write was reported unable to write. Silence would have been
+    # acceptable; a wrong answer about a perfectly good dispatch is not.
+    with open(os.path.join(adir, "block-writer.md"), "w", encoding="utf-8") as f:
+        f.write("---\nname: block-writer\ntools:\n  - Read\n  - Write\n---\nbody\n")
+    with open(os.path.join(adir, "block-reader.md"), "w", encoding="utf-8") as f:
+        f.write("---\nname: block-reader\ntools:\n  - Read\n  - Grep\n---\nbody\n")
+    # ...and `tools:` with nothing under it declares nothing: UNKNOWN, so silent.
+    with open(os.path.join(adir, "no-tools.md"), "w", encoding="utf-8") as f:
+        f.write("---\nname: no-tools\ntools:\ndescription: x\n---\nbody\n")
     try:
+        assert gate.agent_can_make_files(root, "block-writer") is True, \
+            gate._project_agent_tools(root, "block-writer")
+        assert gate.agent_can_make_files(root, "block-reader") is False
+        assert gate.agent_can_make_files(root, "no-tools") is None
         assert gate.agent_can_make_files(root, "local-reader") is False
         assert gate.agent_can_make_files(root, "local-writer") is True
         assert warned(pre(creating, "local-reader", uid="u7"))

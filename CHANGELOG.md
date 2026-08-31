@@ -33,6 +33,19 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.51.1
+
+- ⛔ **`tools:` 寫成 YAML 條列式的時候，會給出「錯的答案」，不是沉默。**
+  `.claude/agents/<name>.md` 裡的 `tools:` 有兩種合法寫法。同一行的
+  `tools: Read, Write` 一直都對；但換行之後縮排 `- Write` 的那一種，舊的樣式
+  會跨過換行、只抓到 `- Read` —— 於是一個「有 Write」的 agent 被判成「寫不了」，
+  對一次完全正常的派工發出**誤報**。⚠ 沉默是可以接受的；錯的答案不行。
+  實測：`tools:` → `'- read'` → `False`；修好之後 → `'read, write'` → `True`。
+- ⚠ **`tools:` 底下什麼都沒有 → `None`（沉默），不是空字串。** 空字串會被讀成
+  「一個什麼工具都沒有的清單」，也就是「寫不了」，然後警告；但那其實是「沒有宣告」。
+
+---
+
 ## 0.51.0
 
 - ⭐ **0.49.0 那條寫下來的規則變成 hook 了。** 新開關 `guard_agent_report_file`（預設開），
@@ -1636,6 +1649,21 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.51.1
+
+- ⛔ **A YAML block-list `tools:` produced a WRONG ANSWER, not silence.** `tools:` in
+  `.claude/agents/<name>.md` has two legal spellings. The inline `tools: Read, Write` was
+  always read correctly; the block list - `tools:` then indented `- Write` lines - was not:
+  the old pattern skipped the newline and captured only `- Read`, so an agent **holding
+  Write** was reported unable to write, warning about a perfectly good dispatch. ⚠ Silence
+  would have been acceptable here; a wrong answer is not. Measured: `tools:` gave `'- read'`
+  and `False`; it now gives `'read, write'` and `True`.
+- ⚠ **A bare `tools:` with nothing under it returns `None` (silent), not an empty string.**
+  An empty string reads as a tool list containing nothing - so, cannot write, so warn - but
+  it declares nothing at all, which is unknown.
 
 ---
 

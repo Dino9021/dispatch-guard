@@ -1398,8 +1398,30 @@ def _project_agent_tools(root, name):
             head = f.read(4096)
     except OSError:
         return None
-    m = re.search(r"^tools:\s*(.+)$", head, re.M)
-    return m.group(1).strip().lower() if m else None
+    m = re.search(r"^tools:[ \t]*(.*)$", head, re.M)
+    if not m:
+        return None
+    inline = m.group(1).strip()
+    if inline and not inline.startswith("-"):
+        return inline.lower()          # `tools: Read, Write`
+    # ⛔ A YAML BLOCK LIST IS THE OTHER LEGAL SPELLING, and reading it wrong is worse than
+    # not reading it at all. `tools:` followed by indented `- Write` lines used to leave the
+    # old pattern's `\s*(.+)` skipping the newline and capturing only `- Read` - so an agent
+    # holding Write was reported as unable to write, which is a FALSE WARNING about a
+    # perfectly good dispatch. Silence would have been acceptable; a wrong answer is not.
+    items = []
+    for line in head[m.end():].splitlines():
+        if not line.strip():
+            continue
+        hit = re.match(r"^\s+-\s*(.+?)\s*$", line)
+        if not hit:
+            break                      # the list ended; anything after it is another key
+        items.append(hit.group(1))
+    # ⚠ NO ITEMS -> None, NOT an empty string. An empty string is a tool list containing
+    # nothing, which reads as "cannot write" and warns; but a bare `tools:` with nothing
+    # under it declares nothing, and the harness's own reading of that is inheritance.
+    # Unknown, so silent.
+    return ", ".join(items).lower() if items else None
 
 
 def agent_can_make_files(root, subagent_type):
