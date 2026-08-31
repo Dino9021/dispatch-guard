@@ -33,6 +33,27 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.48.0
+
+- ⭐ **watcher 那一行的結尾照擁有者指定的樣子重排：** 圓點前面**一個**空格（原本兩個），
+  圓點後面隔一個空格接上 **7d 的重置時間**，最後補**兩個**空格。
+
+  ```
+  ... Burn ▓▓▓▓▓▓▓░░░ .55%/m 2h16m 🟢 Tue 13:00␣␣
+  ```
+- ⭐ **時間不寫欄位名稱。** 讀的人看過一次就知道 `Tue 13:00` 是週視窗的重置，
+  而多一個 `7d ` 標籤要花三欄 —— 這一行是從右邊往回丟東西的。
+- ⛔ **結尾那兩個空格不是留白，不要「順手清掉」。** 終端機會把游標停在最後一欄並畫一個方塊，
+  蓋在圓點或時間上就看不清楚了。⇒ 檢查斷言的是**位元組**不是意圖，因為一個把行尾空白清掉的
+  整理動作會弄壞顯示，而且不會有任何東西告訴你。
+- ⚠ **沒有 7d 視窗就不顯示時間，畫面上不會出現 `None`** —— 而那兩個結尾空格照樣留著，
+  因為它們保護的是游標，不是那個時間。
+- ⚠ 時間不上色，也刻意排在顏色重設之後：它是事實，不是狀態，上色只會跟旁邊的圓點吵架。
+  ⭐ `%a` 在這裡走的是 C locale（Python 啟動時不會呼叫 setlocale），所以是 `Tue` 不是本地化的
+  星期 —— 這是量出來的，不是猜的。
+
+---
+
 ## 0.47.0
 
 - ⛔ **watcher 不會再把「我們的 hook 死掉」讀成「你回家了」。** 實測 2026-08-30：`.alive`
@@ -1535,6 +1556,29 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.48.0
+
+- ⭐ **The end of the watcher row is rearranged as the owner specified:** **one** space before
+  the dot (it was two), then a space and the **seven-day reset time**, then **two** spaces.
+
+  ```
+  ... Burn ▓▓▓▓▓▓▓░░░ .55%/m 2h16m 🟢 Tue 13:00␣␣
+  ```
+- ⭐ **No field name on the time.** A reader learns once that `Tue 13:00` is the weekly reset,
+  and a `7d ` label would cost three columns on a row that drops parts from the right.
+- ⛔ **The two trailing spaces are not padding - do not tidy them away.** The terminal parks
+  its cursor on the last column and draws a block there; over the dot or over the time that
+  block is unreadable. ⇒ The check asserts the BYTES rather than the intent, because a
+  trailing-whitespace cleanup would break the display and nothing else would say so.
+- ⚠ **No seven-day window means no time, never the word `None` on screen** - and the two
+  trailing spaces survive, because what they protect is the cursor, not the time.
+- ⚠ The time is uncoloured and sits outside the colour reset on purpose: it is a fact, not a
+  state, and colouring it would make it argue with the dot beside it. ⭐ `%a` runs in the C
+  locale here (Python does not call setlocale at startup), so it reads `Tue` rather than a
+  localised weekday - measured, not assumed.
 
 ---
 
