@@ -380,8 +380,11 @@ python install.py --check    # 只看它會做什麼，不會動任何東西
 那正是把呼叫額度一次燒掉的情況。
 
 ⛔ **下限是程式強制的，不是建議** — 設更小會被拉回來，而且會印一行告訴你。
-⚠ **下限是 60 秒，預設值仍然是 120 秒** —— 兩個不同的數字，什麼都沒設就是 120。
-下限在 2026-08-29 之前是 120，調低只為了讓下面這個說法「可以被實測」：
+⚠ **下限是 120 秒，和預設值同一個數字** —— 設小於 120 的值會被「往上拉回 120」。
+下限在 2026-08-29 調低到 60，只為了讓下面這個說法「可以被實測」；
+⛔ **2026-08-31 實測結束：60 秒的間隔十分鐘內收到三次 `429`（08:42:59、08:47:30、08:52:01），
+所以改回 120。** 兩次實測合起來才是答案：120 秒下 100 分鐘至少 26 次成功、沒有任何 429，
+60 秒下幾分鐘就 429 —— 上限不是「五次」，但也不是「沒有」，它落在兩個間隔之間而且還不知道。
 這支端點每個 access token 大概只能打 **五次**
 （[onWatch](https://github.com/onllm-dev/onwatch)，它自己監控十家供應商，預設也是 120 秒），
 打完會拿到一直不退的 `429`
@@ -1902,9 +1905,13 @@ would otherwise drift into lockstep and hit the interval boundary together — w
 burst that spends the budget.
 
 ⛔ **The floor is enforced in code, not advisory** — a smaller value is clamped and says so.
-⚠ **The floor is 60 s; the default is still 120 s** — two different numbers, and a config that
-says nothing still polls at 120. The floor was 120 until 2026-08-29 and was lowered only to make
-the following claim measurable. The endpoint is documented as allowing about **five calls per
+⚠ **The floor is 120 s, the same number as the default** — a config asking for less is clamped
+**up** to 120. It was lowered to 60 on 2026-08-29 only to make the following claim measurable, and
+⛔ **the experiment ended on 2026-08-31: a 60 s poll drew three `429`s in ten minutes (08:42:59,
+08:47:30, 08:52:01), so the floor went back to 120.** The two measurements together are the
+answer: 120 s gave at least 26 successful calls in 100 minutes with no `429`; 60 s gave a `429`
+within minutes. The real limit is neither "five" nor absent — it lies between those intervals and
+is still unknown. The endpoint is documented as allowing about **five calls per
 access token**
 ([onWatch](https://github.com/onllm-dev/onwatch), whose own default poll is 120 s while it watches
 ten providers), and exhausting it returns a persistent `429`

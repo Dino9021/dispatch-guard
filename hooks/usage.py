@@ -122,9 +122,9 @@ DEFAULTS = {
     # How often the API may be asked. ⚠ THE REAL INTERVAL IS THIS PLUS UP TO
     # fetch_seconds_jitter of randomness - see _interval(). See FETCH_FLOOR_SECONDS:
     # values below that floor are clamped, and the reason is not a preference.
-    # ⚠ THE DEFAULT AND THE FLOOR ARE DIFFERENT NUMBERS. The floor is 60, deliberately, so
-    # the ~5-calls-per-token claim can be measured; this default stays 120, so nobody gets
-    # the faster poll without writing it into a config themselves.
+    # ⚠ THE DEFAULT AND THE FLOOR ARE THE SAME NUMBER AGAIN (120). A config asking for less
+    # is clamped UP to 120 and told so on stderr - measured 2026-08-31, a 60 s poll drew
+    # three HTTP 429s in ten minutes on this account. 120 is the floor, not a preference.
     "fetch_seconds": 120,
     # Randomness ADDED to every interval, never subtracted. 0 disables it. See _interval()
     # for why it is not merely politeness, and config() for the two things it is clamped
@@ -432,30 +432,34 @@ OAUTH_BETA = "oauth-2025-04-20"
 # short timeout buys a cosmetic win with a blind brake.
 FETCH_TIMEOUT = 5
 
-# ⛔ THIS IS THE FLOOR, NOT THE DEFAULT, AND THE TWO ARE NOT THE SAME NUMBER ANY MORE.
-# The floor is 60; DEFAULTS["fetch_seconds"] is still 120, and a config that says nothing
-# still gets 120. Lowering the floor bought exactly one thing: the ability to MEASURE the
-# claim below, which until 2026-08-29 rested entirely on somebody else's documentation.
-# ⚠ This banner used to read "NEVER LOWER THIS, AND IT IS NOT A TUNING PARAMETER". It is
-# still not a tuning parameter - going under 120 is an experiment with a stop rule, not a
-# setting to like better. See Memory/tasks/20260829-124223-fetch-floor-60s/ for the ADR.
+# ⛔ THE FLOOR IS 120 AGAIN, AND THIS TIME IT IS A MEASUREMENT RATHER THAN A CITATION.
+# The floor equals DEFAULTS["fetch_seconds"]: anything under 120 in a config is clamped UP
+# to 120, and the clamp says so on stderr. ⚠ NOT A TUNING PARAMETER. The 2026-08-29
+# experiment that lowered it to 60 is OVER and it ENDED THE WAY ITS OWN STOP RULE SAID:
 #
-# ⛔ AND THE CITED FIGURE IS ALREADY CONTRADICTED, WHICH IS WHY THE FLOOR MOVED RATHER THAN
-# THE RATIONALE BEING PATCHED. The source below documents "~5 requests per token". MEASURED
-# 2026-08-29 on this account at fetch_seconds 120: at least 26 SUCCESSFUL calls inside 100
-# minutes, no fetch.log written at all (it exists only for failures), and no 429 anywhere in
-# the state tree. So the real limit is out by roughly an order of magnitude, is not known,
-# and cannot be learnt from a citation. ⚠ That is a reason to measure it, NOT a reason to
-# assume there is no limit: the failure mode in 1-4 below is unchanged and still fails OPEN.
+#   MEASURED 2026-08-31, owner-reported, at fetch_seconds 60 - three HTTP 429s in ten
+#   minutes, 08:42:59, 08:47:30 and 08:52:01, each logged by _log_fetch() as
+#   "HTTP 429 rate limited - backing off, NOT retrying". The endpoint DOES rate-limit this
+#   account, and 60 s reaches that limit. ⇒ Restored to 120 by owner instruction the same
+#   day. See Memory/tasks/20260829-124223-fetch-floor-60s/ for the ADR that authorised the
+#   experiment; the result is here because this is the line somebody edits next.
 #
-# The claim being tested: the endpoint allows only about FIVE CALLS PER ACCESS TOKEN.
-# Source: onWatch, a Go quota monitor covering ten providers -
-# https://github.com/onllm-dev/onwatch - which documents the endpoint as having "aggressive
-# rate limits (~5 requests per token)" and whose OWN default poll interval is 120 s
+# ⚠ WHAT THE TWO MEASUREMENTS TOGETHER SAY, because neither one alone is the answer.
+# At 120 s (2026-08-29, same account): at least 26 SUCCESSFUL calls inside 100 minutes, no
+# fetch.log written at all, no 429 anywhere in the state tree. At 60 s (2026-08-31): 429
+# within minutes. ⇒ The real limit is NOT the cited "~5 requests per token" - 26 calls
+# passed - but it is also NOT absent. It sits between the two intervals, it is unknown, and
+# 120 is the interval this plugin has actually seen work. Do not read "26 calls passed" as
+# permission to go faster; that is the reading the 2026-08-31 run refuted.
+#
+# The citation that used to carry this rule alone, kept because it is still the only
+# published figure: onWatch, a Go quota monitor covering ten providers -
+# https://github.com/onllm-dev/onwatch - documents the endpoint as having "aggressive
+# rate limits (~5 requests per token)" and its OWN default poll interval is 120 s
 # (ONWATCH_POLL_INTERVAL) while it serves its dashboard from a local SQLite cache rather
-# than from the API.
+# than from the API. ⚠ Its NUMBER is contradicted above; its INTERVAL is now corroborated.
 #
-# What goes wrong below ~120 s, in order, IF that claim is right:
+# What goes wrong below ~120 s, in order - no longer hypothetical, item 2 is what happened:
 #   1. `usage.py --statusline` re-runs on a timer and `--watch` loops, so a short interval
 #      turns into a steady stream of calls rather than an occasional one.
 #   2. The allowance is exhausted within minutes, and every later call in that session
@@ -471,18 +475,15 @@ FETCH_TIMEOUT = 5
 # the OAuth token to mint a fresh window. See _token_and_expiry() for why this file
 # must not - and fetch(), which refuses to spend a call on a token that file shows is dead.
 #
-# ⛔ HOW THE EXPERIMENT ENDS, so it does not just quietly become the new normal. Run with
-# debug.API_response_usage on, then read API_response_usage_<date>.jsonl and fetch.log:
-#   - a 429 inside the first hour at fetch_seconds 60 -> the documented limit is real for
-#     this account; PUT THIS BACK TO 120 and record the measurement beside the citation.
-#   - no 429 across a full five-hour window -> keep 60 and rewrite the rationale around the
-#     measurement instead of the citation.
-# ⚠ AND THE RESULT IS ONLY VALID IF THE FASTER POLL ACTUALLY HAPPENED. The inter-call gaps
-# in that log must read ~60-90 s (60 plus the jitter). If they read ~120-150, the process
-# that ran was an older installed copy carrying the old floor - see shim.recorded() and
-# `install.py --status` - and the run measured NOTHING. A false negative written back into
-# this comment would be worse than the citation it replaced.
-FETCH_FLOOR_SECONDS = 60
+# ⛔ HOW TO REOPEN THIS, if somebody ever wants to. Not by editing the number: by running
+# the experiment again with debug.API_response_usage on, and reading BOTH
+# API_response_usage_<date>.jsonl and fetch.log. A 429 in fetch.log ends it immediately.
+# ⚠ AND A RESULT IS ONLY VALID IF THE FASTER POLL ACTUALLY HAPPENED. The inter-call gaps in
+# that log must read ~60-90 s (60 plus the jitter). If they read ~120-150, the process that
+# ran was an installed copy carrying a different floor - see shim.recorded() and
+# `install.py --status` - and the run measured NOTHING. A false negative written into this
+# comment would be worse than the citation it replaced.
+FETCH_FLOOR_SECONDS = 120
 
 # ⭐ Randomness is ADDED to every interval - never subtracted, so the effective wait is
 # always fetch_seconds..fetch_seconds+jitter and can never dip under the floor. The amount
@@ -3128,10 +3129,19 @@ def selftest():
             os.environ["ANTHROPIC_TOKEN"] = _saved_env
 
     # The floor is enforced, not merely documented.
+    # ⛔ 120 IS ASSERTED AS A LITERAL, not as FETCH_FLOOR_SECONDS. Writing the constant on
+    # both sides makes this test agree with any floor somebody types in, including the 60
+    # that drew three 429s on 2026-08-31 - so it would have stayed green through exactly
+    # the regression it exists to catch.
     tmp = tempfile.mkdtemp()
+    for asked in (30, 60, 119):
+        with open(os.path.join(tmp, "config.json"), "w", encoding="utf-8") as f:
+            json.dump({"fetch_seconds": asked}, f)
+        assert config(tmp)["fetch_seconds"] == 120, (asked, config(tmp)["fetch_seconds"])
+    assert FETCH_FLOOR_SECONDS == 120, FETCH_FLOOR_SECONDS
     with open(os.path.join(tmp, "config.json"), "w", encoding="utf-8") as f:
-        json.dump({"fetch_seconds": 30}, f)
-    assert config(tmp)["fetch_seconds"] == FETCH_FLOOR_SECONDS
+        json.dump({"fetch_seconds": 120}, f)
+    assert config(tmp)["fetch_seconds"] == 120       # at the floor: passes through
     with open(os.path.join(tmp, "config.json"), "w", encoding="utf-8") as f:
         json.dump({"fetch_seconds": 600, "stale_min": 60}, f)
     assert config(tmp)["fetch_seconds"] == 600

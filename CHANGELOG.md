@@ -33,6 +33,25 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.50.0
+
+- ⛔ **`fetch_seconds` 的下限改回 120，實驗結束。** 0.44.0 把下限調到 60，是為了實測
+  「每個 token 大約五次」那個引用數字。⭐ **它照自己寫好的停止條件結束了** ——
+  2026-08-31、`fetch_seconds` 設 60、擁有者回報：十分鐘內三次 HTTP 429
+  （08:42:59、08:47:30、08:52:01）。⇒ 下限改回 120，小於 120 的設定會被**往上拉回 120**，
+  而且會在 stderr 印一行說明。
+- ⭐ **兩次實測合起來才是答案，任何一次單獨看都會誤導。** 120 秒間隔：100 分鐘內至少 26 次
+  成功呼叫、沒有任何 429。60 秒間隔：幾分鐘內就 429。⇒ 那個「五次」的數字確實差了一個
+  數量級，但上限**不是不存在** —— 它落在這兩個間隔之間，目前仍然不知道是多少。
+  ⛔ 不要把「26 次成功」讀成「可以再快一點」，那正是這次實測推翻掉的讀法。
+- ⚠ **自我檢查現在把 120 寫成字面值，不是寫 `FETCH_FLOOR_SECONDS`。** 兩邊都寫常數的話，
+  這個檢查會同意任何人打進去的下限（包括收到三次 429 的那個 60）—— 它會在它存在要抓的那個
+  退步裡保持綠燈。新增的案例：30、60、119 都必須變成 120，而 120 原樣通過。
+- ⭐ 下限的夾限做過**變異檢查**：拿掉那一行賦值，檢查就以 `AssertionError((30, 30))` 失敗。
+  ⚠ 那行 stderr 警告照樣會印 —— 所以「有看到警告」不是證據，斷言才是。
+
+---
+
 ## 0.49.0
 
 - ⛔ **每一份提示詞多了第 4 條：寫出 `subagent_type`，而且寫出這份提示詞需要它具備的能力。**
@@ -1576,6 +1595,28 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.50.0
+
+- ⛔ **The `fetch_seconds` floor is back to 120 — the experiment is over.** 0.44.0 lowered it
+  to 60 to measure the cited "~5 requests per token" figure. ⭐ **It ended the way its own
+  stop rule said it must:** measured 2026-08-31 at `fetch_seconds` 60, owner-reported — three
+  HTTP 429s in ten minutes (08:42:59, 08:47:30, 08:52:01). ⇒ The floor is 120 again, anything
+  smaller in a config is clamped **up** to 120, and the clamp says so on stderr.
+- ⭐ **The two measurements together are the answer; either one alone misleads.** At 120 s: at
+  least 26 successful calls in 100 minutes, no 429 anywhere. At 60 s: a 429 within minutes.
+  ⇒ The "five calls" figure really is out by roughly an order of magnitude, but the limit is
+  **not absent** — it sits between those two intervals and is still unknown. ⛔ Do not read
+  the 26 successful calls as permission to go faster; that is the reading this run refuted.
+- ⚠ **The self-check now asserts 120 as a LITERAL, not as `FETCH_FLOOR_SECONDS`.** With the
+  constant on both sides the check agrees with whatever floor somebody types in — including
+  the 60 that drew the 429s — so it would have stayed green straight through the regression it
+  exists to catch. New cases: 30, 60 and 119 must all become 120, and 120 passes through.
+- ⭐ The clamp is **mutation-checked**: delete the assignment and the check fails with
+  `AssertionError((30, 30))`. ⚠ The stderr warning still prints during that mutation — so
+  seeing the warning is not evidence; the assertion is.
 
 ---
 
