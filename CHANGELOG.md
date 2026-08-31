@@ -33,6 +33,25 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.51.3
+
+- ⛔ **0.51.2 的做法「到不了畫面上」。** 那一版在第一行前面補了一個空格；
+  ⚠ **外掛真的有印出來**（安裝的 0.51.2 自己的輸出裡 `lead=1`），但 **Claude Code
+  在畫之前把行首空白剪掉了**。「量過的修正」和「有效的修正」是兩件事。
+- ⛔ **也沒有任何字元可以替代。** 每一個 Unicode 空白都是 Zs 分類，JavaScript 的
+  `trim()` 會全部剪掉；零寬字元不佔欄。⇒ 行首永遠對不了齊。
+- ⭐ **所以改成第二行自己變窄：`Ctx` 和它的圖表之間不留空格。**
+  `5h ` 的圖表在第 3 欄，`Ctx` 直接接圖表也在第 3 欄 —— 兩行對齊，而且**兩行都不以空格開頭**，
+  外掛的剪裁碰不到它。
+- ⚠ **watcher 沒變。** 它的時間戳記本來就把第一行的圖表推到 `Ctx` 右邊，所以那裡照舊補第二行
+  （實測兩行都在第 13 欄）。
+- ⛔ **`_second_row_indent` 恢復成只補第二行，而且註解裡寫明為什麼不能補第一行。**
+  留著一個「補第一行」的分支比沒有更糟：它會安靜地被丟掉，卻讓人以為對齊有在處理。
+- ⭐ 檢查現在同時斷言「兩行圖表同一欄」和「兩行都不以空格開頭」。變異檢查：把 `Ctx`
+  後面的空格放回去，檢查就以欄位 3 和 4 失敗。
+
+---
+
 ## 0.51.2
 
 - ⭐ **第二行的 `Ctx` 圖表和第一行對齊了** —— 擁有者指定的做法：`5h` 前面加一個空格。
@@ -1665,6 +1684,29 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.51.3
+
+- ⛔ **0.51.2's fix never reached the screen.** That version padded the first row by one
+  column. ⚠ **The plugin really did emit it** - `lead=1` in the installed 0.51.2's own
+  output - and **Claude Code trims leading whitespace off a statusline row before drawing
+  it**. A measured fix and a working fix are not the same thing.
+- ⛔ **No character can stand in, either.** Every Unicode space is category Zs and a
+  JavaScript `trim()` removes all of them; a zero-width character occupies no column.
+  ⇒ Nothing leading can ever align anything here.
+- ⭐ **So the second row is made narrower instead: no space between `Ctx` and its bar.**
+  `5h ` puts its bar in column 3, and `Ctx` running straight into its bar lands in column 3
+  too - aligned, and with **neither row starting with a space**, so the trim cannot touch it.
+- ⚠ **The watcher is unchanged.** Its timestamp already pushes the first row's bar right of
+  `Ctx`, so the pad stays on the second row there (measured: both bars in column 13).
+- ⛔ **`_second_row_indent` is back to padding only the second row, with the reason the first
+  row cannot be padded written into it.** Keeping that branch would be worse than not having
+  it: it is silently discarded while reading as though alignment were handled.
+- ⭐ The check now asserts both that the two bars share a column and that neither row starts
+  with a space. Mutation-checked: put the space back after `Ctx` and it fails with columns
+  3 and 4.
 
 ---
 

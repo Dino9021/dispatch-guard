@@ -1883,9 +1883,8 @@ def _rows(windows, extras, width, head="", tail="", two_rows=True, always_split=
         # ⚠ A forced split has to survive here too, or the second row would appear only on
         # terminals whose width could be detected - which is the machines, not the intent.
         if always_split and two_rows and extras:
-            top_pad, bot_pad = _row_indents(head, windows, extras)
-            return [" " * top_pad + head + _fit(windows, None) + tail,
-                    " " * bot_pad + _fit(extras, None)]
+            return [head + _fit(windows, None) + tail,
+                    " " * _second_row_indent(head, windows, extras) + _fit(extras, None)]
         return [head + _fit(windows + extras, None) + tail]
     one = head + _fit(windows + extras, None) + tail
     if not always_split and _visible_len(one) <= width:
@@ -1895,13 +1894,10 @@ def _rows(windows, extras, width, head="", tail="", two_rows=True, always_split=
     if not two_rows or not extras:
         return [_cut(head + _fit(windows + extras, width - _visible_len(head)
                                  - _visible_len(tail)) + tail, width)]
-    # ⛔ THE FIRST ROW'S PAD COMES OUT OF ITS OWN BUDGET. A pad added after the fit would
-    # make the row one column wider than the terminal, and one column too many wraps - which
-    # is the single thing this whole area exists to prevent.
-    top_pad, bot_pad = _row_indents(head, windows, extras)
-    room = width - top_pad - _visible_len(head) - _visible_len(tail)
-    first = _cut(" " * top_pad + head + _fit(windows, room) + tail, width)
-    second = _cut(" " * bot_pad + _fit(extras, width - bot_pad), width)
+    room = width - _visible_len(head) - _visible_len(tail)
+    first = _cut(head + _fit(windows, room) + tail, width)
+    pad = " " * _second_row_indent(head, windows, extras)
+    second = _cut(pad + _fit(extras, width - len(pad)), width)
     return [first, second] if second.strip() else [first]
 
 
@@ -1918,31 +1914,34 @@ def _bar_col(part):
     return None
 
 
-def _row_indents(head, windows, extras):
-    """(first-row pad, second-row pad) in columns, putting the two bars in one column.
+def _second_row_indent(head, windows, extras):
+    """Columns of padding that put the second row's bar under the first row's bar.
 
     ⛔ THE OLD RULE WAS "indent by the head", and it does not align anything: the labels are
     different lengths (`5h` against `Burn`), so the bars landed two columns apart and the
     two rows read as two unrelated lines. ⭐ Measured from the STRINGS rather than from a
     table of label widths, so a new label needs nothing added here.
 
-    ⛔ AND PADDING CAN ONLY PUSH RIGHT, so whichever bar sits further LEFT is the one that
-    has to move - which may be the first row. Only ever padding the second row cannot align
-    `Ctx ` under `5h `: measured 2026-08-31 in the CLI, the first row's bar is at column 3
-    and `Ctx`'s at column 4, so the second row needed a pad of MINUS one and got zero.
-    ⇒ One space goes in front of `5h` instead. Owner-asked 2026-08-31.
+    ⛔ ONLY THE SECOND ROW IS EVER PADDED, AND THE FIRST ROW CANNOT BE - which is a platform
+    fact, not a preference. Padding can only push RIGHT, so aligning a second-row bar that
+    starts further right than the first row's would need the FIRST row indented; 0.51.2
+    shipped exactly that and it was MEASURED not to reach the screen. The plugin emitted the
+    space (`lead=1` in the installed copy's own output) and Claude Code trimmed it off the
+    row before drawing. No character can stand in either: every Unicode space is category Zs
+    and a JavaScript `trim()` removes all of them, while a zero-width character occupies no
+    column. ⇒ A segment that wants to line up under the first row must be NARROW ENOUGH to -
+    see the `Ctx` segment in _line_parts(), which gives up the space before its bar to reach
+    column 3. Do not reintroduce a first-row pad; it is silently discarded.
 
-    ⚠ Neither pad is ever negative, and a row with no bar at all is not padded: a second row
-    pulled left of column zero would collide with the timestamp above it rather than align
-    with it.
+    ⚠ Never negative, and never less than nothing: a second row pulled left of column zero
+    would collide with the timestamp above it rather than line up with it.
     """
     base = _visible_len(head)
     top, bottom = _bar_col(windows[0] if windows else None), _bar_col(extras[0] if extras
                                                                      else None)
     if top is None or bottom is None:
-        return 0, base
-    delta = base + top - bottom
-    return (0, delta) if delta >= 0 else (-delta, 0)
+        return base
+    return max(0, base + top - bottom)
 
 
 def _cut(text, width):
@@ -2161,12 +2160,21 @@ def _line_parts(record, stale_note=None, cfg=None, payload=None, stale=None, bur
         # spaces is the separator BETWEEN segments in this line, so using it inside one made
         # `Ctx` read as two items. The bar carries the extra cell instead: BAR_WIDTH + 1 is
         # the same width the marker'd bars occupy, so the columns still line up.
+        # ⛔ NO SPACE BETWEEN THE LABEL AND THE BAR, and it is the only way this bar can line
+        # up with the one above it. `5h ` occupies three columns before its bar; `Ctx ` needs
+        # four, and a pad can only push RIGHT - so the second row can never be brought left
+        # to meet the first. Padding the FIRST row by one was tried and MEASURED not to
+        # work: the plugin emits the space (`lead=1` from the installed 0.51.2) and Claude
+        # Code trims it off the row before drawing. ⚠ Nor can an invisible character stand
+        # in: every Unicode space is category Zs and a JavaScript `trim()` strips all of
+        # them, and a zero-width character occupies no column. ⇒ The label gives up its
+        # separator instead, which puts this bar in column 3 exactly like `5h`.
         cpct = _context_pct(payload)
         if cpct is None:
-            extras.append("Ctx %s %s" % (BAR_EMPTY * (BAR_WIDTH + 1), "--"))
+            extras.append("Ctx%s %s" % (BAR_EMPTY * (BAR_WIDTH + 1), "--"))
         else:
             on, off = _colour(cpct, cfg)
-            extras.append("Ctx %s%s %d%%%s"
+            extras.append("Ctx%s%s %d%%%s"
                           % (on, _bar(cpct, BAR_WIDTH + 1), round(cpct), off))
     # ⛔ THE NOTE OUTRANKS THE MODEL NAME, and it used to be the other way round. Parts are
     # dropped from the RIGHT when they do not fit, so with the model last a narrow display
@@ -3798,21 +3806,23 @@ def selftest():
     # blank second row it does not need.
     assert len(line_rows(_tr, None, {"width": 200, "two_rows": True})) == 1
 
-    # ⛔ THE TWO BARS SIT IN THE SAME COLUMN, and the pad may have to go on the FIRST row to
-    # get there. `Ctx ` needs four columns before its bar and `5h ` needs three, so padding
-    # only the second row leaves them one apart - which is what shipped, and what the owner
-    # saw. Owner-asked 2026-08-31.
+    # ⛔ THE TWO BARS SIT IN THE SAME COLUMN, AND NEITHER ROW MAY START WITH A SPACE.
+    # `Ctx` gives up the separator before its bar so that both bars land in column 3.
+    # ⚠ THE OBVIOUS FIX DOES NOT WORK AND THIS ASSERTION IS WHAT REMEMBERS THAT: padding the
+    # first row by one column was shipped in 0.51.2 and MEASURED not to reach the screen -
+    # the plugin emitted it (`lead=1`) and Claude Code trimmed it off the row. Anything
+    # leading is trimmed, so alignment has to come from the second row being narrower.
+    # Owner-reported twice, 2026-08-31.
     # ⚠ 70, not 100: at 100 this fixture fits on one row and there is nothing to align.
     _al = line_rows(_tr, None, {"width": 70, "two_rows": True},
                     {"model": {"display_name": "Opus 5 (1M context)"},
                      CONTEXT_KEY: {"used_percentage": 0}})
     assert len(_al) == 2, _al
     assert _bar_col(_al[0]) == _bar_col(_al[1]), (_bar_col(_al[0]), _bar_col(_al[1]), _al)
-    assert _al[0].startswith(" "), "the first row did not take the pad: %r" % (_al[0],)
     for _r in _al:
-        assert _visible_len(_r) <= 70, "the pad pushed a row past the width: %r" % (_r,)
-    # ⚠ ...and a ONE-row line never gains that space: it has nothing to line up with.
-    assert not line_rows(_tr, None, {"width": 200, "two_rows": True})[0].startswith(" ")
+        assert not _STRIP_ANSI.sub("", _r).startswith(" "), \
+            "a leading space is trimmed by the harness, so it aligns nothing: %r" % (_r,)
+        assert _visible_len(_r) <= 70, (_visible_len(_r), _r)
     # ⚠ The watcher's head still owns column zero - the pad goes on the SECOND row there,
     # because the timestamp already pushes the first row's bar to the right of `Ctx`.
     _wl = _rows(*_line_parts(_tr, None, {}, {"model": {"display_name": "Opus 5"},
