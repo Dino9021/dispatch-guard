@@ -1883,8 +1883,9 @@ def _rows(windows, extras, width, head="", tail="", two_rows=True, always_split=
         # ⚠ A forced split has to survive here too, or the second row would appear only on
         # terminals whose width could be detected - which is the machines, not the intent.
         if always_split and two_rows and extras:
-            return [head + _fit(windows, None) + tail,
-                    " " * _second_row_indent(head, windows, extras) + _fit(extras, None)]
+            top_pad, bot_pad = _row_indents(head, windows, extras)
+            return [" " * top_pad + head + _fit(windows, None) + tail,
+                    " " * bot_pad + _fit(extras, None)]
         return [head + _fit(windows + extras, None) + tail]
     one = head + _fit(windows + extras, None) + tail
     if not always_split and _visible_len(one) <= width:
@@ -1894,10 +1895,13 @@ def _rows(windows, extras, width, head="", tail="", two_rows=True, always_split=
     if not two_rows or not extras:
         return [_cut(head + _fit(windows + extras, width - _visible_len(head)
                                  - _visible_len(tail)) + tail, width)]
-    room = width - _visible_len(head) - _visible_len(tail)
-    first = _cut(head + _fit(windows, room) + tail, width)
-    pad = " " * _second_row_indent(head, windows, extras)
-    second = _cut(pad + _fit(extras, width - len(pad)), width)
+    # ⛔ THE FIRST ROW'S PAD COMES OUT OF ITS OWN BUDGET. A pad added after the fit would
+    # make the row one column wider than the terminal, and one column too many wraps - which
+    # is the single thing this whole area exists to prevent.
+    top_pad, bot_pad = _row_indents(head, windows, extras)
+    room = width - top_pad - _visible_len(head) - _visible_len(tail)
+    first = _cut(" " * top_pad + head + _fit(windows, room) + tail, width)
+    second = _cut(" " * bot_pad + _fit(extras, width - bot_pad), width)
     return [first, second] if second.strip() else [first]
 
 
@@ -1914,23 +1918,31 @@ def _bar_col(part):
     return None
 
 
-def _second_row_indent(head, windows, extras):
-    """Columns of padding that put the second row's bar under the first row's bar.
+def _row_indents(head, windows, extras):
+    """(first-row pad, second-row pad) in columns, putting the two bars in one column.
 
     ⛔ THE OLD RULE WAS "indent by the head", and it does not align anything: the labels are
     different lengths (`5h` against `Burn`), so the bars landed two columns apart and the
     two rows read as two unrelated lines. ⭐ Measured from the STRINGS rather than from a
     table of label widths, so a new label needs nothing added here.
 
-    ⚠ Never negative, and never less than nothing: a second row pulled left of column zero
-    would collide with the timestamp above it rather than line up with it.
+    ⛔ AND PADDING CAN ONLY PUSH RIGHT, so whichever bar sits further LEFT is the one that
+    has to move - which may be the first row. Only ever padding the second row cannot align
+    `Ctx ` under `5h `: measured 2026-08-31 in the CLI, the first row's bar is at column 3
+    and `Ctx`'s at column 4, so the second row needed a pad of MINUS one and got zero.
+    ⇒ One space goes in front of `5h` instead. Owner-asked 2026-08-31.
+
+    ⚠ Neither pad is ever negative, and a row with no bar at all is not padded: a second row
+    pulled left of column zero would collide with the timestamp above it rather than align
+    with it.
     """
     base = _visible_len(head)
     top, bottom = _bar_col(windows[0] if windows else None), _bar_col(extras[0] if extras
                                                                      else None)
     if top is None or bottom is None:
-        return base
-    return max(0, base + top - bottom)
+        return 0, base
+    delta = base + top - bottom
+    return (0, delta) if delta >= 0 else (-delta, 0)
 
 
 def _cut(text, width):
@@ -3342,9 +3354,9 @@ def selftest():
     # ⚠ EVERY ROW, not the joined text: the point of a second row is that each one fits.
     for _w in (200, 150, 120, 100, 80, 60, 40, 25):
         for _idle in (True, False):
-            _rows = _watch_line("07:26:12", _live, _v, _note, {"width": _w}, idle=_idle)
-            assert 1 <= len(_rows) <= 2, _rows
-            for _r in _rows:
+            _wrows = _watch_line("07:26:12", _live, _v, _note, {"width": _w}, idle=_idle)
+            assert 1 <= len(_wrows) <= 2, _wrows
+            for _r in _wrows:
                 assert _visible_len(_r) <= _w, (
                     "width %d, idle=%s: a row is %d columns and WILL wrap: %r"
                     % (_w, _idle, _visible_len(_r), _r))
@@ -3561,8 +3573,8 @@ def selftest():
     # from 55% there are 45 points left, so ~45 minutes. A fixture logged LATE would be
     # measuring the anchor instead of the burn-out; the anchor gets its own check below.
     _far = _bnow + 245 * 60                          # ⇒ the window opened 55 minutes ago
-    _rows = [(_far - 5 * 3600, 0), (_bnow - 1, 55)]
-    _plant(_rows, _far)
+    _samples = [(_far - 5 * 3600, 0), (_bnow - 1, 55)]
+    _plant(_samples, _far)
     _b = burnout_min(_bt, _bcfg, 55, _far, _bnow)
     assert _b is not None and 40 <= _b <= 50, _b
     # ⭐ The projection and the burn-out must agree, because they share one sampling. A window
@@ -3597,7 +3609,7 @@ def selftest():
         os.remove(_f)
     assert burnout_min(_bt, _bcfg, 55, _far, _bnow) is None
     # ...and a window already at 100% is not "unknowable", it is spent NOW.
-    _plant(_rows, _far)
+    _plant(_samples, _far)
     assert burnout_min(_bt, _bcfg, 100, _far, _bnow) == 0
 
     # ⭐ THE WINDOW'S OWN START AS THE ANCHOR: THE WINDOW'S OWN START COUNTS. Logging does not begin when the window
@@ -3785,6 +3797,29 @@ def selftest():
     # ⚠ A line that FITS stays on one row whatever the setting, or every display grows a
     # blank second row it does not need.
     assert len(line_rows(_tr, None, {"width": 200, "two_rows": True})) == 1
+
+    # ⛔ THE TWO BARS SIT IN THE SAME COLUMN, and the pad may have to go on the FIRST row to
+    # get there. `Ctx ` needs four columns before its bar and `5h ` needs three, so padding
+    # only the second row leaves them one apart - which is what shipped, and what the owner
+    # saw. Owner-asked 2026-08-31.
+    # ⚠ 70, not 100: at 100 this fixture fits on one row and there is nothing to align.
+    _al = line_rows(_tr, None, {"width": 70, "two_rows": True},
+                    {"model": {"display_name": "Opus 5 (1M context)"},
+                     CONTEXT_KEY: {"used_percentage": 0}})
+    assert len(_al) == 2, _al
+    assert _bar_col(_al[0]) == _bar_col(_al[1]), (_bar_col(_al[0]), _bar_col(_al[1]), _al)
+    assert _al[0].startswith(" "), "the first row did not take the pad: %r" % (_al[0],)
+    for _r in _al:
+        assert _visible_len(_r) <= 70, "the pad pushed a row past the width: %r" % (_r,)
+    # ⚠ ...and a ONE-row line never gains that space: it has nothing to line up with.
+    assert not line_rows(_tr, None, {"width": 200, "two_rows": True})[0].startswith(" ")
+    # ⚠ The watcher's head still owns column zero - the pad goes on the SECOND row there,
+    # because the timestamp already pushes the first row's bar to the right of `Ctx`.
+    _wl = _rows(*_line_parts(_tr, None, {}, {"model": {"display_name": "Opus 5"},
+                                             CONTEXT_KEY: {"used_percentage": 0}}),
+                width=100, head="07:26:12  ", always_split=True)
+    assert len(_wl) == 2 and _bar_col(_wl[0]) == _bar_col(_wl[1]), _wl
+    assert not _wl[0].startswith(" "), "the timestamp lost column zero: %r" % (_wl[0],)
 
     # ⛔ THE BRAKE WEIGHS BOTH WINDOWS. It used to read the five-hour percentage and nothing
     # else: the seven-day figure produced a NOTE and never a level, so an account at 7d 99%

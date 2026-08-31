@@ -33,6 +33,22 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.51.2
+
+- ⭐ **第二行的 `Ctx` 圖表和第一行對齊了** —— 擁有者指定的做法：`5h` 前面加一個空格。
+  ⛔ **留白只能往右推。** `Ctx ` 的圖表前面要 4 欄，`5h ` 只要 3 欄，所以「只補第二行」
+  永遠對不齊 —— 那個補的量會是負一，然後被夾成 0。實測 CLI：第一行圖表在第 3 欄、
+  第二行在第 4 欄，差一欄。⇒ 現在是「哪一邊的圖表比較左，就補那一邊」。
+- ⚠ **第一行的留白從它自己的寬度預算裡扣。** 如果補完才算寬度，那一行會比終端機寬一欄，
+  而多一欄就會折行 —— 折行正是這一整塊程式存在要防的唯一一件事。
+- ⚠ **只有一行的時候不會多出那個空格**，它沒有東西要對齊；watcher 那邊也沒變 ——
+  時間戳記讓第一行的圖表本來就在 `Ctx` 右邊，所以那裡照舊補第二行。
+- ⛔ **順手修掉一個真的陷阱：`selftest()` 裡有兩個區域變數叫 `_rows`**，把同名的模組函式
+  整個遮住了 —— 新的檢查一呼叫 `_rows(...)` 就是 `TypeError: 'list' object is not callable`。
+  改名了。
+
+---
+
 ## 0.51.1
 
 - ⛔ **`tools:` 寫成 YAML 條列式的時候，會給出「錯的答案」，不是沉默。**
@@ -1649,6 +1665,26 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.51.2
+
+- ⭐ **The second row's `Ctx` bar lines up with the first row's** — done the way the owner
+  specified: one space in front of `5h`. ⛔ **Padding can only push RIGHT.** `Ctx ` needs
+  four columns before its bar and `5h ` needs three, so padding only the second row can
+  never align them - the pad would have to be minus one, and it was clamped to zero.
+  Measured in the CLI: the first row's bar sat at column 3 and the second row's at column 4.
+  ⇒ Whichever bar sits further left is now the one that moves.
+- ⚠ **The first row's pad comes out of its own width budget.** Added after the fit, it would
+  make the row one column wider than the terminal - and one column too many wraps, which is
+  the single thing this whole area exists to prevent.
+- ⚠ **A one-row line never gains that space** - it has nothing to line up with - and the
+  watcher is unchanged: its timestamp already pushes the first row's bar right of `Ctx`, so
+  the pad stays on the second row there.
+- ⛔ **A real trap fixed on the way past: `selftest()` had two locals named `_rows`**, which
+  shadowed the module function of the same name for the whole function - so the new check's
+  call raised `TypeError: 'list' object is not callable`. Renamed.
 
 ---
 
