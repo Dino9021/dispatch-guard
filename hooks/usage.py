@@ -1649,7 +1649,18 @@ def _reset_clock(resets, now):
 # ⭐ THE WORD THAT REPLACES THE VERDICT WHILE NOTHING IS HAPPENING. Display only - see
 # _watch_line() for why it must never reach verdict(). Upper case like GO, PACE and STOP:
 # it stands in the same column and means the same kind of thing.
-SLEEP_WORD = "SLEEP"
+# 💤 REPLACES THE WORD `SLEEP`, owner-asked and OWNER-TESTED, 2026-09-01.
+# ⭐ IT REMOVES A SPECIAL CASE RATHER THAN ADDING ONE: a word needed a space on each side to
+# stay readable, a two-cell glyph sits exactly where every verdict icon sits.
+# ⚠ THE FONT WORRY WAS REAL AND IS SETTLED BY MEASUREMENT, not by argument. This repository
+# had recorded that an emoji can simply fail to draw - `7️⃣` rendered as nothing on the owner's
+# terminal and `🔥` as a coloured blob - which is why the verdict states are geometric dots
+# (🟢 is in Geometric Shapes Extended; this one is in the same emoji block 🔥 came from).
+# ⇒ The owner printed 🟢 ⚪ ⚫ 💤 🌙 side by side in the terminal that has to draw them and all
+# five rendered. That is the only test that settles font coverage, and it beats the
+# inference. ⚫ remains the geometric fallback if a different terminal disagrees.
+# ⚠ IT IS STILL DISPLAY-ONLY and still must never reach verdict() - see below.
+SLEEP_WORD = "💤"
 
 
 def _watch_open(scroll):
@@ -1770,8 +1781,16 @@ def _watch_line(stamp, data, v, note, cfg, idle=False, burn=None, hook_silent=No
     # ⚠ THE ICON IS FLUSH, THE WORD IS NOT. While idle this carries the text `SLEEP` rather
     # than a single glyph (see SLEEP_WORD), and `07:26:12SLEEP5h` is unreadable - a word needs
     # the spaces a glyph does not. ⇒ One space either side when it is a word.
-    _pad = " " if idle else ""
-    head = "%s%s%s%s%s%s%s" % (mark, stamp, _pad, von, word, voff, _pad)
+    # ⛔ ONE SPACE AFTER THE ICON, ALWAYS - the timestamp side stays flush. Seen on the
+    # owner's terminal 2026-09-01: an emoji occupies TWO cells and the terminal draws it
+    # into the second one, so `16:31:41🟢5h` put the glyph over the `5`. ⚠ A space before it
+    # would undo what the flush icon was for; a space after it costs one column and fixes
+    # the collision. ⭐ The second row follows automatically - _second_row_indent() measures
+    # the head it is actually given, so widening it here needs no other change.
+    # ⭐ NO SPECIAL CASE FOR IDLE ANY MORE. It used to carry the WORD `SLEEP`, which
+    # needed a space on each side; since 2026-09-01 it carries ⚫, a two-cell glyph that
+    # sits exactly where every verdict icon sits.
+    head = "%s%s%s%s%s " % (mark, stamp, von, word, voff)
     # ⭐ THE TAIL IS NOW ONLY THE TRAILING PAIR. ⛔ IT IS NOT PADDING - do not "tidy" it away.
     # The terminal parks its cursor on the last column and draws a block there; over anything
     # worth reading that block is unreadable, so two columns keep it clear. The check asserts
@@ -1974,9 +1993,17 @@ def _bar_col(part):
     as columns puts the answer several places to the right of where the eye sees it.
     """
     plain = _STRIP_ANSI.sub("", part or "")
-    for i, ch in enumerate(plain):
+    # ⛔ COLUMNS, NOT CHARACTERS, and the two are not the same the moment an emoji is
+    # in front of the bar. `enumerate()` counted codepoints, so a head carrying the
+    # verdict icon reported a column one to the left of where the eye sees the bar -
+    # and _second_row_indent() compares this against _visible_len(), which DOES count
+    # columns. The two disagreed by exactly the icon's extra cell, so the alignment
+    # check said "not aligned" about a row that was. Measured 2026-09-01.
+    col = 0
+    for ch in plain:
         if ch in (BAR_FULL, BAR_EMPTY, BAR_MARK, "─"):
-            return i
+            return col
+        col += _cols(ch)
     return None
 
 
@@ -2301,12 +2328,35 @@ def _line(record, stale_note=None, cfg=None, payload=None, stale=None, burn=None
 
 # --------------------------------------------------------------------------- verdict
 
-def verdict(sdir, cfg, now=None, data=None):
+def level(sdir, cfg, now=None):
+    """The verdict WORD only - GO / PACE / STOP / NO-DATA - and cheaply.
+
+    ⭐ FOR A CALLER ON A PER-TOOL-CALL PATH, where verdict()'s cost is not affordable.
+    Measured across three reviewers on two machines: `verdict()` runs `_burn_rate` TWICE
+    (once through `_projection`, once through `burnout_min`), costs tens of milliseconds, and
+    grows with the number of history rows. The word does not depend on any of it.
+
+    ⛔ IT IS A PARAMETER, NOT A SECOND IMPLEMENTATION, and that is the whole point. The
+    thresholds, the reset arithmetic and the seven-day rule are subtle enough that two copies
+    would be two chances to disagree - and a display that disagreed with the brake is the
+    defect this module has already been bitten by. ⇒ Same function, projection skipped.
+
+    ⚠ The check asserts these two agree over a grid; if they ever diverge, the divergence is
+    the bug, not the assertion.
+    """
+    return verdict(sdir, cfg, now=now, cheap=True)["verdict"]
+
+
+def verdict(sdir, cfg, now=None, data=None, cheap=False):
     """GO / PACE / STOP / NO-DATA, with the reasoning that makes each one correct.
 
     ⛔ This is the ONLY sanctioned way to interpret the numbers. Three things are got
     wrong when an agent reads token_usage.json directly, and all three are handled here:
     reset arithmetic, seven-day false alarms, and burn projection.
+
+    ⚠ `cheap` skips the burn projection and returns the same WORD - see level(), which is
+    the only caller that should pass it. The `text` it produces then carries no burn note,
+    so a caller that shows text to a human must not use it.
     """
     now = now if now is not None else time.time()
     # ⚠ `data` is an INTERNAL shortcut for a caller in this file that has just read or
@@ -2356,12 +2406,18 @@ def verdict(sdir, cfg, now=None, data=None):
     early = False
     five_level = None
     if not five_over:
-        proj = _projection(sdir, cfg, pct, resets, now)
-        # ⭐ WHEN, not only WHETHER. "Projected 140% by reset" says the window will be
-        # exhausted and leaves the reader to work out whether there is room for one more
-        # wave. ⚠ None means unknowable, never safe - see burnout_min().
-        burn = burnout_min(sdir, cfg, pct, resets, now)
-        early = burn is not None and burn < remain_min
+        # ⛔ ONLY THE TWO EXPENSIVE CALLS ARE SKIPPED, never the level computation
+        # below them. Gating the whole block was the first attempt and it made `cheap`
+        # return GO for every input - the thresholds live in here too.
+        # ⚠ BOTH ARE SKIPPED TOGETHER, because both re-parse the history through
+        # `_burn_rate`: dropping one would halve a cost that has to fall by an order of
+        # magnitude. ⭐ WHEN, not only WHETHER - "projected 140% by reset" says the
+        # window will be exhausted and leaves the reader to work out whether there is
+        # room for one more wave. ⚠ None means unknowable, never safe.
+        if not cheap:
+            proj = _projection(sdir, cfg, pct, resets, now)
+            burn = burnout_min(sdir, cfg, pct, resets, now)
+            early = burn is not None and burn < remain_min
         five_level = _window_level(pct, cfg["soft_pct_5h"], cfg["hard_pct_5h"])
         # ⛔ THE PROJECTION IS DISPLAY-ONLY FOR NOW. Switched off deliberately, kept here so
         # turning it back on is uncommenting one line rather than reconstructing an argument.
@@ -3495,8 +3551,13 @@ def selftest():
     # block is unreadable. A tidy-up that strips trailing whitespace breaks the display and
     # nothing else would say so - hence an assertion on the bytes rather than on the intent.
     _t7 = _watch_line("07:26:12", _live, _v, None, {"width": 300, "colour": False})[0]
-    assert _t7.startswith("07:26:12" + VERDICT_ICON["GO"] + FIVE_HOUR_LABEL), (
-        "the row must open: stamp, icon, 5h - with no spaces between - got %r" % _t7[:24])
+    # ⚠ ONE SPACE AFTER THE ICON, NONE BEFORE IT - and the space is not cosmetic. An
+    # emoji occupies TWO cells and the terminal draws it into the second, so the flush
+    # form `07:26:12🟢5h` put the glyph over the `5`. Seen on the owner's terminal
+    # 2026-09-01, after the flush form had itself been the owner's instruction.
+    assert _t7.startswith("07:26:12" + VERDICT_ICON["GO"] + " " + FIVE_HOUR_LABEL), (
+        "the row must open: stamp, icon, ONE space, 5h - got %r" % _t7[:24])
+    assert not _t7.startswith("07:26:12 "), "no space before the icon: %r" % _t7[:24]
     assert _t7.endswith("  ") and not _t7.endswith("   "), repr(_t7[-16:])
     # ⭐ EACH RESET TIME LIVES BESIDE ITS OWN NUMBER, not at the end of the row. A reader who
     # sees two remaining times and one clock time cannot tell which window it belongs to.

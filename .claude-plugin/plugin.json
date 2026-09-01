@@ -1,7 +1,7 @@
 {
   "name": "dispatch-guard",
   "description": "Enforces a sub-task dispatch protocol and brakes on usage limits. One sub-task at a time unless the owner approves a count; the plan and every sub-task prompt land on disk before any dispatch; and dispatching is refused outright once the usage window is nearly spent. Also ships the unattended-work skill: how to work for a long stretch with nobody watching.",
-  "version": "0.54.1",
+  "version": "0.55.0",
   "license": "MIT",
   "author": {
     "name": "Dino9021"

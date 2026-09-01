@@ -120,7 +120,8 @@ def case_idle_draws_once():
         assert len(drew) == 1, (
             "an idle watcher drew %d times in %d seconds - it must draw ONCE:%s%s"
             % (len(drew), RUN_SECONDS, chr(10), chr(10).join(lines[:6])))
-        assert "SLEEP" in lines[0], lines[0]
+        # 💤 since 2026-09-01, not the word `SLEEP` - see SLEEP_WORD for why a glyph.
+        assert "💤" in lines[0], lines[0]
         # ⭐ The figures are KEPT, not replaced by dashes. That was the owner's point: while
         # nobody is working nobody is spending, so the last number is still worth reading.
         assert "55%" in lines[0], "idle threw the percentage away: %r" % lines[0]
@@ -139,7 +140,7 @@ def case_active_keeps_drawing():
         assert len(drew) >= 3, (
             "an ACTIVE watcher drew only %d time(s) in %d seconds - so 'idle draws once' "
             "proves nothing:%s%s" % (len(drew), RUN_SECONDS, chr(10), err[:400]))
-        assert "SLEEP" not in lines[0], lines[0]
+        assert "💤" not in lines[0], lines[0]
         print("ok - an active watcher keeps drawing (%d draws), so the idle case means "
               "something" % len(drew))
 
@@ -162,7 +163,7 @@ def case_dead_gate_beside_live_person():
         assert len(drew) >= 3, (
             "a dead gate beside a working person put the watcher to sleep - it drew %d "
             "time(s):%s%s" % (len(drew), chr(10), err[:400]))
-        assert "SLEEP" not in lines[0], lines[0]
+        assert "💤" not in lines[0], lines[0]
         # ⭐ ...and it SAYS SO, in the one slot that survives every width.
         assert "HOOK?" in lines[0], (
             "the watcher kept working but never said the gate was silent: %r" % lines[0])

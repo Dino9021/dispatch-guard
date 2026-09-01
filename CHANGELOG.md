@@ -33,6 +33,28 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.55.0
+
+- ⭐ **圓點後面補一個空格,前面維持貼齊。** emoji 佔「兩格」,終端機會把它畫進第二格 ——
+  所以 `16:31:41🟢5h` 讓圖示壓在 `5` 上面。⚠ 前面補空格會抵消「貼齊」的用意;
+  後面補一格只花一欄就解決碰撞。
+- ⛔ **`_bar_col()` 以前數的是「字元」不是「欄」**,所以 head 只要帶了 emoji,它回報的位置
+  就比眼睛看到的少一欄 —— 而 `_second_row_indent()` 拿它去跟「數欄」的 `_visible_len()` 比。
+  ⇒ 兩者剛好差圖示那一格,所以對齊檢查會對一列**其實對齊**的畫面說「沒對齊」。已改成數欄。
+- ⭐ **`SLEEP` 這個「字」換成 💤**,和判定圓點同寬。⭐ 這是**拿掉一個特例**而不是加一個:
+  一個「字」需要左右各一個空格才讀得出來,一個兩格寬的圖示就坐在每個判定圖示坐的位置。
+  ⚠ 字型疑慮是真的,而且是**用量的解決的**:這個 repo 記錄過 emoji 可能畫不出來
+  (`7️⃣` 完全沒東西、`🔥` 變成彩色方塊),所以判定狀態才用幾何符號。
+  ⇒ 擁有者把 🟢 ⚪ ⚫ 💤 🌙 並排印在那台要畫它的終端機上,五個都正常。
+  ⭐ 那是唯一能了結字型問題的測試,而且它勝過推論。⚫ 留作幾何後備。
+- ⭐ **新增 `usage.level()`:只回判定的「字」,而且便宜。** 實測同一台機器:
+  `verdict()` **28.99 ms**,`level()` **0.471 ms** —— **便宜 62 倍**,而且回同一個字。
+  ⛔ 它是一個**參數,不是第二份實作** —— 門檻、重置算術和 7d 規則夠微妙,兩份就是兩次走鐘的機會。
+  ⚠ 第一次改的時候我把整個區塊都關掉了,連門檻計算也一起,那會讓它永遠回 GO;
+  只能關那兩個貴的呼叫,而且**要一起關**,因為兩個都會重跑 `_burn_rate`。
+
+---
+
 ## 0.54.1
 
 - ⛔ **`resume.py` 的紀錄寫在沒有人找得到的地方。** 0.52.1 給 gate 的 logger 加了第二個
@@ -1860,6 +1882,34 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.55.0
+
+- ⭐ **One space after the verdict icon; the timestamp side stays flush.** An emoji occupies
+  TWO cells and the terminal draws it into the second, so `16:31:41🟢5h` put the glyph over
+  the `5`. ⚠ A space *before* it would undo what the flush icon was for; a space after costs
+  one column and fixes the collision.
+- ⛔ **`_bar_col()` counted CHARACTERS, not columns**, so a head carrying the icon reported a
+  position one to the left of where the eye sees the bar - while `_second_row_indent()`
+  compares it against `_visible_len()`, which counts columns. ⇒ They disagreed by exactly the
+  icon's extra cell, and the alignment check said "not aligned" about a row that was.
+- ⭐ **The word `SLEEP` becomes 💤**, the same width as the verdict dots. ⭐ That REMOVES a
+  special case rather than adding one: a word needed a space on each side to stay readable; a
+  two-cell glyph sits exactly where every verdict icon sits.
+  ⚠ The font worry was real and is settled by MEASUREMENT. This repository had recorded that
+  an emoji can simply fail to draw - `7️⃣` rendered as nothing and `🔥` as a coloured blob -
+  which is why the verdict states are geometric. ⇒ The owner printed 🟢 ⚪ ⚫ 💤 🌙 side by
+  side in the terminal that has to draw them and all five rendered. That test beats the
+  inference; ⚫ stays the geometric fallback.
+- ⭐ **New `usage.level()`: the verdict WORD only, and cheap.** Measured on one machine:
+  `verdict()` **28.99 ms** against `level()` **0.471 ms** - **62x cheaper**, same word.
+  ⛔ It is a PARAMETER, not a second implementation: the thresholds, the reset arithmetic and
+  the seven-day rule are subtle enough that two copies would be two chances to disagree.
+  ⚠ The first attempt gated the whole block and so skipped the threshold computation too,
+  which made it return GO for every input. Only the two expensive calls are skipped, and
+  **both together**, because both re-parse the history through `_burn_rate`.
 
 ---
 
