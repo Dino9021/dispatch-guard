@@ -41,7 +41,10 @@ RUN_SECONDS = 6
 # pattern anchored on the clock alone counts a diagnosed row as NO DRAW AT ALL.
 # MEASURED: the dead-gate case reported "drew 0 times" against a watcher that was drawing
 # correctly three times and saying so.
-DRAW = re.compile(r"^(?:HOOK\?\s+)?\d\d:\d\d:\d\d\s")
+# ⚠ NO WHITESPACE REQUIRED AFTER THE TIMESTAMP. From 2026-09-01 the verdict ICON sits
+# flush against it (`07:26:12🟢 5h ...`), by the owner's instruction; only the idle
+# `SLEEP` word keeps its spaces. A line starting with a timestamp is a draw either way.
+DRAW = re.compile(r"^(?:HOOK\?\s+)?\d\d:\d\d:\d\d")
 
 
 def _fixture(sdir, idle_minutes):

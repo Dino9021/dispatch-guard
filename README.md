@@ -685,10 +685,10 @@ claude plugin install dispatch-guard@dispatch-guard --config announce_unattended
 **watcher（`--watch`，擴充套件看的就是這個）**
 
 ```
-12:02:02  5h ▓▓▓░░░┃░░░ 34% 1h52m 7d ▓▓▓▓┃▓░░░░ 54% 3d22h Fable ▓▓▓░┃░░░░░ 31% 3d22h Burn ▓▓▓▓▓▓▓▓▓▓ .17%/m 6h36m  🟢
+12:02:02🟢5h ▓▓▓░░░┃░░░ 34% 1h52m(13:54) 7d ▓▓▓▓┃▓░░░░ 54% 3d22h(Fri 10:00) Fable ▓▓▓░┃░░░░░ 31% 3d22h(Fri 10:00) Burn ▓▓▓▓▓▓▓▓▓▓ .17% 6h36m
 ```
 
-⭐ **判定字換成圓點**：🟢 GO、🟡 WARN、🟠 PACE、🔴 STOP、⚪ 還沒有資料。
+⭐ **判定字換成圓點，而且它就貼在時間戳記後面、`5h` 前面**（擁有者指定，2026-09-01）：🟢 GO、🟡 WARN、🟠 PACE、🔴 STOP、⚪ 還沒有資料。
 
 ⭐ **WARN 是第四個狀態，而且它只有顏色。** 只要五小時長條圖的填滿「超過它自己的 ┃」
 —— 也就是你花得比時鐘快 —— 圓點就轉黃，長條圖也轉黃。⛔ **它不會進到 `verdict()`**：
@@ -710,10 +710,10 @@ claude plugin install dispatch-guard@dispatch-guard --config announce_unattended
 `Burn` 回答一個問題：**照現在這個速度，我還有多久會撞到 100%。**
 
 ```
-12:02:02  5h ▓▓▓░░░┃░░░ 34% 1h52m 7d ▓▓▓▓┃▓░░░░ 54% 3d22h Fable ▓▓▓░┃░░░░░ 31% 3d22h Burn ▓▓▓▓▓▓▓▓▓▓ .17%/m 6h36m  🟢
+12:02:02🟢5h ▓▓▓░░░┃░░░ 34% 1h52m(13:54) 7d ▓▓▓▓┃▓░░░░ 54% 3d22h(Fri 10:00) Fable ▓▓▓░┃░░░░░ 31% 3d22h(Fri 10:00) Burn ▓▓▓▓▓▓▓▓▓▓ .17% 6h36m
 ```
 
-⭐ **The verdict is a coloured dot**: 🟢 GO, 🟡 WARN, 🟠 PACE, 🔴 STOP, ⚪ no data yet.
+⭐ **The verdict is a coloured dot, and it sits flush between the timestamp and `5h`** (owner-specified, 2026-09-01): 🟢 GO, 🟡 WARN, 🟠 PACE, 🔴 STOP, ⚪ no data yet.
 
 ⭐ **WARN is a fourth state and it is colour only.** The dot and the bar turn yellow as soon as
 the five-hour bar's fill passes **its own ┃** — you are spending faster than the clock.
@@ -741,7 +741,7 @@ The dots stay: geometric shapes have far wider font coverage than an emoji.
 
 | 看到 | 意思 |
 |---|---|
-| `0.13%/m` | 最近 **10 分鐘**（`burn_window_min`，預設 10）每分鐘燒掉 0.13% —— 不是整個視窗的平均 |
+| `.13%` | ⚠ **單位是「每分鐘」，不顯示在畫面上。** 最近 **10 分鐘**（`burn_window_min`，預設 10）每分鐘燒掉 0.13% —— 不是整個視窗的平均 |
 | `11h-52m left` | 照這個速度，**11 小時 52 分後**會撞到 100% |
 
 ⚠ **這個時間可以比「視窗還剩多久」還長，那是正常的。** 上面那行剩 `4h-24m` 就重置，
@@ -2235,7 +2235,7 @@ than a pair of eyes.
 **The watcher (`--watch`, which is what the extension shows)**
 
 ```
-12:02:02  5h ▓▓▓░░░┃░░░ 34% 1h52m 7d ▓▓▓▓┃▓░░░░ 54% 3d22h Fable ▓▓▓░┃░░░░░ 31% 3d22h Burn ▓▓▓▓▓▓▓▓▓▓ .17%/m 6h36m  🟢
+12:02:02🟢5h ▓▓▓░░░┃░░░ 34% 1h52m(13:54) 7d ▓▓▓▓┃▓░░░░ 54% 3d22h(Fri 10:00) Fable ▓▓▓░┃░░░░░ 31% 3d22h(Fri 10:00) Burn ▓▓▓▓▓▓▓▓▓▓ .17% 6h36m
 ```
 
 ⭐ It has the verdict word, because for an extension user **this is the only place usage appears
@@ -2247,7 +2247,7 @@ it is a loop in a terminal, and nothing feeds it a payload.
 `Burn` answers one question: **at this rate, how long until I hit 100%.**
 
 ```
-12:02:02  5h ▓▓▓░░░┃░░░ 34% 1h52m 7d ▓▓▓▓┃▓░░░░ 54% 3d22h Fable ▓▓▓░┃░░░░░ 31% 3d22h Burn ▓▓▓▓▓▓▓▓▓▓ .17%/m 6h36m  🟢
+12:02:02🟢5h ▓▓▓░░░┃░░░ 34% 1h52m(13:54) 7d ▓▓▓▓┃▓░░░░ 54% 3d22h(Fri 10:00) Fable ▓▓▓░┃░░░░░ 31% 3d22h(Fri 10:00) Burn ▓▓▓▓▓▓▓▓▓▓ .17% 6h36m
 ```
 
 ⛔ **The watcher is ONE row, and the terminal decided that, not a preference.** A second row can
@@ -2265,7 +2265,7 @@ a panel narrower than that drops it.
 
 | you see | meaning |
 |---|---|
-| `0.13%/m` | 0.13% burned per minute over the **last 10 minutes** (`burn_window_min`, default 10) — not an average of the window |
+| `.13%` | ⚠ **The unit is PER MINUTE and is not printed** - 0.13% of the window per minute, over the **last 10 minutes** (`burn_window_min`, default 10) — not an average of the window |
 | `11h-52m left` | at that rate you hit 100% in **11 hours 52 minutes** |
 
 ⚠ **That time can exceed the time left in the window, and that is correct.** The line above

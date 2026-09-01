@@ -1575,8 +1575,30 @@ def _window(label, win, now, cfg=None, window_secs=None, stale=False):
     on, off = _colour(pct, cfg, time_pct)
     out = "%s %s%s %d%%%s" % (label, on, _bar(pct, BAR_WIDTH, time_pct), round(pct), off)
     if resets:
-        out += " " + duration((resets - now) / 60)
+        out += " " + duration((resets - now) / 60) + _reset_clock(resets, now)
     return out
+
+
+def _reset_clock(resets, now):
+    """`(13:00)` or `(Tue 13:00)` - the wall-clock time a window resets, in brackets.
+
+    ⭐ THE REMAINING TIME ALONE IS NOT ENOUGH, and the owner asked for both: `1h12m` says how
+    long you have, `(13:00)` says when to come back. A reader who looks away and returns can
+    act on the second without doing arithmetic on the first.
+
+    ⚠ THE WEEKDAY APPEARS ONLY WHEN THE RESET IS NOT TODAY. `Tue` beside a time later the
+    same afternoon reads as next Tuesday to anybody who does not already know today's name,
+    and it costs four columns on a row that drops parts from the right. The five-hour window
+    never reaches tomorrow, so it never carries one; the seven-day window usually does.
+
+    ⚠ %a is the C locale here - Python does not call setlocale at startup - so it reads
+    `Tue`, not a localised weekday. Measured, not assumed.
+    """
+    if not isinstance(resets, (int, float)) or resets <= 0:
+        return ""
+    when = time.localtime(resets)
+    same_day = time.localtime(now)[:3] == when[:3]
+    return time.strftime("(%H:%M)" if same_day else "(%a %H:%M)", when)
 
 
 # ⭐ THE WORD THAT REPLACES THE VERDICT WHILE NOTHING IS HAPPENING. Display only - see
@@ -1695,22 +1717,21 @@ def _watch_line(stamp, data, v, note, cfg, idle=False, burn=None, hook_silent=No
     if hook_silent is not None and hook_silent > (cfg.get("idle_after_min", 15) or 15):
         hon, hoff = ("", "") if not lcfg.get("colour", True) else (ANSI["alarm"], ANSI["reset"])
         mark = "%sHOOK?%s " % (hon, hoff)
-    head = "%s%s  " % (mark, stamp)
-    # ⭐ ONE SPACE BEFORE THE ICON, THE SEVEN-DAY RESET AFTER IT, TWO SPACES AT THE END.
-    # The owner's instruction, and each of the three is doing something different.
-    # ⚠ THE TRAILING PAIR IS NOT PADDING. The terminal parks its cursor on the last column
-    # and draws a block there; over the icon that block is unreadable, so two columns keep it
-    # clear of anything worth reading. ⛔ Do not "tidy" them away.
-    # ⭐ NO FIELD NAME ON THE TIME. A reader learns once that `Tue 13:00` is the weekly reset
-    # and never needs telling again, and a label would cost columns this row drops first.
-    # ⚠ Uncoloured, and outside `voff` on purpose: it is a fact, not a state, and colouring it
-    # would make it argue with the icon beside it.
-    # ⚠ %a is the C locale here - Python does not call setlocale at startup - so it reads
-    # `Tue`, not a localised weekday. Measured, not assumed.
-    _sd = ((data or {}).get("seven_day") or {}).get("resets_at")
-    when = (" " + time.strftime("%a %H:%M", time.localtime(_sd))
-            if isinstance(_sd, (int, float)) and _sd > 0 else "")
-    tail = " %s%s%s%s  " % (von, word, voff, when)
+    # ⭐ THE ICON SITS BETWEEN THE TIMESTAMP AND THE FIRST WINDOW, IN PLACE OF THE TWO SPACES
+    # THAT USED TO SEPARATE THEM. The owner's instruction, 2026-09-01, and it costs nothing:
+    # the pair was a separator, and one glyph separates just as well while saying something.
+    # ⚠ IT USED TO LIVE AT THE END, beside the weekly reset. Both moved: the reset now sits
+    # inside its own window's segment, where the number it belongs to is - see _reset_clock().
+    # ⚠ THE ICON IS FLUSH, THE WORD IS NOT. While idle this carries the text `SLEEP` rather
+    # than a single glyph (see SLEEP_WORD), and `07:26:12SLEEP5h` is unreadable - a word needs
+    # the spaces a glyph does not. ⇒ One space either side when it is a word.
+    _pad = " " if idle else ""
+    head = "%s%s%s%s%s%s%s" % (mark, stamp, _pad, von, word, voff, _pad)
+    # ⭐ THE TAIL IS NOW ONLY THE TRAILING PAIR. ⛔ IT IS NOT PADDING - do not "tidy" it away.
+    # The terminal parks its cursor on the last column and draws a block there; over anything
+    # worth reading that block is unreadable, so two columns keep it clear. The check asserts
+    # the BYTES, because a trailing-whitespace cleanup would break the display silently.
+    tail = "  "
     windows, extras = _line_parts(data, note, lcfg, None,
                                   stale=False if idle else None, burn=burn)
     # ⭐ THE WATCHER BREAKS AFTER THE LAST USAGE WINDOW, and Burn opens the second row.
@@ -2083,7 +2104,12 @@ def _burn_part(burn, remain, rate, cfg, stale=False):
         rate_s = "%.2f" % rate
         if rate_s.startswith("0."):
             rate_s = rate_s[1:]
-        rate_s += "%/m "
+        # ⭐ NO UNIT ON THE RATE - `.30%`, not `.30%/m`. The owner's instruction, 2026-09-01:
+        # the unit never changes, so a reader learns it once and then pays two columns a
+        # render for ever. ⚠ IT IS PER MINUTE, and that is now recorded ONLY here and in the
+        # documentation - which is the trade this makes. `2%` on this row means two percent
+        # of the window per minute, not two percent of the window.
+        rate_s += "% "
     return "%s %s%s%s %s%s" % (BURN_LABEL, on, bar, off, rate_s, duration(burn))
 
 
@@ -3368,32 +3394,45 @@ def selftest():
                     "width %d, idle=%s: a row is %d columns and WILL wrap: %r"
                     % (_w, _idle, _visible_len(_r), _r))
 
-    # ⛔ THE END OF THE ROW, EXACTLY AS THE OWNER SPECIFIED IT, and all three parts are load-
-    # bearing in different ways: ONE space before the icon, the seven-day reset time after it,
-    # and TWO spaces to finish.
+    # ⛔ THE SHAPE OF THE ROW, EXACTLY AS THE OWNER SPECIFIED IT ON 2026-09-01. Three parts,
+    # each load-bearing differently: the icon sits BETWEEN the timestamp and the first window
+    # with NO space either side; each window's reset time sits in brackets after its own
+    # remaining time; TWO spaces finish the row.
     # ⚠ THE TRAILING PAIR IS THE ONE THAT LOOKS LIKE LITTER AND IS NOT. The terminal parks its
-    # cursor on the last column and draws a block there; over the icon or over the time that
+    # cursor on the last column and draws a block there; over anything worth reading that
     # block is unreadable. A tidy-up that strips trailing whitespace breaks the display and
     # nothing else would say so - hence an assertion on the bytes rather than on the intent.
     _t7 = _watch_line("07:26:12", _live, _v, None, {"width": 300, "colour": False})[0]
-    _when7 = time.strftime("%a %H:%M", time.localtime(_live["seven_day"]["resets_at"]))
-    assert _t7.endswith(" " + VERDICT_ICON["GO"] + " " + _when7 + "  "), (
-        "the row must end: one space, icon, space, 7d reset, two spaces - got %r"
-        % _t7[-24:])
-    # ⭐ ...and exactly ONE space before the icon, which is the half a reader notices.
-    assert not _t7.endswith("  " + VERDICT_ICON["GO"] + " " + _when7 + "  "), (
-        'two spaces before the icon, not one: %r' % _t7[-24:])
-    # ⚠ NO FIELD NAME. The label was left off deliberately; a well-meant "7d " would cost
-    # three columns on a row that drops parts from the right.
-    assert "7d " + _when7 not in _t7, _t7
+    assert _t7.startswith("07:26:12" + VERDICT_ICON["GO"] + FIVE_HOUR_LABEL), (
+        "the row must open: stamp, icon, 5h - with no spaces between - got %r" % _t7[:24])
+    assert _t7.endswith("  ") and not _t7.endswith("   "), repr(_t7[-16:])
+    # ⭐ EACH RESET TIME LIVES BESIDE ITS OWN NUMBER, not at the end of the row. A reader who
+    # sees two remaining times and one clock time cannot tell which window it belongs to.
+    _when5 = _reset_clock(_live["five_hour"]["resets_at"], time.time())
+    _when7 = _reset_clock(_live["seven_day"]["resets_at"], time.time())
+    assert _when5 and _when7, (_when5, _when7)
+    assert _when5 in _t7 and _when7 in _t7, (_when5, _when7, _t7)
+    assert _t7.index(_when5) < _t7.index(SEVEN_DAY_LABEL) < _t7.index(_when7), _t7
+    # ⚠ THE FIVE-HOUR WINDOW NEVER CARRIES A WEEKDAY - it cannot reach tomorrow - and the
+    # seven-day one carries one ONLY when it does not reset today.
+    assert "%a" not in _when5 and len(_when5) == len("(00:00)"), _when5
+    _tomorrow = dict(_live, seven_day=dict(_live["seven_day"],
+                                           resets_at=time.time() + 26 * 3600))
+    _rt = _watch_line("07:26:12", _tomorrow, _v, None, {"width": 300, "colour": False})[0]
+    assert "(" + time.strftime("%a ", time.localtime(time.time() + 26 * 3600)) in _rt, _rt
 
     # ⛔ AND NO SEVEN-DAY WINDOW MEANS NO TIME - never the word None on the screen. The two
     # trailing spaces survive, because what they protect is the cursor, not the time.
     _no7 = dict(_live)
     _no7.pop("seven_day")
     _r7 = _watch_line("07:26:12", _no7, _v, None, {"width": 300, "colour": False})[0]
-    assert _r7.endswith(" " + VERDICT_ICON["GO"] + "  "), repr(_r7[-16:])
+    assert _r7.endswith("  ") and not _r7.endswith("   "), repr(_r7[-16:])
     assert "None" not in _r7, _r7
+
+    # ⛔ THE BURN RATE CARRIES NO UNIT - `.30%`, not `.30%/m`. Owner-asked 2026-09-01; the
+    # unit is per minute and now lives only in the documentation.
+    _bp = _STRIP_ANSI.sub("", _burn_part(263, 60, 0.30, {"colour": False}))
+    assert ".30% " in _bp and "%/m" not in _bp, _bp
 
     # ⛔ THE WATCHER IS ONE ROW, WITH OR WITHOUT A BURN RATE - and that is the terminal's
     # rule, not a preference. A second row can only be redrawn by moving the cursor UP, and
@@ -3906,15 +3945,15 @@ def selftest():
     # AFTER the reset. The owner's instruction: the words cost fourteen columns to repeat
     # what the full bar already says. ⚠ 188 minutes with 106 left, so the number printed is
     # deliberately LONGER than the window has - that is when burn-out lands, not a promise.
-    # ⭐ THE TAIL IS `.38%m 3h8m` AND NOTHING ELSE - the owner's second pass. Each piece
-    # removed was one the reader already had: the leading zero of a rate always below one,
-    # the slash in `%/m`, the separating dot, and the word `left` after a duration that can
-    # only be a time remaining.
-    assert ".38%/m 3h8m" in _full and BAR_EMPTY not in _STRIP_ANSI.sub("", _full), _full
-    assert "left" not in _full and "·" not in _full, _full
+    # ⭐ THE TAIL IS `.38% 3h8m` AND NOTHING ELSE - the owner's third pass. Each piece removed
+    # was one the reader already had: the leading zero of a rate always below one, the
+    # separating dot, the word `left` after a duration that can only be a time remaining, and
+    # now the unit itself, which never changes and so is learnt once and paid for for ever.
+    assert ".38% 3h8m" in _full and BAR_EMPTY not in _STRIP_ANSI.sub("", _full), _full
+    assert "left" not in _full and "·" not in _full and "/m" not in _full, _full
     # ⛔ AND THE LEADING ZERO GOES ONLY WHEN IT IS A ZERO. A rate above one carries magnitude
     # in that digit, and dropping it would read as a hundredth of the real burn.
-    assert "1.20%/m" in _burn_part(80, 119, 1.20, _bcfg2), _burn_part(80, 119, 1.20, _bcfg2)
+    assert "1.20% " in _burn_part(80, 119, 1.20, _bcfg2), _burn_part(80, 119, 1.20, _bcfg2)
     # ⛔ AND IT IS BAR_WIDTH + 1 WIDE, like the CT segment and unlike a bare bar. The three
     # usage bars carry the elapsed marker, which sits between cells and costs them a column;
     # a burn bar one narrower cannot line up beneath them however the row is indented.

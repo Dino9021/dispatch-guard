@@ -33,6 +33,26 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.52.0
+
+- ⭐ **這一列的五項修改，全部是擁有者指定的（2026-09-01）：**
+  1. **圓點移到時間戳記和 `5h` 中間，貼齊、兩邊都不留空格**，取代原本那兩個空格。
+     ⚠ 但**閒置時那裡是 `SLEEP` 這個「字」不是一個符號** —— `07:26:12SLEEP5h` 讀不出來，
+     所以是字的時候兩邊各留一個空格。這是指令沒有涵蓋、但照做會壞掉的情況。
+  2. **每個視窗的重置時間，放在它自己的剩餘時間後面加括號**：`21% 4h11m(16:29)`。
+     ⚠ 以前只有一個時間掛在整列最後面 —— 看到兩個剩餘時間、一個時鐘時間，
+     讀的人分不出那個時鐘時間屬於哪一個視窗。
+  3. **7d 只有在「不是今天重置」的時候才標星期**：今天是 `(13:29)`，明天是 `(Wed 14:11)`。
+     ⚠ 5h 永遠不標 —— 它到不了明天。
+  4. **Burn 的 `/m` 拿掉**，只顯示 `.30%`。⚠ **單位是「每分鐘」，現在只寫在說明文件裡。**
+  5. **結尾那兩個空格保留。** ⛔ 它們不是留白，是擋游標方塊用的，檢查斷言的是位元組。
+- ⚠ **順帶說明一件量出來的事：畫面上的重置時間沒有錯。** 擁有者提到 5h 應該顯示 1h12m，
+  但 API 自己回的就是兩個不同的時間（5h → 15:59:59，7d → 12:59:59）。
+  ⛔ **不過「煞車時機會算錯」是對的** —— 錯的是 7d 那條 `IGNORE` 規則，不是顯示。
+  那條規則另外處理。
+
+---
+
 ## 0.51.5
 
 - ⭐ **`Ctx` 改名成 `CT`，兩個字母，這樣就結束了。** 擁有者的決定，而且它比前面兩版都對：
@@ -1717,6 +1737,32 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.52.0
+
+- ⭐ **Five changes to the row, all owner-specified (2026-09-01):**
+  1. **The verdict icon moves between the timestamp and `5h`, flush, with no space on either
+     side**, replacing the two spaces that used to separate them. ⚠ But **while idle that
+     position carries the WORD `SLEEP`, not a glyph** - `07:26:12SLEEP5h` is unreadable, so a
+     word keeps one space either side. The instruction did not cover that case and following
+     it literally would have broken the idle row.
+  2. **Each window's reset time now sits in brackets after its own remaining time**:
+     `21% 4h11m(16:29)`. ⚠ There used to be one time at the end of the whole row - two
+     remaining times and one clock time, with nothing saying which window it belonged to.
+  3. **The seven-day window carries a weekday only when it does not reset today**: `(13:29)`
+     today, `(Wed 14:11)` tomorrow. ⚠ The five-hour window never carries one - it cannot
+     reach tomorrow.
+  4. **The burn rate drops its `/m`** and reads `.30%`. ⚠ **The unit is per minute and now
+     lives only in the documentation.**
+  5. **The two trailing spaces stay.** ⛔ They are not padding - they keep the terminal's
+     cursor block off anything worth reading, and the check asserts the bytes.
+- ⚠ **One measured aside: the reset times on screen were never wrong.** The owner expected
+  the five-hour window to read 1h12m like the seven-day one; the API itself returns two
+  different times (5h → 15:59:59, 7d → 12:59:59). ⛔ **The owner's other point stands** -
+  the brake does fire at the wrong time - but the fault is the seven-day `IGNORE` rule, not
+  the display. That is handled separately.
 
 ---
 
