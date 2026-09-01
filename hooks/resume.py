@@ -71,14 +71,33 @@ ALIVE_WITHIN_MIN = 30
 
 
 def log_line(message):
-    """Append to the gate log in the current repository, and to a fallback."""
+    """Append to the gate log in the current repository AND to the state directory.
+
+    ⛔ THE STATE COPY IS THE ONE THAT CAN BE FOUND. `os.getcwd()` is wherever the resume
+    happened to be started from - a scheduled task's working directory, or whatever folder a
+    shell was in - so this line lands somewhere nobody will look for it. The gate's own
+    logger was given a second, unmovable destination in 0.52.1; this one was missed, which
+    made every `ARMED`/`RESUME` line unfindable in the one place the rest of the record
+    lives. Found by review, 2026-09-01.
+
+    ⛔ AND IT WRITES TO BOTH, not to the first that works. The loop used to `return` on the
+    first success, so the second destination was a FALLBACK rather than a copy - and the
+    docstring said "and to a fallback" while the tuple held one element, so there was no
+    fallback either. A copy that only appears when the other fails is not an audit trail.
+    """
     line = "%s RESUME %s%s" % (time.strftime("%Y-%m-%d %H:%M:%S"), message, "\n")
-    for path in (os.path.join(os.getcwd(), ".claude", "dispatch_gate.log"),):
+    paths = [os.path.join(os.getcwd(), ".claude", "dispatch_gate.log")]
+    try:
+        _sd = usage.state_dir([])
+        if _sd:
+            paths.append(os.path.join(_sd, "dispatch_gate.log"))
+    except Exception:
+        pass
+    for path in paths:
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "a", encoding="utf-8") as f:
                 f.write(line)
-            return
         except OSError:
             continue
     sys.stderr.write(line)

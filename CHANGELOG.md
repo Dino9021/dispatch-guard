@@ -33,6 +33,21 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.54.1
+
+- ⛔ **`resume.py` 的紀錄寫在沒有人找得到的地方。** 0.52.1 給 gate 的 logger 加了第二個
+  「不會移動」的目的地,但漏掉了 resume.py 自己那個 —— 而它寫的是 `os.getcwd()`,
+  也就是「排程器剛好從哪裡啟動」。⇒ 每一行 `ARMED` 和 `RESUME` 都落在其他紀錄不在的地方。
+  由審查發現。
+- ⛔ **而且它寫「第一個成功的」,不是「兩個都寫」。** 那個迴圈成功之後就 `return`,
+  所以第二個目的地是「備援」而不是「副本」—— ⚠ 而 docstring 寫著「and to a fallback」,
+  那個 tuple 卻只有一個元素,所以連備援都沒有。**只在另一個壞掉時才出現的副本不是稽核紀錄。**
+- ⚠ **檢查的失敗訊息本身也修了。** 第一版直接 open 檔案,所以變異被抓到的時候丟的是
+  `FileNotFoundError` 的堆疊,不是一句話 —— 而我自己用 grep 找 `AssertionError` 就漏看了。
+  ⭐ 一個失敗訊息需要解碼的檢查,是一個會被誤讀的檢查。
+
+---
+
 ## 0.54.0
 
 三個由擁有者當場發現的量測缺陷,全部是「不知道」和「量出來是零」被混為一談。
@@ -1845,6 +1860,24 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.54.1
+
+- ⛔ **`resume.py`'s log landed where nobody could find it.** 0.52.1 gave the gate's logger a
+  second, unmovable destination and missed resume.py's own - which writes to `os.getcwd()`,
+  meaning wherever the scheduler happened to start it. ⇒ Every `ARMED` and `RESUME` line went
+  somewhere the rest of the record is not. Found by review.
+- ⛔ **And it wrote to the FIRST destination that worked, not to both.** The loop returned on
+  success, so the second destination was a fallback rather than a copy - ⚠ and the docstring
+  said "and to a fallback" while the tuple held one element, so there was no fallback either.
+  **A copy that only appears when the other fails is not an audit trail.**
+- ⚠ **The check's own failure message was fixed too.** The first version opened the file
+  directly, so the mutation it caught produced a `FileNotFoundError` traceback rather than a
+  sentence - and grepping for `AssertionError` missed it, which is exactly how a caught
+  mutation gets recorded as an uncaught one. ⭐ A check whose failure has to be decoded is a
+  check somebody misreads.
 
 ---
 

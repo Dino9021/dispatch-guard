@@ -83,6 +83,53 @@ def _tree_log():
     return os.path.getsize(p) if os.path.exists(p) else None
 
 
+def case_log_reaches_the_state_dir():
+    """⛔ A RESUME LINE MUST LAND WHERE SOMEBODY CAN FIND IT.
+
+    `log_line()` writes to `<cwd>/.claude/dispatch_gate.log`, and `cwd` for a resume is
+    wherever the scheduler happened to start it. The gate's own logger was given a second,
+    unmovable destination in the state directory in 0.52.1; resume.py's was missed, so every
+    ARMED and RESUME line was unfindable in the one place the rest of the record lives.
+    Found by review 2026-09-01.
+
+    ⚠ It writes to BOTH, not to the first that works. A copy that only appears when the other
+    fails is not an audit trail.
+    """
+    import shutil
+    import tempfile
+    mod = load_resume()
+    sdir = tempfile.mkdtemp()
+    cwd = tempfile.mkdtemp()
+    real_state, real_cwd = mod.usage.state_dir, os.getcwd()
+    try:
+        mod.usage.state_dir = lambda argv=None, _d=sdir: _d
+        os.chdir(cwd)
+        mod.log_line("PROBE-both-destinations")
+    finally:
+        mod.usage.state_dir = real_state
+        os.chdir(real_cwd)
+    # ⚠ READ DEFENSIVELY. The first version opened the file directly, so the failure it
+    # produced was a FileNotFoundError traceback rather than a sentence - and a check whose
+    # failure has to be decoded is one somebody misreads. Measured while mutation-checking
+    # this very case: the mutation WAS caught and the grep looking for `AssertionError`
+    # missed it.
+    def _body(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                return f.read()
+        except OSError:
+            return ""
+
+    for where, path in (("state dir", os.path.join(sdir, "dispatch_gate.log")),
+                        ("cwd", os.path.join(cwd, ".claude", "dispatch_gate.log"))):
+        assert "PROBE-both-destinations" in _body(path), (
+            "the resume log never reached the %s (%s) - it writes to the first destination "
+            "that works instead of to both" % (where, path))
+    shutil.rmtree(sdir, ignore_errors=True)
+    shutil.rmtree(cwd, ignore_errors=True)
+    print("ok - a resume line reaches the state directory as well as the working tree")
+
+
 def case_arms_against_the_blocking_window():
     """⛔ THE RESUME MUST WAIT FOR THE WINDOW THAT IS ACTUALLY BLOCKING.
 
@@ -93,10 +140,11 @@ def case_arms_against_the_blocking_window():
     two hours, announce failure. A scheduled resume that cannot succeed is worse than none -
     it looks armed the whole time.
 
-    ⚠ AND THE RULE IS NOT "whichever resets later". A 7d window that resets BEFORE the current
-    5h window ends is not a constraint at all - its percentage is about to become zero - so
-    waiting days for it would be waiting for nothing. The question is which window is
-    blocking, and verdict() already answers it.
+    ⚠ AND THE RULE IS NOT "whichever resets later" either. The question is which window is
+    BLOCKING, and verdict() already answers it. ⛔ Until 2026-09-01 a 7d window that reset
+    before the current 5h window ended was dismissed as "not a constraint, its percentage is
+    about to become zero" - and that was wrong whenever its HEADROOM ran out first. See
+    _seven_day_binds() and Memory/notes/MEASURED-5h-and-7d-are-independent.md.
     """
     import json
     import time
@@ -166,6 +214,7 @@ def main():
         "the test changed %s/.claude/dispatch_gate.log (%r -> %r)"
         % (HERE, before, _tree_log()))
     case_arms_against_the_blocking_window()
+    case_log_reaches_the_state_dir()
     print("ok - not-there, deleted and refused are three different answers")
 
 
