@@ -1123,6 +1123,139 @@ def case_model_price_limit(gate, sdir, root):
     print("ok - model ceiling holds; `best`, mythos, and a real availableModels file")
 
 
+def case_wind_down_on_every_tool(gate, sdir, root):
+    """⛔ THE INCIDENT'S OWN SHAPE: a Read, at STOP, with no dispatch and no user prompt.
+
+    Measured 2026-08-31: 183 Read, 172 Write, 36 Bash, ZERO Agent, no user prompt in the burn
+    window, 0% to 100% in 85 minutes, and not one `USAGE(` line in any gate log on the
+    machine. The gate received every one of those calls and returned early. This pins that
+    it no longer does.
+
+    ⭐ COMPOSED, NOT INSERTED IN FRONT. The shell branch must keep doing what it did - a
+    `CMD-ALLOW` line, `record_branch`, `note_skill` - and carry the note as well.
+    """
+    import json as _json
+    sid = "s-wind"
+    stamp_session(gate, sdir, sid)
+
+    def usage_at(pct):
+        """Plant a stored reading so verdict()/level() answer for real."""
+        cfg = gate.usage.config(sdir)
+        with open(cfg["token_usage_file"], "w", encoding="utf-8") as f:
+            _json.dump({"ts": int(time.time() * 1000),
+                        "five_hour": {"used_percentage": pct,
+                                      "resets_at": int(time.time()) + 3 * 3600}}, f)
+
+    def read_call(uid, agent=None):
+        p = {"hook_event_name": "PreToolUse", "tool_name": "Read", "cwd": root,
+             "session_id": sid, "tool_use_id": uid,
+             "tool_input": {"file_path": os.path.join(root, "x.md")}}
+        if agent:
+            p["agent_id"] = agent
+        return run_gate(gate, p)
+
+    def note(r):
+        return (hso(r).get("additionalContext") or "") if isinstance(r, dict) else ""
+
+    # ⚠ GO first: the quiet case must stay quiet, or the note is noise on every tool call.
+    usage_at(10)
+    assert not note(read_call("w0")), "a GO session was warned: %r" % (note(read_call("w0")),)
+
+    # ⛔ STOP on a plain Read - no dispatch, no user prompt. This is the incident.
+    usage_at(99)
+    r = read_call("w1")
+    assert "STOP" in note(r), "the incident's own shape produced nothing: %r" % (r,)
+    assert "HANDOFF.md" in note(r), note(r)
+    assert decision(r) is None, "the wind-down must not carry a permission decision: %r" % (r,)
+    assert "USAGE(STOP) tool-path" in gitlog(root), gitlog(root)[-300:]
+
+    # ⭐ ONCE PER LEVEL. A note on every tool call is a note nobody reads.
+    assert not note(read_call("w2")), "it warned twice at the same level"
+
+    # ⚠ A SUB-AGENT MUST NOT SILENCE THE SUPERVISOR. Its payload carries the PARENT's
+    # session_id - measured - so the marker is keyed by `agent_id` as well.
+    sid2 = "s-wind2"
+    stamp_session(gate, sdir, sid2)
+    saved, globals()["_sid"] = sid, sid2
+    p = {"hook_event_name": "PreToolUse", "tool_name": "Read", "cwd": root,
+         "session_id": sid2, "tool_use_id": "w3",
+         "tool_input": {"file_path": "x"}, "agent_id": "sub-1"}
+    assert "STOP" in note(run_gate(gate, p)), "the sub-agent heard nothing"
+    p2 = dict(p, tool_use_id="w4")
+    p2.pop("agent_id")
+    assert "STOP" in note(run_gate(gate, p2)), (
+        "the sub-agent's note silenced the supervisor's own")
+
+    # ⭐ COMPOSED: a shell call keeps its own log line AND carries the note.
+    sid3 = "s-wind3"
+    stamp_session(gate, sdir, sid3)
+    before = len(gitlog(root))
+    r = run_gate(gate, {"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": root,
+                        "session_id": sid3, "tool_input": {"command": "echo hi"}})
+    assert "STOP" in note(r), "a plain shell call lost the note: %r" % (r,)
+    assert "CMD-ALLOW(checked=" in gitlog(root)[before:], (
+        "composing the note replaced the command guards instead of joining them")
+    # ⛔ AND THE BRANCH THAT ALREADY EMITS SOMETHING MUST CARRY BOTH. `echo hi` fires no
+    # guard, so it exercises the empty-handed path; a relative `cd` fires guard_relative_cd,
+    # which returns its own text - and THAT is the case where composing rather than replacing
+    # is the whole point. ⚠ Without this the mutation "stop carrying the note" passes.
+    sid3b = "s-wind3b"
+    stamp_session(gate, sdir, sid3b)
+    r = run_gate(gate, {"hook_event_name": "PreToolUse", "tool_name": "Bash", "cwd": root,
+                        "session_id": sid3b,
+                        "tool_input": {"command": "cd build && make"}})
+    got = note(r)
+    assert "STOP" in got, "the note was dropped where a guard already spoke: %r" % (r,)
+    assert "dispatch gate WARNING" in got, (
+        "composing dropped the guard's OWN warning instead of joining it: %r" % (got,))
+
+    # The switch silences it, and an unstamped session is advisory like everything else.
+    sid4 = "s-wind4"
+    stamp_session(gate, sdir, sid4)
+    with project_cfg(root, guard_wind_down=False):
+        r = run_gate(gate, {"hook_event_name": "PreToolUse", "tool_name": "Read", "cwd": root,
+                            "session_id": sid4, "tool_input": {"file_path": "x"}})
+        assert not note(r), "the switch did not silence the wind-down: %r" % (r,)
+    r = run_gate(gate, {"hook_event_name": "PreToolUse", "tool_name": "Read", "cwd": root,
+                        "session_id": "s-never-stamped", "tool_input": {"file_path": "x"}})
+    assert not note(r), "an unstamped session was warned: %r" % (r,)
+    # ⛔ PUT THE READING BACK. This case plants 99% to reach STOP, and the stored record is
+    # shared with every case after it - leaving it high made the very next one fail with "the
+    # warning must not refuse the dispatch", which is the usage brake doing its job on a
+    # number this check invented. ⚠ A case that dirties shared state fails its neighbours.
+    usage_at(0)
+    print("ok - a Read at STOP now says something, once per level, per agent")
+
+
+def case_session_cwd_is_recorded(gate, sdir, root):
+    """⭐ THE SESSION'S START-TIME WORKING DIRECTORY, kept so a resume can find the work.
+
+    ⛔ The START-time one, not the current one. A hook payload's `cwd` follows the Bash
+    tool's own `cd`, which persists between calls - measured 2026-09-01, where that moving
+    value scattered one session's gate log across four directories. A resume armed against
+    the moved value would wake the work in the wrong tree, silently.
+
+    ⚠ It rides in the `.start` file, whose content nothing else reads (session_start()
+    takes the mtime), and a stamp written before this shipped must still parse as "no cwd".
+    """
+    sid = "s-cwd"
+    run_gate(gate, {"hook_event_name": "SessionStart", "cwd": root, "session_id": sid})
+    got = gate.session_cwd(sdir, sid)
+    assert got and os.path.samefile(got, root), (got, root)
+    # ⛔ THE STAMP STILL WORKS AS A STAMP. session_start() reads the mtime, and turning the
+    # content into JSON must not have disturbed that - if it had, every guard would go
+    # advisory and nothing would say so.
+    assert gate.session_start(sdir, sid) is not None, "the start stamp stopped being a stamp"
+    # ⚠ The pre-0.56 content is a bare timestamp: no cwd, and NOT a crash.
+    with open(gate.state_path(sdir, "s-old", "start"), "w", encoding="utf-8") as f:
+        f.write("1788000000.0")
+    assert gate.session_cwd(sdir, "s-old") is None, "an old stamp must read as no cwd"
+    assert gate.session_start(sdir, "s-old") is not None
+    # ...and a session that was never stamped at all.
+    assert gate.session_cwd(sdir, "s-never-seen") is None
+    print("ok - the session's start-time cwd is recorded, and an old stamp still parses")
+
+
 def case_agent_report_file(gate, sdir, root):
     """A prompt that demands a file, and whether that file ever appeared.
 
@@ -1490,6 +1623,8 @@ def main():
         case_handoff_past_soft(gate, sdir, root)
         case_auto_arm(gate, sdir, root)
         case_model_price_limit(gate, sdir, root)
+        case_session_cwd_is_recorded(gate, sdir, root)
+        case_wind_down_on_every_tool(gate, sdir, root)
         case_agent_report_file(gate, sdir, root)
         case_unpushed(gate, sdir, root)
         # ⚠ Last: it moves the fixture's branch, and the cases above assume `master`.

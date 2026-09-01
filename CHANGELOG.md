@@ -33,6 +33,41 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.56.0
+
+**三輪審查通過的那份 ADR，進實作了。** 中心判斷：提醒是建議，模型可以忽略，
+所以對抗用量上限的保證必須是 gate 自己做的事 —— arm 一個 resume ——
+而那個 arm 不可以先依賴模型做了什麼。
+
+- ⭐ **提醒現在從「每一次工具呼叫」那條路發出。** 2026-08-31 實測：183 次 Read、
+  172 次 Write、36 次 Bash、**Agent 零次**，燃燒期間沒有任何使用者輸入 ——
+  而舊的兩個觸發點正好是「派工」和「使用者打字」。gate 收到了那些呼叫的每一個，
+  然後提早離開。這台機器上所有 gate log 裡，`USAGE(` 出現零次。
+- ⛔ **它是「組合」進去的，不是插在前面。** 一次 hook 只能印一個物件，而上面那些分支
+  各自 `return` 自己的 —— 插在前面會跳過 `cmd_guards.after_command`（分支紀錄）
+  和 `note_skill`（skill 標記），而那兩個正是別的守衛拒絕派工的依據。
+- ⚠ **每個等級、每個 agent 只講一次，而且金鑰是 `agent_id`。** 子 agent 的 payload
+  帶的是父層的 `session_id`（`transcript_path` 也是）—— 兩者都分不出來。
+  ⭐ harness 自己提供 `agent_id` 就是為了這件事。
+- ⭐ **沒有派工也能 arm：gate 自己寫一份 handoff**，寫到
+  `<state>/handoffs/<session>/`。⛔ **寫進外掛自己的狀態目錄，不是你的 repo** ——
+  沒有 marker 的專案裡 `repo_root()` 會跟著 `cd` 跑，所以「一個檔案」會變成
+  N 個目錄裡的 N 個檔案。⚠ 它帶一行橫幅說明「這不是 agent 寫的」：實測過，
+  一個 390 位元組的毘背檔會通過所有機械檢查，**那行橫幅是唯一分得出來的東西**。
+- ⛔ **round 3 的 blocker：`os.chdir` 以前會把整個 resume 靜悄悄弄不見。**
+  它在 `resume.py:610`，而所有失敗處理在 `:687`–`:697` —— 目標不在了就拋
+  `FileNotFoundError` 從中間逃走：沒有 `resume_failed.json`、沒有重試、沒有取消。
+  ⇒ 現在有護欄，依序退到 session 的 cwd、任務資料夾、handoff 自己的目錄，並且記一行。
+- ⭐ **`--arm` 現在記錄 SessionStart 的 cwd，不是 STOP 當下的。** payload 的 cwd 會跟著
+  Bash 的 `cd` 跑，拿錯的那個會把工作在錯的樹裡叫醒，而且是靜悄悄地。
+  ⭐ `<sdir>/state/<sid>.start` 本來就存在、本來就會被清，而它的內容從來沒有人讀。
+- ⭐ **arm 的觸發條件抽成一個函式 `arm_trigger()`** —— 下一個判斷（NO-DATA）如果改它，
+  只要改那一個地方。
+- ⚠ **誠實的缺口，寫進 PROTOCOL.md**：`PostToolUse` 對「失敗的」工具呼叫不觸發
+  （提醒放在 `PreToolUse` 就是為了這個）；而 `<state>/handoffs/` 目前沒有任何東西會清。
+
+---
+
 ## 0.55.0
 
 - ⭐ **圓點後面補一個空格,前面維持貼齊。** emoji 佔「兩格」,終端機會把它畫進第二格 ——
@@ -1882,6 +1917,48 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.56.0
+
+**The ADR that passed three rounds is implemented.** Its central judgement: a warning is
+advice a model can ignore, so the plugin's guarantee against a usage limit must be an action
+the gate takes itself - arming a resume - and that arming must never depend on the model
+having done something first.
+
+- ⭐ **The wind-down now fires from the path EVERY tool call crosses.** Measured 2026-08-31:
+  183 Read, 172 Write, 36 Bash, **zero Agent calls**, and no user prompt in the burn window -
+  while the two places it used to fire from were a dispatch and a user prompt. The gate
+  received every one of those calls and returned early. `USAGE(` appears **zero** times in
+  every gate log on that machine.
+- ⛔ **It is COMPOSED with the branches that were already there, not inserted in front.** A
+  hook prints ONE object and each branch returns its own, so going first would have skipped
+  `cmd_guards.after_command` (which records the branch `guard_commit_branch` enforces
+  against) and `note_skill` (which writes the marker `require_skills` refuses dispatches on).
+- ⚠ **Once per level per AGENT, keyed by `agent_id`.** A sub-agent's payload carries the
+  parent's `session_id` - and so does its `transcript_path`, so neither tells them apart.
+  ⭐ The harness supplies `agent_id` for exactly this purpose and says so.
+- ⭐ **A resume is armed even with no dispatch: the gate writes its own handoff** into
+  `<state>/handoffs/<session>/`. ⛔ **Into the plugin's state directory, never the owner's
+  repository** - `repo_root()` follows the shell's `cd` in a marker-less tree, so "one file"
+  would have been N files in N directories, none pruned. ⚠ It carries a banner saying no
+  agent wrote it, and that banner is load-bearing: measured, a 390-byte stub passes every
+  mechanical check, so **nothing else distinguishes a stub from a real handoff**.
+- ⛔ **Round 3's blocker: `os.chdir` could lose the whole resume, silently.** It sits at
+  `resume.py:610` and every failure handler is at `:687`-`:697`, so a target that no longer
+  exists raised `FileNotFoundError` straight past them - no `resume_failed.json`, no retry,
+  no cancellation, and the one mechanism whose purpose is to say "it failed at 03:40" never
+  ran. ⇒ Guarded, falling back in order to the session's cwd, the task folder, and the
+  handoff's own directory, logging which it used.
+- ⭐ **`--arm` records the SessionStart cwd, not the one at STOP.** The payload's cwd follows
+  the Bash tool's `cd`; the wrong one wakes the work in the wrong tree, silently.
+  ⭐ `<sdir>/state/<sid>.start` already existed and is already pruned, and nothing had ever
+  read its content.
+- ⭐ **The arming trigger is one function, `arm_trigger()`** - so the next judgement (the
+  NO-DATA problem) changes one place and nothing else.
+- ⚠ **Honest gaps, written into PROTOCOL.md**: `PostToolUse` does not fire for a FAILED tool
+  call, which is why the note is on `PreToolUse`; and nothing prunes `<state>/handoffs/`.
 
 ---
 

@@ -83,6 +83,62 @@ def _tree_log():
     return os.path.getsize(p) if os.path.exists(p) else None
 
 
+def case_chdir_never_raises():
+    """⛔ A MISSING WORKING DIRECTORY MUST NOT SWALLOW THE WHOLE RESUME.
+
+    `os.chdir` runs before every failure handler in do_run() - announce_failure, _rearm and
+    do_cancel are all below it - so an unguarded call against a directory that no longer
+    exists raises FileNotFoundError straight past them: exit 1, a traceback into the
+    scheduler's void, no resume_failed.json, no retry, no cancellation. ⚠ The one mechanism
+    whose entire purpose is to say "it failed at 03:40" is the one that does not run.
+    Found by review 2026-09-01; this pins the guard.
+
+    ⭐ The fallback ORDER is the point: the session's own cwd is where the work is, the task
+    folder is where the handoff belongs, and the handoff's directory is the last resort.
+    """
+    import shutil
+    import tempfile
+    mod = load_resume()
+    real_cwd = os.getcwd()
+    live = tempfile.mkdtemp()
+    gone = tempfile.mkdtemp()
+    shutil.rmtree(gone)                      # recorded, then deleted before the alarm fires
+    handoff_dir = tempfile.mkdtemp()
+    handoff = os.path.join(handoff_dir, "HANDOFF.md")
+    with open(handoff, "w", encoding="utf-8") as f:
+        f.write("x")
+    try:
+        # 1. The recorded cwd is there: it wins, and nothing is logged as a fallback.
+        got = mod._chdir_or_fall_back({"cwd": live, "task": handoff_dir}, handoff)
+        assert os.path.samefile(got, live), (got, live)
+        # 2. ⛔ The recorded cwd is GONE - the case that used to lose the resume. It must
+        #    fall through to the task folder and RETURN, never raise.
+        got = mod._chdir_or_fall_back({"cwd": gone, "task": handoff_dir}, handoff)
+        assert os.path.samefile(got, handoff_dir), (got, handoff_dir)
+        # 3. Everything recorded is gone: still no exception, and it says so.
+        got = mod._chdir_or_fall_back({"cwd": gone, "task": gone}, os.path.join(gone, "H.md"))
+        assert got is None, got
+        # 4. Nothing recorded at all - a resume.json written before this shipped.
+        got = mod._chdir_or_fall_back({}, handoff)
+        assert os.path.samefile(got, handoff_dir), (got, handoff_dir)
+    finally:
+        os.chdir(real_cwd)
+        shutil.rmtree(live, ignore_errors=True)
+        shutil.rmtree(handoff_dir, ignore_errors=True)
+    # ⛔ AND THE GUARD MUST BE THE ONLY WAY IN. The cases above drive the helper
+    # DIRECTLY, so they stay green even if do_run() stops calling it - which is exactly how
+    # this repository once shipped a decision function that was right while nothing invoked
+    # it. ⇒ Assert the wiring structurally: one `os.chdir(` in the whole module, inside the
+    # guard. ⚠ A second one anywhere else is a path that can still raise past every failure
+    # handler.
+    src = open(repo_path("hooks", "resume.py"), encoding="utf-8").read()
+    calls = [l.strip() for l in src.splitlines()
+             if "os.chdir(" in l and not l.strip().startswith("#")]
+    assert calls == ["os.chdir(target)"], (
+        "os.chdir must appear once, inside _chdir_or_fall_back - found %r" % (calls,))
+    print("ok - a missing working directory falls back instead of losing the resume")
+
+
 def case_log_reaches_the_state_dir():
     """⛔ A RESUME LINE MUST LAND WHERE SOMEBODY CAN FIND IT.
 
@@ -215,6 +271,7 @@ def main():
         % (HERE, before, _tree_log()))
     case_arms_against_the_blocking_window()
     case_log_reaches_the_state_dir()
+    case_chdir_never_raises()
     print("ok - not-there, deleted and refused are three different answers")
 
 

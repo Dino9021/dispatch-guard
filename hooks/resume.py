@@ -70,6 +70,45 @@ FAILED_MARKER = "resume_failed.json"
 ALIVE_WITHIN_MIN = 30
 
 
+def _chdir_or_fall_back(state, handoff_path):
+    """Move to where the work lives, and NEVER raise doing it.
+
+    ⛔ AN UNGUARDED `os.chdir` HERE LOSES THE WHOLE RESUME, SILENTLY. It sits upstream of
+    every failure handler in do_run() - `announce_failure`, `_rearm`, `do_cancel` are all
+    below it - so a target that no longer exists raises `FileNotFoundError` straight past
+    them: exit 1, a traceback into the scheduler's void, no `resume_failed.json`, no retry,
+    no cancellation. ⚠ The one mechanism whose entire purpose is to tell the owner "it failed
+    at 03:40 while you were asleep" is the one that does not run. Measured as a real
+    subprocess, found by review 2026-09-01.
+
+    ⭐ THE CANDIDATES, IN ORDER, AND WHY THAT ORDER. `cwd` is where the session was working
+    when it armed - the only one that is the actual work. `task` is the folder the handoff
+    belongs to, which for a generated handoff is inside the plugin's own state directory and
+    is therefore a poor place to run but a fine place to stand. The handoff's own directory
+    is the last resort. ⚠ Whatever happens, we keep going: a resume that wakes in the wrong
+    directory can still be told where to look, and a resume that never wakes cannot.
+    """
+    tried = []
+    for label, target in (("cwd", state.get("cwd")),
+                          ("task", state.get("task")),
+                          ("handoff dir", os.path.dirname(handoff_path or "") or None)):
+        if not target:
+            continue
+        try:
+            os.chdir(target)
+            if tried:
+                log_line("RUN-CWD-FALLBACK used the %s (%s) after %s"
+                         % (label, target, "; ".join(tried)))
+            return target
+        except OSError as exc:
+            tried.append("%s %r failed (%s)" % (label, target, exc.__class__.__name__))
+    # ⚠ EVERY candidate is gone. Say so and run from wherever the scheduler put us, rather
+    # than raising past the handlers that exist to report exactly this.
+    log_line("RUN-CWD-NONE %s - running from %s"
+             % ("; ".join(tried) or "no directory was recorded", os.getcwd()))
+    return None
+
+
 def log_line(message):
     """Append to the gate log in the current repository AND to the state directory.
 
@@ -508,8 +547,18 @@ def do_arm(argv, sdir, cfg):
     if ok:
         with open(os.path.join(sdir, "resume.json"), "w", encoding="utf-8") as f:
             sid, transcript = arming_session(sdir)
+            # ⛔ WHERE THE WORK LIVES, recorded here or lost for ever. do_run() `chdir`s
+            # before it does anything, and until now the only thing it had to aim at was the
+            # TASK folder - fine while every handoff sat inside the repository, wrong the
+            # moment one is generated into the plugin's own state directory.
+            # ⭐ THE SESSION-START cwd, NOT `os.getcwd()`. A hook payload's cwd follows the
+            # Bash tool's own `cd`, so the value at arm time may be some scratch directory
+            # the session wandered into. The gate stamps the start-time one; see
+            # dispatch_gate.session_cwd(). ⚠ `os.getcwd()` is the fallback for a session
+            # stamped before that shipped - imperfect, and better than nothing.
+            work_cwd = dispatch_gate.session_cwd(sdir, sid) or os.getcwd()
             json.dump({"task": folder, "handoff": path, "at": when_epoch,
-                       "armed_at": time.time(), "session_id": sid,
+                       "armed_at": time.time(), "session_id": sid, "cwd": work_cwd,
                        "transcript": transcript, "armed_for_reset": armed_reset}, f)
         print("status        : ARMED (this is the BACKUP route - see below)")
         log_line("ARMED task=%s at=%s" % (folder, time.strftime("%Y-%m-%d %H:%M", when)))
@@ -607,7 +656,7 @@ def do_run(sdir, cfg):
                                % (rc_["retry_window_min"], attempts))
         return 1
 
-    os.chdir(state.get("task") or os.path.dirname(path))
+    _chdir_or_fall_back(state, path)
     # ⛔ A FRESH `claude -p`, deliberately NOT `--resume <session-id>`, and the reason is
     # measured. Resuming re-sends the whole transcript as input: 2026-08-26, a 0.37 MB
     # transcript cost 35,356 tokens on top of the 43,757 a fresh run pays anyway, and
