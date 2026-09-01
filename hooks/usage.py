@@ -2460,6 +2460,11 @@ def _seven_day_binds(seven, now):
     test erred by ignoring the window entirely.
 
     ⚠ It is not "is it high": how high is the threshold's business.
+
+    ⭐ AND THE TWO WINDOWS DO NOT SHARE A CLOCK - a reset of one leaves the other's
+    percentage and its `resets_at` untouched, measured six ways in
+    `Memory/notes/MEASURED-5h-and-7d-are-independent.md`. That is why this function
+    answers only "is the 7d a constraint", and never adjusts anything about the 5h.
     """
     if not isinstance(seven, dict):
         return False

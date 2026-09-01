@@ -1469,6 +1469,23 @@ def agent_can_make_files(root, subagent_type):
     return None
 
 
+# ⛔ BARE FILENAMES THIS REPOSITORY TALKS ABOUT IN PROSE, and therefore never a per-sub-task
+# report. Measured 2026-09-01, on this guard's own dispatch: a review prompt containing the
+# sentence "write a `HANDOFF.md` into the owner's repository, unasked" - prose ABOUT creating
+# a file, not an instruction to create one - produced a warning on the owner's screen that
+# the sub-agent had lost its report. ⚠ A false alarm costs trust, which is the whole budget
+# this guard spends.
+#
+# ⭐ IT APPLIES ONLY TO THE BARE-FILENAME BRANCH. `Create Memory/tasks/x/HANDOFF.md` names a
+# path and is a real instruction; a bare `HANDOFF.md` in a sentence has nothing to
+# disambiguate it. ⚠ And dropping the bare branch altogether was measured and rejected: over
+# this repository's own work orders it finds five genuine reports (`agent-01-implement.md`
+# and friends) against this one false positive.
+_NOT_A_REPORT = frozenset((
+    "handoff.md", "protocol.md", "readme.md", "changelog.md", "claude.md", "agents.md",
+))
+
+
 def demanded_files(root, cfg, prompt_text, folder=None):
     """Paths this prompt tells its agent to CREATE. Returns (paths, verb_count).
 
@@ -1516,7 +1533,7 @@ def demanded_files(root, cfg, prompt_text, folder=None):
                     # onto the repository root produced `<root>\...\Memory\...` - a path
                     # that never exists, so a report that WAS written read as missing.
                     p = os.path.join(root, ("/" + cand)[at + 1:])
-            elif folder and "/" not in cand:
+            elif folder and "/" not in cand and cand.lower() not in _NOT_A_REPORT:
                 # A bare filename - real, and previously invisible: "Create
                 # `agent-01-implement.md` in this same folder as your FIRST action".
                 p = os.path.join(root, tr, folder, cand)

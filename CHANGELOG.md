@@ -33,6 +33,22 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.53.2
+
+- ⛔ **裸檔名那條規則誤報了,而且是在擁有者的畫面上。** 一份審查提示詞裡有這句散文:
+  「write a `HANDOFF.md` into the owner's repository, unasked」—— 那是在**描述**建檔,
+  不是在**指示**建檔,而守衛據此警告子 agent 弄丟了報告。⚠ 誤報花掉的正是這個守衛
+  唯一的預算:信任。
+- ⭐ **修法是排除清單,不是砍掉整條規則,而這是量出來的:** 拿這個 repo 自己的工作單測,
+  裸檔名那條找到 **5 個真的報告檔**（`agent-01-implement.md` 之類）,對上這 1 個誤報。
+  砍掉整條規則是拿 5 換 1。
+- ⚠ **排除只作用在「裸檔名」那條分支。** `Create Memory/tasks/x/HANDOFF.md` 寫了路徑,
+  那是真的指示,照樣算數;一個句子裡的裸 `HANDOFF.md` 沒有任何東西可以消歧義。
+  清單:`HANDOFF.md`、`PROTOCOL.md`、`README.md`、`CHANGELOG.md`、`CLAUDE.md`、`AGENTS.md`
+  —— 都是這個 repo 一天到晚在散文裡提到的文件,永遠不會是某個子任務的報告。
+
+---
+
 ## 0.53.1
 
 - ⛔ **0.52.1 造成的回歸，由擁有者發現：檢查會把資料寫進「真的」狀態目錄。**
@@ -1799,6 +1815,25 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.53.2
+
+- ⛔ **The bare-filename rule produced a false alarm, on the owner's screen.** A review
+  prompt contained the sentence "write a `HANDOFF.md` into the owner's repository, unasked" -
+  prose **about** creating a file, not an instruction to create one - and the guard warned
+  that the sub-agent had lost its report. ⚠ A false alarm spends the only budget this guard
+  has: trust.
+- ⭐ **The fix is an exclusion list, not deleting the rule, and that is measured:** across
+  this repository's own work orders the bare-filename branch finds **five genuine reports**
+  (`agent-01-implement.md` and friends) against this one false positive. Deleting it would
+  trade five for one.
+- ⚠ **The exclusion applies only to the BARE-filename branch.** `Create
+  Memory/tasks/x/HANDOFF.md` names a path and is a real instruction, so it still counts; a
+  bare `HANDOFF.md` in a sentence has nothing to disambiguate it. The list is `HANDOFF.md`,
+  `PROTOCOL.md`, `README.md`, `CHANGELOG.md`, `CLAUDE.md`, `AGENTS.md` - documents this
+  repository talks about constantly, and never a per-sub-task report.
 
 ---
 
