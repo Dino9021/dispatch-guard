@@ -119,6 +119,16 @@ DEFAULTS = {
     "near_reset_min": 20,    # within this long of the reset, soften by one level
     "colour_warn_pct": 70,   # bar turns orange at or above this
     "colour_alarm_pct": 85,  # bar turns red at or above this
+    # ⛔ HOW FAR PAST ITS OWN ┃ MARKER A BAR MUST BE BEFORE IT TURNS YELLOW, in percentage
+    # points. ⚠ WITHOUT A DEADBAND THIS FIRES ON THE FIRST PERCENT OF EVERY WINDOW: just
+    # after a reset the elapsed fraction is near zero, so any spending is "past the marker".
+    # Measured 2026-09-01, minutes after the seven-day window reset - 1% used against 0.48%
+    # elapsed drew a yellow bar and a yellow dot, and a seven-day clock advances 0.0099%/min,
+    # so one percent of usage stays yellow for about a hundred minutes.
+    # ⭐ Points, not a ratio, because a ratio against a near-zero baseline is what broke.
+    # Five points is a quarter-hour of a five-hour window and eight hours of a seven-day one.
+    # 0 restores the old always-on behaviour.
+    "colour_warn_margin_pct": 5,
     # How often the API may be asked. ⚠ THE REAL INTERVAL IS THIS PLUS UP TO
     # fetch_seconds_jitter of randomness - see _interval(). See FETCH_FLOOR_SECONDS:
     # values below that floor are clamped, and the reason is not a preference.
@@ -823,6 +833,36 @@ def _write_record(sdir, cfg, record, prev):
     file is honestly the age of the number, and stale_min means what it says again.
     """
     os.makedirs(sdir, exist_ok=True)
+    # ⭐ A HEARTBEAT ROW, AND THE CODE ALREADY ARGUED FOR IT BEFORE IT EXISTED - see the
+    # comment inside _burn_rate() that ends "Not built". Owner-asked 2026-09-01, after
+    # noticing API responses with no matching history row.
+    # ⛔ WHAT IT BUYS IS THE ABSENCE, NOT THE PRESENCE. A gap in the history has two causes
+    # the timestamps cannot tell apart: nothing was spent (the reading is right), or nothing
+    # was WATCHING - the machine off, the client closed - and the quota is account-wide, so
+    # another seat may have spent through the gap. That second case UNDER-states the rate,
+    # which is the dangerous direction. With a row written at least every burn_window_min,
+    # a gap is evidence recorded by the passage of time rather than by an event somebody had
+    # to catch.
+    # ⚠ THE COST IS BOUNDED: at worst one row per burn_window_min (10 minutes by default),
+    # and history_keep_days already prunes whole files by age.
+    # ⚠ THE CLOCK COMES FROM THE RECORD'S OWN `ts`, so this needs no new argument and cannot
+    # disagree with the timestamp the file is about to carry.
+    _now = (record.get("ts") or 0) / 1000.0
+    _win_min = cfg.get("burn_window_min", 10) or 10
+    _last = (prev or {}).get("history_at") if isinstance(prev, dict) else None
+    heartbeat_due = not isinstance(_last, (int, float)) or (_now - _last) >= _win_min * 60
+    moved = heartbeat_due or not (isinstance(prev, dict)
+                 and prev.get("five_hour") == record.get("five_hour")
+                 and prev.get("seven_day") == record.get("seven_day")
+                 # ⭐ The model-scoped window counts as a number that can move. Left out, a
+                 # session that spent only on the scoped model would look like a session
+                 # where nothing happened, and the history would have no row for it.
+                 and prev.get("scoped") == record.get("scoped"))
+    write_row = moved and cfg["debug"]["token_usage"]
+    # ⛔ STAMPED BEFORE THE FILE IS WRITTEN, or the next call cannot tell when the last row
+    # went in and every call would look overdue. ⚠ Carried FORWARD when no row is written,
+    # so the heartbeat measures time since the last ROW and not since the last fetch.
+    record["history_at"] = _now if write_row else (_last if _last else _now)
     tmp = cfg["token_usage_file"] + ".tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
@@ -830,14 +870,7 @@ def _write_record(sdir, cfg, record, prev):
         os.replace(tmp, cfg["token_usage_file"])      # atomic; never a half-written file
     except OSError:
         return
-    moved = not (isinstance(prev, dict)
-                 and prev.get("five_hour") == record.get("five_hour")
-                 and prev.get("seven_day") == record.get("seven_day")
-                 # ⭐ The model-scoped window counts as a number that can move. Left out, a
-                 # session that spent only on the scoped model would look like a session
-                 # where nothing happened, and the history would have no row for it.
-                 and prev.get("scoped") == record.get("scoped"))
-    if moved and cfg["debug"]["token_usage"]:
+    if write_row:
         # ⚠ model and session are no longer recorded, and that is accepted rather than
         # overlooked: they came off the statusline payload, which this path does not see.
         # Checked before accepting it - _projection() reads only `pct`, `at`/`ts` and
@@ -1377,7 +1410,19 @@ def _state(pct, cfg, time_pct=None):
         return "STOP"
     if pct >= cfg.get("colour_warn_pct", 70):
         return "PACE"
-    if isinstance(time_pct, (int, float)) and pct > time_pct:
+    # ⛔ A DEADBAND, AND WITHOUT ONE THIS FIRES THE MOMENT A WINDOW IS TOUCHED. `time_pct` is
+    # near zero just after a reset, so ANY spending is "past the marker": measured 2026-09-01,
+    # minutes after the seven-day window reset, 1% used against 0.48% elapsed drew a yellow
+    # bar and a yellow dot. ⚠ And it does not clear quickly - a seven-day clock advances
+    # 0.0099%/min, so one percent of usage stays yellow for about a hundred minutes.
+    # ⭐ A warning that fires on the first percent of every window is a warning nobody reads.
+    # The margin is in PERCENTAGE POINTS, which is scale-free: 5 points is a quarter of an
+    # hour of a five-hour window and eight hours of a seven-day one, and in both cases it is
+    # the difference between "ahead of the clock" and "ahead of the clock enough to matter".
+    # ⚠ The two tiers above are what catch a window that is simply high; this one exists only
+    # for the early and middle stretch, where the percentage alone says nothing.
+    if isinstance(time_pct, (int, float)) and \
+            pct - time_pct > cfg.get("colour_warn_margin_pct", 5):
         return "WARN"
     return "GO"
 
@@ -2100,7 +2145,10 @@ def _burn_part(burn, remain, rate, cfg, stale=False):
     # prints `1.20%m`, because dropping a digit that carries magnitude is a different thing
     # from dropping one that never varies.
     rate_s = ""
-    if rate:
+    # ⚠ `is not None`, NOT truthiness: a measured zero must print `.00%` - "you are not
+    # burning" is the useful half of a quiet stretch, and dropping it leaves the row
+    # looking as though the rate were missing again.
+    if rate is not None:
         rate_s = "%.2f" % rate
         if rate_s.startswith("0."):
             rate_s = rate_s[1:]
@@ -2515,7 +2563,10 @@ def burn_triple(sdir, cfg, record, now=None):
         return None
     burn = burnout_min(sdir, cfg, pct, resets, now)
     rate = _burn_rate(sdir, cfg, pct, resets, now)
-    return burn, int((resets - now) / 60), (rate * 60 if rate else 0)
+    # ⛔ `if rate else 0` COLLAPSED 0.0 AND None BACK TOGETHER one function above the place
+    # that just separated them. A flat stretch is a rate of zero; an unknowable one is
+    # None, and the display draws them differently.
+    return burn, int((resets - now) / 60), (rate * 60 if rate is not None else None)
 
 
 BURN_WINDOW_FLOOR_MIN = 5           # under this, a 1% reading cannot resolve a rate
@@ -2637,11 +2688,18 @@ def _burn_rate(sdir, cfg, pct, resets, now, window_secs=FIVE_HOUR_SECONDS):
     if span < 300:                                   # under 5 minutes proves nothing
         return None
     rate = (pct - start_pct) / span                  # percent per second
-    if rate <= 0:
-        # ⚠ NOT ZERO, AND NOT "SAFE". Nothing was spent in the baseline, so there is no rate
-        # to draw - and _burn_part() renders that as its own glyph rather than as an empty
-        # bar, because empty means DANGER in that column.
+    if rate < 0:
+        # ⛔ NEGATIVE IS THE ONLY GENUINELY UNKNOWABLE CASE LEFT, and it is a real one: the
+        # stored percentage FELL, which happens when a window turned over inside the baseline
+        # or a stale reading is being compared against a live one. There is no rate to draw.
         return None
+    # ⛔ ZERO IS A MEASUREMENT, NOT AN ABSENCE - and this line used to read `rate <= 0`, which
+    # threw the two together. Measured 2026-09-01, from the owner asking why the gauge went
+    # blank: at 12:48 the baseline row (12:37, 32%) and the live value (32%) agreed, the delta
+    # was 0, the rate came back "unknowable", and the bar drew dashes.
+    # ⚠ IT WENT BLIND AT THE MOMENT IT HAD SOMETHING USEFUL TO SAY - that the burn had
+    # STOPPED. "I do not know" was the one answer that was false, and it is the answer that
+    # hides a quiet stretch instead of showing it.
     return rate
 
 
@@ -2680,6 +2738,14 @@ def burnout_min(sdir, cfg, pct, resets, now):
         return None
     if pct >= 100:
         return 0
+    # ⛔ A ZERO RATE NEVER REACHES 100%, and dividing by it raises. Since 2026-09-01 a flat
+    # stretch is a real measurement rather than None (see _burn_rate), so this case is now
+    # reachable and has to mean something. ⇒ The honest answer is "not inside this window",
+    # and the caller draws that as a FULL bar - which is what a full bar already means: the
+    # window resets before you run dry. ⚠ Returning None here instead would put the dashes
+    # straight back and undo the fix one function away from it.
+    if rate <= 0:
+        return int((resets - now) / 60) + 1
     return int((100.0 - pct) / rate / 60.0)
 
 
@@ -3669,11 +3735,33 @@ def selftest():
     assert _vn["burns_out_early"] is False, _vn
     assert "SPENT in ~" not in _vn["text"], _vn["text"]
 
-    # ⚠ THE UNKNOWABLE CASES. Each returns None and none of them warns.
-    # ⛔ "Flat" MEANS FLAT FROM THE WINDOW'S OPEN, not flat across the logged rows: two equal
+    # ⛔ FLAT IS A MEASUREMENT, AND THIS ASSERTION IS REVERSED FROM WHAT IT SAID BEFORE
+    # 2026-09-01. Nothing spent, from the window's open to now, means the window will not be
+    # exhausted at this pace - not that the pace is unknowable. ⚠ The old `rate <= 0 -> None`
+    # blanked the gauge at the moment it had something worth saying, which is how the owner
+    # found it: `Burn ────────── --` during a quiet stretch.
+    # ⚠ "Flat" MEANS FLAT FROM THE WINDOW'S OPEN, not flat across the logged rows: two equal
     # rows late in a window still describe a climb from zero, which is a rate.
-    _plant([(_bnow - 1800, 0), (_bnow - 1, 0)], _far)            # flat: no rate
-    assert burnout_min(_bt, _bcfg, 0, _far, _bnow) is None
+    _plant([(_bnow - 1800, 0), (_bnow - 1, 0)], _far)            # flat: a rate of ZERO
+    assert _burn_rate(_bt, _bcfg, 0, _far, _bnow) == 0.0, _burn_rate(_bt, _bcfg, 0, _far, _bnow)
+    _flat = burnout_min(_bt, _bcfg, 0, _far, _bnow)
+    assert _flat is not None and _flat > (_far - _bnow) / 60, (
+        "a flat window must outlast its own reset, not read as unknowable: %r" % (_flat,))
+    # ...and the display draws that as a FULL bar with a zero rate, never as dashes.
+    _fb = _STRIP_ANSI.sub("", _burn_part(_flat, int((_far - _bnow) / 60), 0.0, {"colour": False}))
+    assert ".00%" in _fb and "─" not in _fb, _fb
+
+    # ⚠ THE UNKNOWABLE CASES. Each returns None and none of them warns.
+    # ⛔ A FALLING percentage stays unknowable, and that is the distinction the fix rests on:
+    # the stored number went DOWN, so a window turned over inside the baseline or a stale
+    # reading is being compared against a live one. There is no rate to draw.
+    # ⚠ WITH A REAL `burn_window_min`, not `_bcfg`'s 0. Zero means "the whole window", which
+    # anchors the baseline at the open with 0% - and against that anchor nothing can fall.
+    _fall = dict(_bcfg, burn_window_min=10)
+    _plant([(_bnow - 1800, 40), (_bnow - 1, 40)], _far)
+    assert _burn_rate(_bt, _fall, 10, _far, _bnow) is None, (
+        "a falling percentage gave a rate: %r" % (_burn_rate(_bt, _fall, 10, _far, _bnow),))
+    assert _burn_rate(_bt, _fall, 40, _far, _bnow) == 0.0, "flat must be zero, not None"
     _short = _bnow + 5 * 3600 - 60                               # opened 60 seconds ago
     _plant([(_bnow - 1, 55)], _short)                            # under 5 min of span
     assert burnout_min(_bt, _bcfg, 55, _short, _bnow) is None
@@ -3771,12 +3859,51 @@ def selftest():
     _frozen = 30.0 / ((_tnow - 90 * 60 - _topen) / 60.0)   # what the last row alone gives
     assert _live < _frozen * 0.6, (_live, _frozen)
 
-    # ⚠ AND IDLE READS AS UNKNOWABLE, NOT AS SAFE. Nothing was spent inside the baseline, so
-    # there is no rate to draw - and _burn_part() gives that its own glyph rather than an
-    # empty bar, because empty means DANGER in that column.
+    # ⛔ AND IDLE READS AS ZERO, NOT AS UNKNOWABLE - REVERSED 2026-09-01. Nothing was spent
+    # inside the baseline, and that is a measurement: the burn has STOPPED. ⚠ The old rule
+    # collapsed "no rate" and "a rate of nothing" into None, and the gauge went blank at the
+    # moment it had something worth saying. The owner found it: `Burn ────────── --` during a
+    # quiet stretch, with the baseline row sitting right there.
     _tplant([(_topen + 60, 0), (_tnow - 90 * 60, 30)], _tres)
-    assert _burn_rate(_tt, _t30, 30, _tres, _tnow) is None
+    assert _burn_rate(_tt, _t30, 30, _tres, _tnow) == 0.0, _burn_rate(_tt, _t30, 30, _tres, _tnow)
+    # ⭐ The dashes are still there for what is GENUINELY unknowable - no history, too short a
+    # span, a falling percentage - and _burn_part() gives that its own glyph rather than an
+    # empty bar, because empty means DANGER in that column.
     assert "─" in _burn_part(None, 100, None, {"colour": False})
+    assert "─" not in _STRIP_ANSI.sub("", _burn_part(120, 100, 0.0, {"colour": False}))
+
+    # ⛔ THE HEARTBEAT ROW. A history row used to be written ONLY when a number moved, so a
+    # quiet stretch wrote nothing and a gap had two causes the timestamps could not tell
+    # apart: nothing was spent, or nothing was WATCHING. Owner-asked 2026-09-01, after
+    # noticing API responses with no matching row. ⚠ The cost is bounded - at worst one row
+    # per burn_window_min.
+    _hb = tempfile.mkdtemp()
+    _hblogs = os.path.join(_hb, "logs")
+    os.makedirs(_hblogs)
+    _hbcfg = dict(DEFAULTS)
+    _hbcfg.update({"history_dir": _hblogs, "burn_window_min": 10,
+                   "token_usage_file": os.path.join(_hb, "token_usage.json"),
+                   "debug": {"token_usage": True}})
+    _hbnow = time.time()
+
+    def _hbrows():
+        return sum(1 for _f in glob.glob(os.path.join(_hblogs, "*.jsonl"))
+                   for _l in open(_f, encoding="utf-8") if _l.strip())
+
+    _hbprev = None
+    for _off, _pct, _want in ((0, 30, 1), (120, 30, 1), (601, 30, 2), (700, 30, 2),
+                              (720, 31, 3)):
+        _write_record(_hb, _hbcfg,
+                      {"ts": int((_hbnow + _off) * 1000),
+                       "five_hour": {"used_percentage": _pct,
+                                     "resets_at": int(_hbnow + 3600)}}, _hbprev)
+        _hbprev = read_json(_hbcfg["token_usage_file"], {})
+        assert _hbrows() == _want, (
+            "t+%ds pct=%s: expected %d history rows, got %d - the heartbeat is %s"
+            % (_off, _pct, _want, _hbrows(),
+               "not firing" if _hbrows() < _want else "firing on every fetch"))
+        assert isinstance(_hbprev.get("history_at"), (int, float)), _hbprev
+    shutil.rmtree(_hb, ignore_errors=True)
 
     # ⭐ INSIDE THE FIRST burn_window_min MINUTES THE ANCHOR STILL CARRIES IT, with no logged
     # row at all: the cut reaches back past the open, and a window opens at zero by definition.
@@ -4182,12 +4309,24 @@ def selftest():
         assert _wv["verdict"] != "WARN", _wv
     shutil.rmtree(_wdir, ignore_errors=True)
 
-    # ⭐ AND THE MARKER IS THE WHOLE CONDITION. Half the window gone, so the fill passes the
-    # ┃ at 50%: below it GO, above it WARN, and the two upper tiers unchanged.
+    # ⭐ THE MARKER IS THE CONDITION, PLUS A DEADBAND - and the deadband was added 2026-09-01
+    # because without it the tier fired on the first percent of every window. ⚠ Measured
+    # minutes after the seven-day window reset: 1% used against 0.48% elapsed drew a yellow
+    # bar and a yellow dot, and a seven-day clock advances 0.0099%/min, so one percent of
+    # usage stays yellow for about a hundred minutes. A warning that fires on the first
+    # percent of every window is a warning nobody reads.
+    # Half the window gone, so the ┃ sits at 50%; the margin defaults to 5 points.
     assert _state(49, _wcfg, 50.0) == "GO", _state(49, _wcfg, 50.0)
     assert _state(50, _wcfg, 50.0) == "GO", "equal is not PAST the marker"
-    assert _state(51, _wcfg, 50.0) == "WARN", _state(51, _wcfg, 50.0)
+    assert _state(54, _wcfg, 50.0) == "GO", "4 points ahead is inside the deadband"
+    assert _state(56, _wcfg, 50.0) == "WARN", _state(56, _wcfg, 50.0)
     assert _state(69, _wcfg, 50.0) == "WARN", _state(69, _wcfg, 50.0)
+    # ⛔ THE CASE THE OWNER SAW: a window minutes past its reset, barely touched.
+    assert _state(1.0, _wcfg, 0.48) == "GO", (
+        "a freshly reset window went yellow on its first percent: %r"
+        % (_state(1.0, _wcfg, 0.48),))
+    # ...and a genuinely alarming early burn still fires: 20% spent in 5% of the window.
+    assert _state(20.0, _wcfg, 5.0) == "WARN", _state(20.0, _wcfg, 5.0)
     assert _state(70, _wcfg, 50.0) == "PACE", _state(70, _wcfg, 50.0)
     assert _state(85, _wcfg, 50.0) == "STOP", _state(85, _wcfg, 50.0)
     # ⛔ NO MARKER, NO WARN - the tier cannot fire on a window with no time axis, and this is

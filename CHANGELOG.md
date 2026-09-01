@@ -33,6 +33,36 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.54.0
+
+三個由擁有者當場發現的量測缺陷,全部是「不知道」和「量出來是零」被混為一談。
+
+- ⛔ **Burn 在安靜的時候變瞎,而那正是它該說話的時候。** `_burn_rate()` 的最後一行是
+  `if rate <= 0: return None`。2026-09-01 12:48 實測:基準列(12:37,32%)就在那裡,
+  live 值也是 32%,差值 0 ⇒「算不出來」⇒ 畫成虛線。
+  ⭐ **零是量出來的結果,不是量不出來。** 現在只有「下降」才回 `None` —— 那才是真的
+  未知(視窗在量測中間翻頁,或拿過期讀數比對現值)。安靜的時段畫成**滿格 + `.00%`**,
+  而滿格的意思本來就是「視窗會比你的額度先重置」。
+- ⚠ **`burn_triple()` 和 `_burn_part()` 各自又把 0 和 None 併回去一次**(`if rate else 0`、
+  `if rate:`)。⇒ 兩處都改成 `is not None`,否則修好的區分會在下一個函式被抹掉。
+- ⭐ **歷史紀錄多了「心跳列」。** 以前只有「數字有動」才寫一行,所以安靜的時段什麼都不寫,
+  而一個空隙有兩個時間戳分不出來的原因:**沒有花掉**,或**沒有人在看**(機器關了、
+  客戶端關了)—— 而配額是整個帳號共用的,別的座位可能在那段空隙裡花掉了。
+  ⛔ 第二種會**低估**速率,那是危險的方向。⇒ 至少每 `burn_window_min` 寫一行,
+  空隙就變成「由時間流逝記錄下來的證據」,而不是「要有人抓到的事件」。
+  ⚠ 成本有上限:最壞每 10 分鐘一列,而 `history_keep_days` 本來就會整檔按天數清掉。
+  ⭐ 這個修法**是程式碼自己的註解在它存在之前就寫好的**,結尾寫著「Not built」。
+- ⛔ **視窗剛重置就轉黃。** WARN 那一層是 `pct > time_pct`,沒有任何餘裕 ——
+  剛重置完 `time_pct` 趨近 0,所以**花掉第一個百分點就一定黃**。實測 7d 重置後幾分鐘:
+  1% 對上 0.48%。而 7d 的時鐘每分鐘只走 0.0099%,所以 1% 會黃上約一百分鐘。
+  ⇒ 新的 `colour_warn_margin_pct`(預設 **5** 個百分點)。⚠ 用「百分點」不用「比例」,
+  因為對著趨近 0 的基準算比例正是壞掉的原因。上面兩層門檻負責「單純很高」的情況;
+  這一層只負責視窗的前中段。
+- ⭐ 三個都做了變異檢查,而且三個都有各自的失敗訊息:`AssertionError(None)`、
+  `the heartbeat is not firing`、`4 points ahead is inside the deadband`。
+
+---
+
 ## 0.53.2
 
 - ⛔ **裸檔名那條規則誤報了,而且是在擁有者的畫面上。** 一份審查提示詞裡有這句散文:
@@ -1815,6 +1845,43 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.54.0
+
+Three measurement defects, all found by the owner watching the row, and all the same
+mistake: **"I cannot tell" and "I measured zero" were the same answer.**
+
+- ⛔ **The burn gauge went blind during a quiet stretch - exactly when it had something to
+  say.** `_burn_rate()` ended with `if rate <= 0: return None`. Measured 2026-09-01 12:48:
+  the baseline row (12:37, 32%) was right there, the live value was 32%, the delta was 0 ⇒
+  "unknowable" ⇒ dashes. ⭐ **Zero is a measurement, not an absence.** Only a FALLING
+  percentage returns `None` now - that is genuinely unknowable (a window turned over inside
+  the baseline, or a stale reading compared against a live one). A quiet stretch draws a
+  **full bar and `.00%`**, and a full bar already means "the window resets before you run
+  dry".
+- ⚠ **`burn_triple()` and `_burn_part()` each collapsed 0 and None back together** (`if rate
+  else 0`, `if rate:`). ⇒ Both now test `is not None`, or the distinction would be undone one
+  function away from where it was made.
+- ⭐ **History gains a heartbeat row.** A row used to be written only when a number MOVED, so
+  a quiet stretch wrote nothing - and a gap has two causes the timestamps cannot tell apart:
+  nothing was spent, or **nothing was watching** (machine off, client closed). The quota is
+  account-wide, so another seat may have spent through the gap. ⛔ That case **under-states**
+  the rate, which is the dangerous direction. ⇒ A row at least every `burn_window_min`, so a
+  gap becomes evidence recorded by the passage of time rather than by an event somebody had
+  to catch. ⚠ Bounded: at worst one row per ten minutes, and `history_keep_days` already
+  prunes whole files. ⭐ This fix was argued for **by the code's own comment before it
+  existed**, which ended "Not built".
+- ⛔ **A freshly reset window turned yellow.** The WARN tier was `pct > time_pct` with no
+  deadband - and just after a reset `time_pct` is near zero, so the **first percent spent**
+  turns the bar and the dot yellow. Measured minutes after the seven-day reset: 1% against
+  0.48%, and a seven-day clock advances 0.0099%/min, so one percent stays yellow for about a
+  hundred minutes. ⇒ New `colour_warn_margin_pct`, default **5** points. ⚠ Points rather than
+  a ratio, because a ratio against a near-zero baseline is what broke. The two tiers above it
+  catch a window that is simply high; this one exists only for the early and middle stretch.
+- ⭐ All three mutation-checked, each with its own failure message: `AssertionError(None)`,
+  `the heartbeat is not firing`, `4 points ahead is inside the deadband`.
 
 ---
 

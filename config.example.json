@@ -56,6 +56,8 @@
 
   "_colour_alarm_pct": "The bar and the verdict dot turn RED - the STOP colour - at or above this. Deliberately NOT hard_pct, for the same reason.",
   "_colour_alarm_pct_zh": "長條圖和判定圓點在這個百分比以上變成「紅色」，也就是 STOP 的顏色。理由同上，刻意不等於 hard_pct。",
+  "_colour_warn_margin_pct": "HOW FAR PAST ITS OWN MARKER A BAR MUST BE BEFORE IT TURNS YELLOW, in percentage points. Default 5. WITHOUT A DEADBAND THIS FIRES ON THE FIRST PERCENT OF EVERY WINDOW: just after a reset the elapsed fraction is near zero, so any spending at all is \"past the marker\". Measured 2026-09-01, minutes after the seven-day window reset - 1% used against 0.48% elapsed drew a yellow bar and a yellow dot, and a seven-day clock advances 0.0099%/min, so one percent of usage stays yellow for about a hundred minutes. Points rather than a ratio, because a ratio against a near-zero baseline is exactly what broke: five points is a quarter-hour of a five-hour window and eight hours of a seven-day one. 0 restores the old always-on behaviour.",
+  "_colour_warn_margin_pct_zh": "長條圖要超出自己的 ┃ 標記多少「百分點」才轉黃。預設 5。⛔ 沒有這個死區的話,每個視窗花掉第一個百分點就一定轉黃:剛重置完「已經過的比例」趨近 0,所以任何用量都算「超過標記」。2026-09-01 實測,7d 視窗重置後幾分鐘:1% 的用量對上 0.48% 的時間,長條圖和圓點都是黃的 —— 而 7d 的時鐘每分鐘只走 0.0099%,所以 1% 的用量會黃上大約一百分鐘。⭐ 用「百分點」而不是「比例」,因為對著一個趨近 0 的基準算比例正是壞掉的原因:五個百分點是 5h 視窗的一刻鐘,也是 7d 視窗的八小時。設 0 就回到舊的「一律開」行為。",
   "colour_alarm_pct": 85,
 
   "_show_context": "Show the context-window bar beside the two usage windows.",
