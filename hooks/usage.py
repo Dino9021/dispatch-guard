@@ -2301,7 +2301,7 @@ def verdict(sdir, cfg, now=None, data=None):
     five_over = now >= resets
     remain_min = 0 if five_over else int((resets - now) / 60)
     clock = time.strftime("%H:%M", time.localtime(resets))
-    sd = _seven_day_note(seven, resets, now, cfg)
+    sd = _seven_day_note(seven, now, cfg)
 
     # --------------------------------------------------------------- the five-hour window
     proj = burn = None
@@ -2354,7 +2354,7 @@ def verdict(sdir, cfg, now=None, data=None):
     # only thing that stopped the work was the server refusing.
     seven_level = None
     remain7 = None
-    if _seven_day_binds(seven, resets, now):
+    if _seven_day_binds(seven, now):
         remain7 = int((resets7 - now) / 60)
         seven_level = _window_level(pct7, cfg["soft_pct_7d"], cfg["hard_pct_7d"])
         seven_level = _soften_near_reset(seven_level, remain7, cfg)
@@ -2435,28 +2435,49 @@ def _soften_near_reset(level, remain_min, cfg):
     return "PACE" if level == "STOP" else None
 
 
-def _seven_day_binds(seven, five_resets, now):
-    """Can the 7-day window actually stop work inside THIS five-hour window?
+def _seven_day_binds(seven, now):
+    """Is the 7-day window a live constraint at all?
 
-    ⛔ THE ANSWER IS NOT ALWAYS YES, AND THAT PREDATES THE FOUR THRESHOLDS. If the 7d window
-    resets before the 5h one ends, its percentage cannot be what stops you here - it is about
-    to become zero. Counting it anyway would brake on a number that is on its way out.
+    ⛔ IT USED TO ALSO REQUIRE `resets > five_resets` - "if the 7d resets before the 5h window
+    ends, it is about to become zero, so it cannot stop you" - AND THAT WAS WRONG. It asks
+    whether the window will still be there, and the question is whether its HEADROOM will
+    last. Measured 2026-09-01 on the owner's own account: 7d at **89%** with 11% left and
+    **71 minutes** to its reset, burning 0.30%/min - so the headroom was gone in **37**
+    minutes, and the plugin was printing "IGNORE, not a constraint" about the only window
+    that could stop the work.
 
-    ⚠ It is also not "is it high": how high is the threshold's business. This answers only
-    whether the window is a live constraint at all.
+    ⛔ AND THE OLD TEST WAS A SECOND, CRUDER COPY OF SOMETHING THAT ALREADY EXISTS.
+    "This number is about to be wiped, so forgive it" is exactly _soften_near_reset(), which
+    weighs the same idea per window and by how close the reset really is. Two implementations
+    of one rule, and the crude one ignored both magnitude and rate. ⇒ Deleted, not repaired:
+    the window binds whenever it has not already turned over, `_window_level()` decides
+    whether it is high enough to matter, and `_soften_near_reset()` decides whether an
+    imminent reset makes it forgivable.
+
+    ⚠ THE RESIDUAL EDGE, stated rather than hidden: softening is a threshold on TIME
+    (`near_reset_min`, 20) and not on arithmetic, so a window inside that window which would
+    still be exhausted first is softened by one level. That errs by one level, where the old
+    test erred by ignoring the window entirely.
+
+    ⚠ It is not "is it high": how high is the threshold's business.
     """
     if not isinstance(seven, dict):
         return False
     pct, resets = seven.get("used_percentage"), seven.get("resets_at")
     if not isinstance(pct, (int, float)) or not resets:
         return False
-    if now >= resets:
-        return False                      # already reset; the stored number reads stale-high
-    return resets > five_resets
+    # Already reset: the stored number reads stale-HIGH, which is the dangerous direction.
+    return now < resets
 
 
-def _seven_day_note(seven, five_resets, now, cfg):
-    """⛔ A high 7-day percentage is usually NOT a constraint. Say which it is."""
+def _seven_day_note(seven, now, cfg):
+    """⛔ A high 7-day percentage is usually NOT a constraint. Say which it is.
+
+    ⛔ THE LINE THAT USED TO SAY "it resets before this 5h window ends - IGNORE, not a
+    constraint" IS GONE, and it was the most confidently wrong sentence this plugin printed.
+    See _seven_day_binds() for the measurement that removed it: the window it told the owner
+    to ignore was the one about to stop the work.
+    """
     if not isinstance(seven, dict):
         return None
     pct, resets = seven.get("used_percentage"), seven.get("resets_at")
@@ -2464,11 +2485,11 @@ def _seven_day_note(seven, five_resets, now, cfg):
         return None
     if now >= resets:
         return "7d already reset - ignore"
-    if resets <= five_resets:
-        return ("7d %d%% but it resets before this 5h window ends - IGNORE, not a constraint"
-                % round(pct))
     if pct >= cfg["soft_pct_7d"]:
-        return "7d %d%% - BINDING, near cap" % round(pct)
+        # ⭐ WHEN it resets, on the line that says it binds. "7d 89% - BINDING" leaves the
+        # reader to guess whether that is for the next ten minutes or the next three days.
+        return ("7d %d%% - BINDING, near cap, and it does not reset for %s"
+                % (round(pct), duration((resets - now) / 60)))
     return "7d %d%% - not near cap, ignore" % round(pct)
 
 
@@ -3911,12 +3932,17 @@ def selftest():
     # ⚠ TIES GO TO THE FIVE-HOUR WINDOW, because it is the nearer and more actionable one.
     assert _verdict(90, 99)["driver"] == "5h", _verdict(90, 99)
 
-    # ⛔ A SEVEN-DAY WINDOW THAT RESETS FIRST IS NOT A CONSTRAINT, and that judgement predates
-    # the four thresholds. Its percentage is about to become zero; braking on it would brake
-    # on a number on its way out.
+    # ⛔ A SEVEN-DAY WINDOW THAT RESETS FIRST IS STILL A CONSTRAINT, AND THIS ASSERTION IS
+    # REVERSED FROM WHAT IT SAID BEFORE 2026-09-01. The old rule was "it resets before the 5h
+    # window ends, so its percentage is on its way out - ignore it". ⚠ That asks whether the
+    # WINDOW will still be there; the question is whether its HEADROOM will last. Measured on
+    # the owner's own account: 7d 89%, 11% left, 71 minutes to reset, 0.30%/min - gone in 37
+    # minutes, while the plugin printed "IGNORE, not a constraint" about the only window that
+    # could stop the work. Here: 99%, half an hour to reset, one percent of headroom.
     _v = _verdict(0, 99, r7=_bnow2 + 1800)
-    assert _v["verdict"] == "GO", _v
-    assert "IGNORE, not a constraint" in _v["text"], _v
+    assert (_v["verdict"], _v["driver"]) == ("STOP", "7d"), _v
+    assert "IGNORE, not a constraint" not in _v["text"], _v
+    assert "does not reset for" in _v["text"], "the note must say how long it binds for: %r" % _v
 
     # ⛔ AND THE EARLY RETURN THAT THREW THE WEEK AWAY. A five-hour window that has already
     # turned over used to return GO on the spot - so an account whose WEEK was spent was told
@@ -3931,7 +3957,12 @@ def selftest():
     # a 7d STOP three days out does not, and one shared test would have softened both.
     assert _verdict(90, 10, r5=_bnow2 + 12 * 60)["verdict"] == "PACE"
     assert _verdict(0, 99)["verdict"] == "STOP"
-    assert _verdict(0, 99, r7=_bnow2 + 12 * 60)["verdict"] == "GO", "7d resets first"
+    # ⭐ SOFTENING IS NOW THE ONLY THING THAT FORGIVES AN IMMINENT RESET, and it does the job
+    # the deleted `resets > five_resets` test was pretending to do - by how CLOSE the reset
+    # is, per window, rather than by which window resets first. Twelve minutes out, a 7d STOP
+    # softens to PACE; seventy-one minutes out it does not.
+    assert _verdict(0, 99, r7=_bnow2 + 12 * 60)["verdict"] == "PACE", "near-reset softening"
+    assert _verdict(0, 99, r7=_bnow2 + 71 * 60)["verdict"] == "STOP", "71 min is not near"
     shutil.rmtree(_bdir, ignore_errors=True)
 
     # ⛔ THE BURN GAUGE. It answers ONE forward-looking question - can I keep spending - by

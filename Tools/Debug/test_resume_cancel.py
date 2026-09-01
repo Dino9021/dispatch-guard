@@ -122,9 +122,14 @@ def case_arms_against_the_blocking_window():
     assert which == "7d" and abs(when - r7) < 2, (
         "the resume would wake at the 5h reset and find itself still blocked: %r"
         % ((when, which),))
-    # ⚠ ...and a 7d window that resets first is not a constraint, so it is not the target.
+    # ⛔ REVERSED 2026-09-01, and the old expectation cost the owner ninety minutes. A 7d
+    # window that resets FIRST used to be dismissed as "not a constraint", so the resume was
+    # armed for the five-hour reset two hours out - while the thing actually blocking the
+    # work cleared in thirty minutes. ⚠ The blocker is the 7d at 99%; the moment it lifts is
+    # the moment to wake. See _seven_day_binds() for the measurement that removed the rule.
     when, which = armed_for(0, 99, now + 1800)
-    assert which == "5h" and abs(when - r5) < 2, (when, which)
+    assert which == "7d" and abs(when - (now + 1800)) < 2, (
+        "the resume slept through the reset that actually unblocked it: %r" % ((when, which),))
     # Nothing blocking at all still answers with the near window, so arming early works.
     when, which = armed_for(10, 10, r7)
     assert which == "5h" and abs(when - r5) < 2, (when, which)

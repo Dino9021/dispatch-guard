@@ -33,6 +33,29 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.53.0
+
+- ⛔ **這個外掛印過最有自信的一句錯話刪掉了：「`7d 89% but it resets before this 5h window
+  ends - IGNORE, not a constraint`」。** 它叫擁有者忽略當下唯一擋得住工作的那個視窗。
+- ⚠ **那條規則問錯了問題。** 它問「這個視窗會不會比我早重置」，⭐ 該問的是
+  「**它的剩餘額度撐不撐得到那個時候**」。2026-09-01 在擁有者自己的帳號上實測：
+  7d 89%、剩 11%、距離重置 71 分鐘、每分鐘燒 0.30% —— **37 分鐘就燒完**。
+- ⛔ **而且舊規則是另一個既有機制的粗糙翻版。** 「這個數字馬上要被清掉，所以可以原諒」
+  正是 `_soften_near_reset()` 在做的事，而且它是按「離重置多近」逐視窗判斷。
+  ⇒ 舊規則**刪掉**，不是修：只要還沒翻頁就算約束，高不高由門檻決定，
+  快重置了原不原諒由 softening 決定。
+- ⭐ **resume 的等待目標也跟著修好了，而且這一項有時間可以量：** 5h 0%、7d 99%、
+  7d 三十分鐘後重置的情況，舊行為會把 resume 排在**兩小時後**的 5h 重置 ——
+  比真正解除封鎖的時刻晚了 **90 分鐘**。現在排在 7d 重置。
+- ⚠ **留下來的邊界，寫出來而不是藏起來：** softening 是一個「時間」門檻
+  （`near_reset_min`，20 分鐘），不是算術。所以一個在 20 分鐘內、但還是會先燒完的視窗，
+  會被放寬一級。⭐ 舊規則是「整個忽略」，新規則最多「差一級」。
+- ⚠ 5h 自己的算術**一個地方都沒有改**。擁有者提出「5h 應該以 7d 的重置時間為準」之後
+  自己推翻了它 —— 實測六次 5h 重置，7d 一次都沒有跟著動，兩個視窗互相獨立，
+  所以 5h 的投影和標記必須用 5h 自己的時間。
+
+---
+
 ## 0.52.1
 
 - ⛔ **gate 的紀錄現在寫兩份，而該讀的是第二份。** `repo_root()` 從 payload 的 `cwd` 往上找
@@ -1757,6 +1780,35 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.53.0
+
+- ⛔ **The most confidently wrong sentence this plugin printed is gone**: `7d 89% but it
+  resets before this 5h window ends - IGNORE, not a constraint`. It told the owner to ignore
+  the only window that could stop the work.
+- ⚠ **That rule asked the wrong question.** It asked whether the window would still be there;
+  ⭐ the question is whether its **headroom** would last. Measured 2026-09-01 on the owner's
+  own account: 7d at **89%**, 11% left, **71 minutes** to its reset, burning 0.30%/min - so
+  the headroom was gone in **37** minutes.
+- ⛔ **And the old rule was a cruder copy of something that already existed.** "This number
+  is about to be wiped, so forgive it" is exactly `_soften_near_reset()`, which weighs the
+  same idea per window and by how close the reset really is. ⇒ Deleted rather than repaired:
+  the window binds whenever it has not turned over, the thresholds decide whether it is high
+  enough to matter, and softening decides whether an imminent reset forgives it.
+- ⭐ **The resume's target is fixed with it, and that half can be measured in minutes:** with
+  5h at 0%, 7d at 99% and the 7d resetting in thirty minutes, the old behaviour armed the
+  resume for the five-hour reset **two hours** out - **90 minutes** after the thing actually
+  blocking the work had cleared. It now waits for the 7d reset.
+- ⚠ **The residual edge, stated rather than hidden:** softening is a threshold on TIME
+  (`near_reset_min`, 20) and not arithmetic, so a window inside that window which would still
+  be exhausted first is softened by one level. ⭐ The old rule erred by ignoring the window
+  entirely; this one errs by one level.
+- ⚠ **Nothing in the five-hour window's own arithmetic changed.** The owner proposed that 5h
+  should adopt the 7d's reset time, then withdrew it on their own reasoning - and the data
+  agrees: across **six** measured 5h resets the 7d never moved, so the two windows are
+  independent and 5h's projection and marker must use 5h's own reset.
 
 ---
 
