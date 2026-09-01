@@ -391,19 +391,46 @@ def state_path(sdir, session_id, suffix):
 
 
 def log(root, message):
-    """⛔ Errors go here too. A compensating control nobody reads is not one."""
+    """⛔ Errors go here too. A compensating control nobody reads is not one.
+
+    ⛔ TWO DESTINATIONS, AND THE SECOND ONE IS THE AUTHORITATIVE COPY. `root` comes from
+    repo_root(), which walks up from the payload's `cwd` looking for CLAUDE.md, AGENTS.md or
+    .git - and in a project carrying NONE of those it falls through to the cwd itself, which
+    the Bash tool's `cd` moves between calls. Measured 2026-09-01 in `OLD_Books`: one
+    session's log arrived as FOUR fragments in four directories, each with a stray `.claude/`
+    beside it, and the hour that mattered looked empty in the one place anybody would look.
+    ⇒ "No denial appeared" and "the log went somewhere else" must not be the same picture.
+
+    ⭐ The state directory never moves, so the copy there is the one to read when the answer
+    matters. The per-repository copy stays because it is where a person looks first, and
+    because removing it would be a second change nobody asked for.
+    """
+    stamped = "%s %s%s" % (time.strftime("%Y-%m-%d %H:%M:%S"), message, "\n")
+    # ⛔ A bare newline above, NEVER os.linesep. Text mode already translates it to the
+    # platform's ending on Windows, so adding os.linesep on top produces a carriage return
+    # too many, and every record is followed by a blank line. Measured 2026-08-26: every log
+    # this plugin wrote was double-spaced - the gate log and the imported usage history alike.
+    paths = []
+    if root:
+        paths.append(os.path.join(root, ".claude", "dispatch_gate.log"))
     try:
-        path = os.path.join(root, ".claude", "dispatch_gate.log")
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        # ⛔ A bare newline here, NEVER os.linesep. Text mode already translates it
-        # to the platform's ending on Windows, so adding os.linesep on top produces a
-        # carriage return too many, and every record is followed by a blank line.
-        # Measured 2026-08-26: every log this plugin wrote was double-spaced - the gate
-        # log and the imported usage history alike.
-        with open(path, "a", encoding="utf-8") as f:
-            f.write("%s %s%s" % (time.strftime("%Y-%m-%d %H:%M:%S"), message, "\n"))
+        # ⚠ IT CAN RETURN NOTHING, and joining None raises TypeError from inside the logger -
+        # which would take out the one call every failure path in this module relies on.
+        # Measured: the module's own --selftest reached here with no state directory.
+        _sd = usage.state_dir([])
+        if _sd:
+            paths.append(os.path.join(_sd, "dispatch_gate.log"))
     except Exception:
         pass
+    for path in paths:
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(stamped)
+        except Exception:
+            # ⚠ ONE FAILING DESTINATION MUST NOT SILENCE THE OTHER. The whole point of the
+            # second copy is that it survives whatever went wrong with the first.
+            continue
 
 
 def newest(pattern):

@@ -116,6 +116,14 @@ logs to `.claude/dispatch_gate.log` (fallback `%TEMP%/dispatch_gate_error.log`).
 | the `model_access` entitlement from `GET /api/claude_cli/bootstrap` is not read | deliberate: a second endpoint with its own auth, for a list that `availableModels` already gives away for free |
 | a command run in a session with no start stamp is advisory for these guards too | deliberate, and the same rule as for dispatch: installing an update must not start refusing commands inside a live session |
 
+⭐ **THE LOG IS WRITTEN TWICE, AND THE SECOND COPY IS THE ONE TO READ.** `repo_root()`
+walks up from the payload's `cwd` for `CLAUDE.md`, `AGENTS.md` or `.git`; a project with
+none of the three falls through to the cwd itself, which the Bash tool's `cd` moves
+between calls. Measured 2026-09-01: one session's log arrived as **four fragments in four
+directories**, each with a stray `.claude/` beside it, and the hour that mattered looked
+empty in the one place anybody would look. ⇒ Every line also goes to
+`<state>/dispatch_gate.log`, which never moves.
+
 **An absent denial is not proof the gate ran.** A log full of
 `ADVISORY(no-session-stamp)` means it enforces nothing and looks identical to a log where
 nobody broke a rule; `GATE-ERROR` lines mean it is failing open (a pre-branch `NameError`

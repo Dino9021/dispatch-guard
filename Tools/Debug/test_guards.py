@@ -111,6 +111,21 @@ def gitlog(root):
         return ""
 
 
+def statelog(sdir):
+    """The gate log's copy in the STATE directory - the one that cannot move.
+
+    ⛔ `gitlog()` reads `<root>/.claude/dispatch_gate.log`, and `root` follows the payload's
+    cwd in a project with no CLAUDE.md, AGENTS.md or .git. Measured 2026-09-01: one session's
+    log arrived as four fragments in four directories. This copy is what makes "did the guard
+    fire?" answerable in one place.
+    """
+    try:
+        with open(os.path.join(sdir, "dispatch_gate.log"), encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
 def git(root, *args):
     return subprocess.run(["git", "-C", root] + list(args), capture_output=True, text=True)
 
@@ -315,7 +330,24 @@ def case_switches_and_logging(gate, sdir, root):
     run_gate(gate, bash(root, "echo hello"))
     tail = gitlog(root)[before:]
     assert "CMD-ALLOW(checked=" in tail and "off=-" in tail, tail
-    print("ok - each guard has its own switch, and allow/deny/disabled all log")
+
+    # ⛔ AND EVERY LINE ALSO REACHES THE STATE DIRECTORY, which never moves. `root` follows
+    # the payload's cwd in a project with no CLAUDE.md, AGENTS.md or .git, so the per-repo
+    # copy can scatter - measured 2026-09-01, four fragments from one session in OLD_Books,
+    # and the hour that mattered looked empty in the one place anybody would look.
+    sbefore = len(statelog(sdir))
+    run_gate(gate, bash(root, "echo state-copy-probe"))
+    stail = statelog(sdir)[sbefore:]
+    assert "CMD-ALLOW(checked=" in stail, "the state copy missed the line: %r" % (stail[-200:],)
+    # ⭐ A MOVED ROOT MUST NOT COST THE STATE COPY. This is the whole point: same session,
+    # a cwd that resolves somewhere else, and the fixed copy still receives it.
+    moved = os.path.join(root, "sub", "deeper")
+    os.makedirs(moved, exist_ok=True)
+    sbefore = len(statelog(sdir))
+    run_gate(gate, bash(moved, "echo moved-root-probe"))
+    assert "CMD-ALLOW(checked=" in statelog(sdir)[sbefore:], \
+        "a moved root lost the state copy: %r" % (statelog(sdir)[-200:],)
+    print("ok - each guard has its own switch, allow/deny/disabled log, and the state copy holds")
 
 
 def case_fail_open(gate, sdir, root):

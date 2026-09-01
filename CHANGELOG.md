@@ -33,6 +33,26 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.52.1
+
+- ⛔ **gate 的紀錄現在寫兩份，而該讀的是第二份。** `repo_root()` 從 payload 的 `cwd` 往上找
+  `CLAUDE.md`、`AGENTS.md` 或 `.git`；三個都沒有的專案會直接落回 cwd 本身 ——
+  而 Bash 的工作目錄會被 `cd` 帶著跑。⚠ 2026-09-01 實測：一個 session 的紀錄變成
+  **四個資料夾裡的四份殘骸**，每一份旁邊還多一個 `.claude/`，而真正出事的那一小時，
+  在所有人會去看的那個位置看起來是空的。
+  ⇒ 每一行同時寫進 `<state>/dispatch_gate.log`，那個位置不會動。
+- ⭐ **這是後面每一步的前提。** 沒有一份不會移動的紀錄，「守衛沒響」和「守衛響了但寫到別的
+  地方」在畫面上一模一樣 —— 而這正是這個外掛存在要防的那種失敗。
+- ⚠ 兩個目的地互相獨立：一個寫失敗不會讓另一個也不寫。⭐ 每個 repo 自己那一份留著，
+  因為那是人第一個會看的地方。
+- ⚠ `usage.state_dir()` 可能什麼都回不出來，而 `os.path.join(None, ...)` 會從 logger 內部
+  拋 TypeError —— 那會炸掉這個模組每一條失敗路徑都依賴的呼叫。已經擋掉，模組自己的
+  `--selftest` 就走到過那個狀況。
+- ⭐ 檢查做了變異：把 state 那個目的地拿掉，檢查就以「the state copy missed the line」失敗；
+  另外還斷言「root 跑掉的時候，那份固定的副本照樣收得到」。
+
+---
+
 ## 0.52.0
 
 - ⭐ **這一列的五項修改，全部是擁有者指定的（2026-09-01）：**
@@ -1737,6 +1757,28 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.52.1
+
+- ⛔ **The gate log is written twice now, and the second copy is the one to read.**
+  `repo_root()` walks up from the payload's `cwd` for `CLAUDE.md`, `AGENTS.md` or `.git`; a
+  project carrying none of the three falls through to the cwd itself - which the Bash tool's
+  `cd` moves between calls. ⚠ Measured 2026-09-01: one session's log arrived as **four
+  fragments in four directories**, each with a stray `.claude/` beside it, and the hour that
+  mattered looked empty in the one place anybody would look.
+  ⇒ Every line also goes to `<state>/dispatch_gate.log`, which never moves.
+- ⭐ **This is the precondition for everything that comes next.** Without one log that cannot
+  move, "the guard never fired" and "the guard fired somewhere else" are the same picture -
+  and that is precisely the failure this plugin exists to prevent.
+- ⚠ The two destinations are independent: one failing does not silence the other. ⭐ The
+  per-repository copy stays, because it is where a person looks first.
+- ⚠ `usage.state_dir()` can return nothing, and `os.path.join(None, ...)` raises TypeError
+  from inside the logger - which would take out the one call every failure path in this
+  module relies on. Guarded; the module's own `--selftest` reached that state.
+- ⭐ Mutation-checked: drop the state destination and the check fails with "the state copy
+  missed the line". It also asserts that a **moved root** does not cost the fixed copy.
 
 ---
 
