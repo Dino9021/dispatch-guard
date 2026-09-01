@@ -33,6 +33,25 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.53.1
+
+- ⛔ **0.52.1 造成的回歸，由擁有者發現：檢查會把資料寫進「真的」狀態目錄。**
+  0.52.1 之後 gate 的紀錄同時寫到 `usage.state_dir()`，而 `dispatch_gate.py --selftest`
+  跑的是真正的決策路徑 —— 所以**每跑一次測試套件，就有 45 行 `DENY(ultracode)`
+  進到擁有者自己的紀錄檔**。擁有者問的是「這個 session 沒有開 ultracode 啊?」——
+  他是對的，那些行不是他的 session 產生的。
+- ⚠ **一個會污染自己要保護的證據的檢查，比沒有檢查更糟。** `--selftest` 現在在進入點
+  把狀態目錄導到一個隔離的暫存目錄。
+- ⛔ **導向放在「進入點」，不是放在 `selftest()` 裡面**，而這一點是量出來才知道的：
+  那個函式有一半是在它自己的 `try/finally` **之後**才跑的 —— 包含產生那些行的 ultracode
+  區段。只包住 try 的導向剛好會漏掉它們。
+- ⭐ 新增的檢查會在子行程裡解析「真的」狀態目錄，因為 `load_gate()` 會在模組上換掉
+  `usage.state_dir` —— 那正是其他案例需要的，也正是會把這個污染藏起來的東西。
+  變異檢查：把隔離拿掉，檢查就以「a shipped --selftest wrote into the REAL state
+  directory: 108 bytes」失敗。
+
+---
+
 ## 0.53.0
 
 - ⛔ **這個外掛印過最有自信的一句錯話刪掉了：「`7d 89% but it resets before this 5h window
@@ -1780,6 +1799,26 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.53.1
+
+- ⛔ **A regression from 0.52.1, found by the owner: the checks wrote into the REAL state
+  directory.** Since 0.52.1 the gate log also goes to `usage.state_dir()`, and
+  `dispatch_gate.py --selftest` runs the real decision paths - so **every suite run filed 45
+  `DENY(ultracode)` lines into the owner's own log**. The owner asked "but this session does
+  not have ultracode on?" and was right: those lines were never theirs.
+- ⚠ **A check that pollutes the evidence it exists to protect is worse than no check.**
+  `--selftest` now redirects the state directory to a quarantined temporary one.
+- ⛔ **The redirection goes at the ENTRY POINT, not inside `selftest()`**, and that is
+  measured rather than assumed: half of that function runs **after** its own `try/finally` -
+  including the ultracode block that produced the lines. A redirection scoped to the `try`
+  would have missed exactly them.
+- ⭐ The new check resolves the real state directory in a SUBPROCESS, because `load_gate()`
+  replaces `usage.state_dir` on the imported module - which is what every other case needs,
+  and what would have hidden this. Mutation-checked: remove the quarantine and it fails with
+  "a shipped --selftest wrote into the REAL state directory: 108 bytes".
 
 ---
 

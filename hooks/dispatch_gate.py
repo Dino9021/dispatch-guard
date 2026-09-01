@@ -2552,6 +2552,14 @@ def selftest():
     ⛔ Worth a check rather than a comment because a wrong answer here is SILENT. A gate
     that resolves task_root to the wrong folder finds no fresh plan, refuses every dispatch,
     and the refusal names a path without saying it looked in the wrong one.
+
+    ⛔ AND IT MUST NOT WRITE INTO THE REAL STATE DIRECTORY. log() sends every line to
+    `usage.state_dir()` as well as to the repository copy, and this function runs the real
+    decision paths - so without the redirection below, `dispatch_gate.py --selftest` files
+    45 `DENY(ultracode)` lines into the owner's own log every time the suite runs. Measured
+    2026-09-01, from the owner noticing exactly that: a log full of refusals for a mode no
+    session had switched on. ⚠ A check that pollutes the evidence it exists to protect is
+    worse than no check.
     """
     import shutil
     import tempfile
@@ -2949,6 +2957,17 @@ def _utf8_console():
 if __name__ == "__main__":
     _utf8_console()
     if "--selftest" in sys.argv[1:]:
+        # ⛔ THE CHECK MUST NOT WRITE INTO THE REAL STATE DIRECTORY. log() sends every
+        # line to usage.state_dir() as well as to the repository copy, and selftest()
+        # runs the real decision paths - so without this, every suite run filed 45
+        # `DENY(ultracode)` lines into the owner's own log. Measured 2026-09-01, from
+        # the owner asking why their log was full of refusals for a mode no session had
+        # switched on. ⚠ HERE, not inside selftest(): half that function runs after its
+        # own try/finally, so a redirection scoped to the try would miss exactly the
+        # ultracode block that produced the lines.
+        import tempfile as _tf
+        _quarantine = _tf.mkdtemp(prefix="dg-selftest-")
+        usage.state_dir = lambda argv=None, _d=_quarantine: _d
         sys.exit(selftest())
     try:
         main()

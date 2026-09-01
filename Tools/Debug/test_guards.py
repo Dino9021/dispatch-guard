@@ -111,6 +111,20 @@ def gitlog(root):
         return ""
 
 
+def usage_state_dir():
+    """The REAL state directory, resolved in a subprocess so no in-process stub reaches it.
+
+    ⚠ `load_gate()` replaces `usage.state_dir` on the imported module, which is exactly
+    what the other cases need and exactly what would hide the pollution this asks about.
+    """
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "import sys; sys.path.insert(0, r'%s'); import usage; print(usage.state_dir([]))"
+         % repo_path("hooks")],
+        capture_output=True, text=True)
+    return (out.stdout or "").strip()
+
+
 def statelog(sdir):
     """The gate log's copy in the STATE directory - the one that cannot move.
 
@@ -1367,6 +1381,23 @@ def case_selftests_never_read_the_terminal():
     # ⚠ `resume.py` has no `--selftest` - it prints its usage and exits 2. It is checked
     # anyway, because the property being tested is "does not BLOCK", not "passes": it is a
     # shipped entry point a person may type, and if it ever grows a stdin read this catches it.
+    # ⛔ AND NO SHIPPED --selftest MAY WRITE INTO THE REAL STATE DIRECTORY. From 0.52.1 the
+    # gate log goes to `usage.state_dir()` as well as to the repository copy, and selftest()
+    # runs the real decision paths - so every suite run filed 45 `DENY(ultracode)` lines into
+    # the owner's own log until this was caught. ⚠ Measured 2026-09-01, and found by the OWNER
+    # asking why their log was full of refusals for a mode no session had switched on. A check
+    # that pollutes the evidence it exists to protect is worse than no check.
+    # ⚠ This reads the real state directory deliberately - reading is the only way to know -
+    # and never writes to it.
+    def _real_state_log():
+        try:
+            with open(os.path.join(usage_state_dir(), "dispatch_gate.log"),
+                      encoding="utf-8") as f:
+                return len(f.read())
+        except OSError:
+            return 0
+
+    _state_before = _real_state_log()
     for script, expect_ok in (("dispatch_gate.py", True), ("usage.py", True),
                               ("unattended.py", True), ("resume.py", False)):
         path = repo_path("hooks", script)
@@ -1385,7 +1416,11 @@ def case_selftests_never_read_the_terminal():
                 "%s --selftest blocked with an open stdin - it reads the terminal" % script)
         if expect_ok:
             assert rc == 0, "%s --selftest exited %s" % (script, rc)
-    print("ok - no shipped --selftest blocks on an open stdin")
+    assert _real_state_log() == _state_before, (
+        "a shipped --selftest wrote into the REAL state directory: %d bytes added to %s"
+        % (_real_state_log() - _state_before,
+           os.path.join(usage_state_dir(), "dispatch_gate.log")))
+    print("ok - no shipped --selftest blocks on stdin or writes to the real state dir")
 
 
 def case_skill_copies():
