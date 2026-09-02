@@ -863,6 +863,22 @@ def _write_record(sdir, cfg, record, prev):
     # went in and every call would look overdue. ⚠ Carried FORWARD when no row is written,
     # so the heartbeat measures time since the last ROW and not since the last fetch.
     record["history_at"] = _now if write_row else (_last if _last else _now)
+    # ⭐ WHICH ACCOUNT THESE NUMBERS BELONG TO, stamped on the record and on every history row
+    # it produces, from one read. ⛔ AND A SWITCH IS SAID ONCE, in the state-directory copy of
+    # the gate log: after a switch the gauge reads `--` for up to burn_window_min because the
+    # old account's rows are (correctly) refused, and a blank gauge and a broken gauge look the
+    # same on screen. Only two KNOWN, DIFFERENT ids count as a switch - unknown says nothing.
+    _acct = _current_account()
+    record["acct"] = _acct
+    _prev_acct = prev.get("acct") if isinstance(prev, dict) else None
+    if _acct and isinstance(_prev_acct, str) and _prev_acct and _prev_acct != _acct:
+        try:
+            with open(os.path.join(sdir, "dispatch_gate.log"), "a", encoding="utf-8") as f:
+                f.write("%s ACCOUNT-SWITCH %s.. -> %s.. (the burn gauge starts over: on the "
+                        "trailing baseline it reads -- for up to burn_window_min)\n"
+                        % (time.strftime("%Y-%m-%d %H:%M:%S"), _prev_acct[:8], _acct[:8]))
+        except OSError:
+            pass
     tmp = cfg["token_usage_file"] + ".tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
@@ -878,7 +894,7 @@ def _write_record(sdir, cfg, record, prev):
         # reading the log. If a per-model breakdown
         # is ever wanted, it has to come from the payload in collect(), not from here.
         _append_history(sdir, cfg, record.get("five_hour") or {},
-                        record.get("seven_day") or {})
+                        record.get("seven_day") or {}, acct=_acct)
 
 
 def _claim_attempt(sdir, due):
@@ -1238,16 +1254,25 @@ def unstamp(value):
     return None
 
 
-def _append_history(sdir, cfg, five, seven, model=None, session=None):
+def _append_history(sdir, cfg, five, seven, model=None, session=None, acct=None):
     """One sample per render, into today's file.
 
     Every time is written as a readable local timestamp rather than an epoch integer,
     and the seven-day window's reset is kept as well as its percentage - without it a
     row cannot be attributed to a particular weekly window when read back later.
+
+    ⛔ `acct` IS WRITTEN ON EVERY ROW, null when unknown. Measured 2026-09-02: two accounts'
+    five-hour windows reset 0.08 s apart, the reader's tolerance is one second, and a row
+    carried no account - so thirteen rows from two accounts sat in one bucket and nothing
+    afterwards could separate them (the seven-day value inside that one window took three
+    different values, which one account cannot do). _burn_rate() drops a row whose `acct` is
+    missing, null, or not the current account. A legacy row has no `acct` and is dropped;
+    that is correct, not a regression.
     """
     sample = {"at": stamp(time.time()),
               "pct": five.get("used_percentage"),
-              "resets_at": stamp(five.get("resets_at"))}
+              "resets_at": stamp(five.get("resets_at")),
+              "acct": acct if isinstance(acct, str) and acct else None}
     if isinstance(seven, dict):
         sample["sd_pct"] = seven.get("used_percentage")
         sample["sd_resets"] = stamp(seven.get("resets_at"))
@@ -1293,8 +1318,11 @@ def _account_ids():
     still KEPT - never lose data - but a reader computing statistics must EXCLUDE it rather
     than average it in.
 
-    ⚠ ~/.claude.json is about 55 KB and is read only from here, which runs only while the
-    debug switch is on. Nothing extra is read when it is off.
+    ⚠ ~/.claude.json is about 55 KB. This function reads it only while the debug switch is on;
+    since 0.57.0 _current_account() ALSO reads it - a different field
+    (`cachedUsageUtilization.accountUuid`), through _claude_json_path(), on every fetch and
+    every _burn_rate() call, for the history label. Two readers, two fields, two questions;
+    both refuse to answer under $ANTHROPIC_TOKEN for the same reason (below).
 
     ⛔ NO emailAddress AND NO TOKEN EVER LEAVES THIS FUNCTION. oauthAccount carries an email
     address beside the uuid; accountUuid identifies the seat without putting a personal
@@ -2607,10 +2635,13 @@ def burn_triple(sdir, cfg, record, now=None):
 
     ⭐ ONE call site for the display, so the bar and the verdict cannot disagree - they read
     the same history through the same functions.
-    ⚠ MEASURED 2.47 ms on real history, against a statusline that renders once per
-    refresh_seconds (60 s by default). It reads at most the last two history files, which
-    history_keep_days bounds; a `--watch` at `--every 2` pays it every two seconds and that
-    is still nothing next to the render itself.
+    ⚠ MEASURED 2.47 ms on real history when written; ⚠ STALE - re-measured 2026-09-02 by the
+    review of 0.57.0 on a synthetic 640-row day (a full day at one row per minute): ~66 ms per
+    _burn_rate() call, ~130 ms per burn_triple(), of which the account read added ~1 ms per
+    call. Rows carry readable timestamps now and unstamp() parses each one; that is where the
+    time goes. Against a statusline that renders once per refresh_seconds (60 s by default) it
+    is still small; a `--watch` at `--every 2` pays it every two seconds. It reads at most the
+    last two history files, which history_keep_days bounds.
     """
     now = time.time() if now is None else now
     five = (record or {}).get("five_hour") or {}
@@ -2656,26 +2687,31 @@ def _burn_rate(sdir, cfg, pct, resets, now, window_secs=FIVE_HOUR_SECONDS):
             continue
     if not rows:
         return None
-    # ⭐ THIS FILTER IS ALSO WHAT MAKES HISTORY ACCOUNT-SAFE, by accident rather than by
-    # design - worth writing down so nobody "tidies" it away. History rows carry no account
-    # field, and ⚠ NOT for the reason this comment used to give. It said neither the
-    # credentials file nor the endpoint carries an account identifier (measured 2026-08-26)
-    # and that is WRONG: measured 2026-08-27, ~/.claude/.credentials.json carries
-    # `organizationUuid` at its top level, and ~/.claude.json carries the per-seat
-    # `accountUuid` under `oauthAccount`. Both are what _account_ids() reads for the debug
-    # response dump. ⚠ Whether a history row SHOULD carry one is an open decision nobody has
-    # made - and the safety below is what makes the current answer harmless either way. If
-    # the signed-in account changes, rows from the old one would otherwise be mixed into the
-    # new one's burn rate. They are not, because a row is kept only when its resets_at
-    # matches the window being projected to the second, and two accounts' windows do not
-    # share an instant.
+    # ⛔ THE resets_at FILTER IS NOT WHAT KEEPS TWO ACCOUNTS APART, and this comment used to
+    # say it was ("two accounts' windows do not share an instant"). Measured 2026-09-02: two
+    # accounts' five-hour windows reset 0.081830 s apart, the tolerance below is one second,
+    # and stamp() rounds to the second anyway - so both accounts landed in ONE bucket and the
+    # live history was already mixed (thirteen rows, the seven-day value taking three
+    # different values inside one five-hour window, which one account cannot do). That day
+    # the new account happened to be HIGHER, so the rate stayed plausible (0.600 %/min shown,
+    # 0.653 from the post-switch rows alone); lower would have gone negative and blanked the
+    # gauge silently; much higher would have shown a large false rate with nothing saying so.
+    # ⇒ Every row carries `acct` (_append_history), and a row is kept only when its `acct` is
+    # KNOWN, the current account is KNOWN, and they are EQUAL. Unknown on either side drops the
+    # row - the honest answer is `--` for up to burn_window_min after a switch, and it is
+    # better than a wrong number. ⛔ Do not soften this by falling back to unlabelled rows;
+    # that fallback IS the defect. Legacy rows have no `acct` and are dropped on purpose.
+    # ⚠ The resets_at filter stays: it is what keeps LAST window's rows out of THIS one.
     # Rows carry readable timestamps now and epochs in older files; unstamp() reads both.
+    cur_acct = _current_account()
     norm = []
     for r in rows:
         if not isinstance(r.get("pct"), (int, float)):
             continue
         at, ra = unstamp(r.get("at", r.get("ts"))), unstamp(r.get("resets_at"))
         if at is None or ra is None or abs(ra - resets) > 1:
+            continue
+        if cur_acct is None or r.get("acct") != cur_acct:
             continue
         norm.append({"ts": at, "pct": r["pct"]})
     rows = norm
@@ -2830,6 +2866,43 @@ def _claude_json_path():
     if cfg_dir:
         return os.path.join(cfg_dir, ".claude.json")
     return os.path.join(os.path.expanduser("~"), ".claude.json")
+
+
+def _current_account():
+    """The accountUuid Claude Code tagged its own cached usage with, or None.
+
+    ⭐ `cachedUsageUtilization.accountUuid` in Claude Code's config file, read through
+    _claude_json_path() so a fixture can say which account is signed in. The id sits BESIDE
+    the numbers Claude Code cached, so nothing has to ask "who is signed in"; measured on
+    three captures 2026-09-02 it equals that file's own `oauthAccount.accountUuid`.
+
+    ⚠ A LABEL ONLY, NEVER THE NUMBERS. Measured the same day: `fetchedAtMs` in that block was
+    twenty-one minutes stale while this plugin's own record was under a minute old.
+    ⛔ EVERY FAILURE IS None. No field name in that file is guaranteed - `organizationUuid`
+    left `.credentials.json` within a week of being measured there - and a missing value means
+    "unknown", never a guess. ⛔ No email address and no token leaves this function.
+
+    ⛔ $ANTHROPIC_TOKEN WINS IN _token_and_expiry(), and on that path the numbers belong to
+    whoever owns that token - which the profile file knows nothing about. _account_ids() made
+    the same call for the debug dump, with the same reason: a label that names a different
+    account from the one that produced the numbers is worse than no label, because the filter
+    then KEEPS those rows. Found by the review of 0.57.0; the answer is "unknown".
+
+    ⚠ TWO READERS OF CLAUDE CODE'S CONFIG, ON PURPOSE. _account_ids() reads `oauthAccount`
+    from the home path and cross-checks it against the credentials file for the debug dump;
+    this reads `cachedUsageUtilization` through _claude_json_path() for the history label.
+    Different questions, different fields; see the other docstring before unifying them.
+    """
+    env = os.environ.get("ANTHROPIC_TOKEN")
+    if env and env.strip():
+        return None
+    try:
+        prof = read_json(_claude_json_path(), {}) or {}
+        cached = prof.get("cachedUsageUtilization") if isinstance(prof, dict) else None
+        acct = cached.get("accountUuid") if isinstance(cached, dict) else None
+        return acct if isinstance(acct, str) and acct else None
+    except Exception:
+        return None
 
 
 def _gate_heartbeat_min(sdir, now=None):
@@ -3750,6 +3823,26 @@ def selftest():
     _bt = tempfile.mkdtemp(prefix="dg-burn-")
     _blogs = os.path.join(_bt, "logs")
     os.makedirs(_blogs)
+    # ⛔ WHICH ACCOUNT IS SIGNED IN is a fixture from here to the end of the burn blocks, or
+    # every row below is dropped as "not this account" and the checks read the owner's REAL
+    # ~/.claude.json. Made-up ids; nothing from Debug/ is copied here.
+    _ACCT_A = "aaaaaaaa-0000-4000-8000-00000000000a"
+    _ACCT_B = "bbbbbbbb-0000-4000-8000-00000000000b"
+    _acct_file = os.path.join(_bt, "claude.json")
+
+    def _sign_in(acct):
+        with open(_acct_file, "w", encoding="utf-8") as _f:
+            json.dump({"cachedUsageUtilization": {"accountUuid": acct, "fetchedAtMs": 1}}
+                      if acct else {"cachedUsageUtilization": {"fetchedAtMs": 1}}, _f)
+
+    _saved_acct_env = os.environ.get(CLAUDE_JSON_ENV)
+    os.environ[CLAUDE_JSON_ENV] = _acct_file
+    # ⚠ AND NO TOKEN VARIABLE FROM THE CALLER'S SHELL: with $ANTHROPIC_TOKEN exported, the label
+    # is (correctly) unknown and every burn fixture below reads as "no rate". Found by the
+    # round-2 review of 0.57.0. Popped here, restored with the config path at the end.
+    _saved_tok_env = os.environ.pop("ANTHROPIC_TOKEN", None)
+    _sign_in(_ACCT_A)
+    assert _current_account() == _ACCT_A
     # ⚠ burn_window_min 0 = the WHOLE window, which is what these fixtures were written
     # against. The trailing baseline gets its own block below rather than silently changing
     # what every case here means.
@@ -3764,7 +3857,7 @@ def selftest():
         with open(os.path.join(_blogs, HISTORY_PREFIX + "20200101-000000.jsonl"),
                   "w", encoding="utf-8") as _f:
             for _at, _pct in rows:
-                _f.write(json.dumps({"at": stamp(_at), "pct": _pct,
+                _f.write(json.dumps({"at": stamp(_at), "pct": _pct, "acct": _ACCT_A,
                                      "resets_at": stamp(resets)}) + chr(10))
 
     # ⚠ THE FIXTURE OPENS ITS WINDOW WHERE ITS FIRST ROW IS, at zero used, so the anchor is a
@@ -3881,7 +3974,7 @@ def selftest():
         with open(os.path.join(_tlogs, HISTORY_PREFIX + "20200101-000000.jsonl"),
                   "w", encoding="utf-8") as _f:
             for _at, _pct in rows:
-                _f.write(json.dumps({"at": stamp(_at), "pct": _pct,
+                _f.write(json.dumps({"at": stamp(_at), "pct": _pct, "acct": _ACCT_A,
                                      "resets_at": stamp(resets)}) + chr(10))
 
     # A window that opened 200 minutes ago, so the cut at 30 minutes is well inside it.
@@ -3988,6 +4081,151 @@ def selftest():
             json.dump({"burn_window_min": _v}, _f)
         assert config(_cdir)["burn_window_min"] == _want, (_v, config(_cdir))
     shutil.rmtree(_cdir, ignore_errors=True)
+
+    # ⛔⛔ THE COLLISION ITSELF, AS A FIXTURE - the check that would have caught the defect.
+    # Two accounts whose five-hour windows reset 0.08 s apart (stamp() rounds to the second,
+    # so resets_at cannot tell them apart at all), rows from BOTH in one file, and the rate
+    # must come from account A's rows alone. ⚠ A trailing baseline, not the whole window:
+    # with burn_window_min 0 the start is the anchor (opened, 0) and a foreign row cannot
+    # move the number, so the check could not discriminate. ⚠ And B's row is placed so the
+    # MIXED answer is a wrong NUMBER (3.5 %/min), not None - a None here would read like the
+    # "blank is acceptable" case below and the mutation check would be blind.
+    _cx = tempfile.mkdtemp(prefix="dg-acct-")
+    _cxlogs = os.path.join(_cx, "logs")
+    os.makedirs(_cxlogs)
+    _cxcfg = {"history_dir": _cxlogs, "burn_window_min": 10, "debug": {"token_usage": True}}
+    _cxnow = time.time()
+    _cxres = _cxnow + 100 * 60                     # A's window, opened 200 minutes ago
+    _cxres_b = _cxres + 0.08                       # B's window, 0.08 s later: one bucket
+
+    def _cxplant(rows):
+        for _f in glob.glob(os.path.join(_cxlogs, "*.jsonl")):
+            os.remove(_f)
+        with open(os.path.join(_cxlogs, HISTORY_PREFIX + "20200101-000000.jsonl"),
+                  "w", encoding="utf-8") as _f:
+            for _r in rows:
+                _f.write(json.dumps(_r) + chr(10))
+
+    def _cxrow(at, pct, acct, resets=None, label=True):
+        _d = {"at": stamp(at), "pct": pct, "resets_at": stamp(resets or _cxres)}
+        if label:
+            _d["acct"] = acct
+        return _d
+
+    _sign_in(_ACCT_A)
+    # A: 20% at -20 min, 30% at -11 min, live 40% now => 10 points in the last 10 minutes,
+    # 1.0 %/min. B: 5% at -10.5 min - the newest row at the cut if it were let in, and then
+    # the rate would read (40 - 5) / 10 = 3.5 %/min.
+    _mixed = [_cxrow(_cxnow - 20 * 60, 20, _ACCT_A), _cxrow(_cxnow - 11 * 60, 30, _ACCT_A),
+              _cxrow(_cxnow - 10 * 60 - 30, 5, _ACCT_B, _cxres_b)]
+    _cxplant(_mixed)
+    _cr = _burn_rate(_cx, _cxcfg, 40, _cxres, _cxnow)
+    assert _cr is not None, "account A has rows in the window and got no rate"
+    assert abs(_cr * 60 - 1.0) < 0.001, (
+        "rows from two accounts were mixed into one rate: got %.3f %%/min, expected 1.000 "
+        "from account A's rows alone (3.500 is the mixed answer)" % (_cr * 60))
+    # ⛔ AN UNLABELLED ROW IS DROPPED, not silently trusted: a legacy row, or one written
+    # while the account could not be read. Only unlabelled rows => nothing usable => blank.
+    _cxplant([_cxrow(_cxnow - 20 * 60, 20, None, label=False),
+              _cxrow(_cxnow - 11 * 60, 30, None)])
+    assert _burn_rate(_cx, _cxcfg, 40, _cxres, _cxnow) is None, "an unlabelled row was trusted"
+    # ...and an unlabelled row beside A's rows does not move A's answer either.
+    _cxplant(_mixed + [_cxrow(_cxnow - 10 * 60 - 10, 2, None, label=False)])
+    assert abs(_burn_rate(_cx, _cxcfg, 40, _cxres, _cxnow) * 60 - 1.0) < 0.001
+    # ⛔ A BLANK RATHER THAN A WRONG RATE when nothing usable survives: only B's rows with A
+    # signed in; A's rows with the current account UNKNOWN - field missing, file missing,
+    # file unreadable. None of these may guess.
+    _cxplant([_cxrow(_cxnow - 20 * 60, 20, _ACCT_B, _cxres_b),
+              _cxrow(_cxnow - 11 * 60, 30, _ACCT_B, _cxres_b)])
+    assert _burn_rate(_cx, _cxcfg, 40, _cxres, _cxnow) is None, "another account's rows gave a rate"
+    _cxplant(_mixed)
+    _sign_in(None)
+    assert _current_account() is None
+    assert _burn_rate(_cx, _cxcfg, 40, _cxres, _cxnow) is None, "unknown current account gave a rate"
+    os.remove(_acct_file)
+    assert _current_account() is None and _burn_rate(_cx, _cxcfg, 40, _cxres, _cxnow) is None
+    for _junk in ('{"cachedUsageUtilization": 5}', '{"cachedUsageUtilization": {"accountUuid": ""}}',
+                  '{"cachedUsageUtilization": {"accountUuid": 7}}', '[]', 'not json', ''):
+        with open(_acct_file, "w", encoding="utf-8") as _f:
+            _f.write(_junk)
+        assert _current_account() is None, _junk
+    _sign_in(_ACCT_A)
+    assert abs(_burn_rate(_cx, _cxcfg, 40, _cxres, _cxnow) * 60 - 1.0) < 0.001
+    # ⛔ $ANTHROPIC_TOKEN: the numbers come from the token's owner, whom the profile does not
+    # know, so the label is UNKNOWN - same answer _account_ids() gives, same reason. Found by
+    # the review of 0.57.0: without this the rows were labelled with an account that did not
+    # produce their numbers, and the filter kept every one of them.
+    _saved_tok = os.environ.get("ANTHROPIC_TOKEN")
+    os.environ["ANTHROPIC_TOKEN"] = "sk-not-a-real-token"
+    try:
+        assert _current_account() is None, "a label was read while $ANTHROPIC_TOKEN was set"
+        assert _burn_rate(_cx, _cxcfg, 40, _cxres, _cxnow) is None, (
+            "rows were kept under $ANTHROPIC_TOKEN, where the label cannot be trusted")
+        os.environ["ANTHROPIC_TOKEN"] = "   "
+        assert _current_account() == _ACCT_A, "a blank token variable hid the label"
+    finally:
+        if _saved_tok is None:
+            os.environ.pop("ANTHROPIC_TOKEN", None)
+        else:
+            os.environ["ANTHROPIC_TOKEN"] = _saved_tok
+    assert _current_account() == _ACCT_A
+
+    # ⭐ EVERY NEW ROW CARRIES THE LABEL, THE RECORD CARRIES IT TOO, AND A SWITCH IS SAID ONCE
+    # in the state-directory copy of the gate log - never for unknown -> known, never twice.
+    _cxcfg2 = dict(DEFAULTS)
+    _cxcfg2.update({"history_dir": _cxlogs, "burn_window_min": 10,
+                    "token_usage_file": os.path.join(_cx, "token_usage.json"),
+                    "debug": {"token_usage": True}})
+    _cxplant([])
+
+    def _cxrec(off, pct):
+        return {"ts": int((_cxnow + off) * 1000),
+                "five_hour": {"used_percentage": pct, "resets_at": int(_cxres)}}
+
+    def _cxprev():
+        return read_json(_cxcfg2["token_usage_file"], {})
+
+    def _cxsaid():
+        try:
+            with open(os.path.join(_cx, "dispatch_gate.log"), encoding="utf-8") as _f:
+                return _f.read()
+        except OSError:
+            return ""
+
+    _write_record(_cx, _cxcfg2, _cxrec(0, 10), None)
+    assert _cxprev().get("acct") == _ACCT_A, (
+        "the record does not carry the account label: %r" % (_cxprev(),))
+    _cxrows = [json.loads(_l) for _f in glob.glob(os.path.join(_cxlogs, "*.jsonl"))
+               for _l in open(_f, encoding="utf-8") if _l.strip()]
+    assert _cxrows and all(_r.get("acct") == _ACCT_A for _r in _cxrows), (
+        "a new history row does not carry the account label: %r" % (_cxrows,))
+    assert _cxsaid() == "", "a first record logged a switch"
+    _write_record(_cx, _cxcfg2, _cxrec(60, 11), _cxprev())        # same account: silent
+    assert _cxsaid() == "", _cxsaid()
+    _sign_in(_ACCT_B)
+    _write_record(_cx, _cxcfg2, _cxrec(120, 3), _cxprev())
+    assert _cxsaid().count("ACCOUNT-SWITCH") == 1 and "aaaaaaaa.. -> bbbbbbbb.." in _cxsaid(), _cxsaid()
+    assert _ACCT_A not in _cxsaid() and _ACCT_B not in _cxsaid(), "the whole id was logged"
+    _write_record(_cx, _cxcfg2, _cxrec(180, 4), _cxprev())        # still B: silent
+    assert _cxsaid().count("ACCOUNT-SWITCH") == 1, "a switch was logged twice"
+    _sign_in(None)
+    _write_record(_cx, _cxcfg2, _cxrec(240, 5), _cxprev())        # known -> unknown: silent
+    assert _cxprev().get("acct") is None
+    _sign_in(_ACCT_A)
+    _write_record(_cx, _cxcfg2, _cxrec(300, 6), _cxprev())        # unknown -> known: silent
+    assert _cxsaid().count("ACCOUNT-SWITCH") == 1, "unknown->known was logged as a switch"
+    _cxrows = [json.loads(_l) for _f in glob.glob(os.path.join(_cxlogs, "*.jsonl"))
+               for _l in open(_f, encoding="utf-8") if _l.strip()]
+    assert [_r.get("acct") for _r in _cxrows] == [_ACCT_A, _ACCT_A, _ACCT_B, _ACCT_B, None,
+                                                   _ACCT_A], _cxrows
+    shutil.rmtree(_cx, ignore_errors=True)
+
+    if _saved_acct_env is None:
+        os.environ.pop(CLAUDE_JSON_ENV, None)
+    else:
+        os.environ[CLAUDE_JSON_ENV] = _saved_acct_env
+    if _saved_tok_env is not None:
+        os.environ["ANTHROPIC_TOKEN"] = _saved_tok_env
     shutil.rmtree(_bt, ignore_errors=True)
 
     # ⛔ THE REDRAW IS ABSOLUTE, AND THAT IS THE WHOLE POINT. A relative climb (`\033[1A`)

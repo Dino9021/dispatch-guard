@@ -1282,7 +1282,8 @@ session 也可能同時有兩個寫入者。要保證一行都不漏，這個檔
 
 ```json
 {"at": "2026-08-26 13:29:31", "pct": 74.0, "resets_at": "2026-08-26 14:09:31",
- "sd_pct": 68.0, "sd_resets": "2026-08-30 17:29:31", "model": "Opus 5", "session": "oooooooo"}
+ "sd_pct": 68.0, "sd_resets": "2026-08-30 17:29:31", "model": "Opus 5", "session": "oooooooo",
+ "acct": "aaaaaaaa-0000-4000-8000-00000000000a"}
 ```
 
 ---
@@ -2885,7 +2886,8 @@ row is written only when a number actually moved.
 
 ```json
 {"at": "2026-08-26 13:29:31", "pct": 74.0, "resets_at": "2026-08-26 14:09:31",
- "sd_pct": 68.0, "sd_resets": "2026-08-30 17:29:31", "model": "Opus 5", "session": "oooooooo"}
+ "sd_pct": 68.0, "sd_resets": "2026-08-30 17:29:31", "model": "Opus 5", "session": "oooooooo",
+ "acct": "aaaaaaaa-0000-4000-8000-00000000000a"}
 ```
 
 ---

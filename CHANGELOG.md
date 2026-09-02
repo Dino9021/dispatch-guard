@@ -33,6 +33,50 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.57.0
+
+**燃燒率的歷史把兩個帳號混在一起，而事後沒有任何東西能把它們分開。** 2026-09-02 實測：
+兩個 Claude 帳號的五小時視窗重置時間只差 **0.081830 秒**，歷史篩選的容忍度是一秒
+（而且 `stamp()` 本來就四捨五入到秒），一列歷史又沒有記帳號 —— 所以兩個帳號的列落在同一個
+桶裡。當天的真實歷史已經混了：同一個五小時視窗裡的十三列，七日值出現三個不同的數字，
+這在單一帳號裡不可能發生。那次運氣好，新帳號的百分比比較高，所以速率看起來合理
+（畫面 0.600 %/min，切換後的列單獨算是 0.653）；反過來會變負數而安靜地變成 `--`，
+高很多則會顯示一個大而假的速率，沒有任何提示。
+
+- **每一列歷史現在多一個欄位 `acct`**：`~/.claude.json` 的 `cachedUsageUtilization.accountUuid`
+  —— 它就放在 Claude Code 自己快取的數字旁邊，所以不必問「現在是誰登入」。⚠ 只拿它當標籤，
+  永遠不拿它的數字（實測那個區塊的 `fetchedAtMs` 落後二十一分鐘）。讀不到就是 `null`，
+  不猜。⛔ `userID` 不是帳號 —— 同一台機器兩個帳號實測 `userID` 相同、`accountUuid` 不同，
+  它跟的是機器。
+- **`_burn_rate()` 拒絕混算**：一列只有在它的 `acct` 已知、目前帳號已知、而且兩者相等時才保留。
+  任一邊未知就丟掉。舊的列沒有 `acct`，所以會被丟掉 —— 這是正確的，不是退化。
+  ⚠ **接受空白**：切換帳號後，儀表最多 `burn_window_min`（預設 10 分鐘）顯示 `--`。
+  那是誠實的答案，比一個錯的數字好。不要拿沒標籤的列來墊 —— 那個墊法就是這個 bug。
+- **切換說一次**：`token_usage.json` 也記 `acct`；前後兩次抓取的帳號都已知且不同時，
+  在 state 目錄那份 `dispatch_gate.log` 寫一行 `ACCOUNT-SWITCH <前 8 碼>.. -> <前 8 碼>..`。
+  未知→已知不算切換，同一次切換不會寫兩次。否則空白的儀表跟壞掉的儀表在畫面上長得一樣。
+- 留下的檢查（`usage.py --selftest`）：那次碰撞本身做成 fixture —— 兩個帳號、重置差 0.08 秒、
+  兩邊的列在同一個檔案裡，速率必須只從 A 的列算出（A 單獨 1.000 %/min；混算會是 3.500，
+  是一個錯的數字而不是空白，所以突變檢查看得到）；沒標籤的列被丟掉；什麼都不剩時給空白而不是
+  錯數；每一列新寫入的都帶標籤；切換只記一次。拆掉帳號過濾後實測失敗於
+  `rows from two accounts were mixed into one rate: got 3.500 %/min, expected 1.000`；
+  拆掉寫 `acct` 那一行後實測失敗於「每一列新寫入的都帶標籤」那一項。
+- 「燒錄數字不進 GO / PACE / STOP」那條釘住的檢查照舊通過。
+- ⚠ 「最多空白 `burn_window_min` 分鐘」只對預設的**尾端基線**成立。`burn_window_min` 設 0
+  時（或任何視窗的前 `burn_window_min` 分鐘內），基線是視窗自己的起點 `(opened, 0)`，
+  不看任何一列，所以切換後照樣有數字 —— 對現在登入的帳號而言那是正確的，但不會空白。
+- ⚠ 這個修正看不到的東西：標籤只跟 Claude Code 自己寫入 `cachedUsageUtilization` 的時間一樣新
+  —— 在那次寫入之前抓到的數字會被貼上**前一個**帳號的標籤，而且會被保留、拉動前一個帳號的速率，
+  最多 `burn_window_min`（審查實測：一列這樣的資料把 B 的速率從 0.249 拉到 0.555 %/min）。
+  `$ANTHROPIC_TOKEN` 設定時，數字屬於 token 的主人而 profile 不認識他，所以標籤一律「未知」、
+  儀表在尾端基線上空白（與 `_account_ids()` 同一個決定；審查第一輪找到的阻斷項，本版已修）。
+  `CLAUDE_CONFIG_DIR` 設定時，標籤跟著它走而憑證檔路徑寫死在 `~/.claude/`，兩者可能來自不同
+  profile（既有問題，本版只點名）。舊的歷史列永遠不會有 `acct`，不會被修補（owner 決定）；
+  Fable / scoped-window 的邏輯完全沒動（owner 於 2026-09-02 接受目前行為）。
+- README（兩種語言）的歷史列範例多了 `acct`。
+
+---
+
 ## 0.56.2
 
 **0.56.1 那段「指名佔位者」的拒絕訊息，本身可以讓拒絕消失。** 0.56.1 的審查
@@ -2004,6 +2048,62 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.57.0
+
+**The burn-rate history mixed two accounts, and nothing afterwards could tell them apart.**
+Measured 2026-09-02: two Claude accounts' five-hour windows reset **0.081830 s** apart, the
+history filter's tolerance is one second (and `stamp()` rounds to the second anyway), and a
+history row recorded no account - so rows from both accounts landed in one bucket. The live
+history was already mixed that day: thirteen rows in one five-hour window whose seven-day value
+took three different numbers, which one account cannot do. It was lucky: the new account sat
+HIGHER, so the rate stayed plausible (0.600 %/min shown, 0.653 from the post-switch rows
+alone); lower would have gone negative and silently blanked the gauge, much higher would have
+shown a large false rate with nothing saying so.
+
+- **Every history row now carries `acct`**: `cachedUsageUtilization.accountUuid` from
+  `~/.claude.json` - it sits beside the numbers Claude Code cached itself, so nothing has to ask
+  "who is signed in". ⚠ A label only, never the numbers (that block's `fetchedAtMs` measured
+  twenty-one minutes stale). Unreadable is `null`, never a guess. ⛔ `userID` is NOT the
+  account - same machine, two accounts: `userID` identical, `accountUuid` different. It tracks
+  the machine.
+- **`_burn_rate()` refuses to mix**: a row is kept only when its `acct` is known, the current
+  account is known, and they are equal. Unknown on either side drops the row. Legacy rows have
+  no `acct` and are dropped - correct, not a regression. ⚠ **The blank is accepted**: after a
+  switch the gauge reads `--` for up to `burn_window_min` (10 minutes by default). That is the
+  honest answer and it beats a wrong number. It is not softened by falling back to unlabelled
+  rows - that fallback IS the bug.
+- **A switch is said once**: `token_usage.json` carries `acct` too, and when two consecutive
+  fetches have KNOWN, DIFFERENT ids one line `ACCOUNT-SWITCH <8>.. -> <8>..` goes to the
+  state-directory `dispatch_gate.log`. Unknown → known is not a switch; one switch is one line.
+  Otherwise a blank gauge and a broken gauge look the same on screen.
+- Checks left behind (`usage.py --selftest`): the collision itself as a fixture - two accounts,
+  resets 0.08 s apart, rows from both in one file, the rate computed from A's rows only (A alone
+  1.000 %/min; mixed would be 3.500, a wrong NUMBER rather than a blank so the mutation check can
+  see it); an unlabelled row is dropped; a blank rather than a wrong rate when nothing usable
+  survives; every new row is labelled; a switch is logged once. Mutation-checked: with the
+  account filter removed it fails at `rows from two accounts were mixed into one rate: got 3.500
+  %/min, expected 1.000`; with the `acct` write removed it fails at "every new row carries the
+  label".
+- The pinned check "no burn figure reaches GO / PACE / STOP" still passes unchanged.
+- ⚠ "`--` for up to `burn_window_min`" holds for the default **trailing baseline** only. With
+  `burn_window_min` 0 (or inside the first `burn_window_min` minutes of any window) the baseline
+  is the window's own start `(opened, 0)` and no row is consulted, so a switch shows a number:
+  correct for the account signed in now, but not a blank.
+- ⚠ What this fix cannot see: the label is only as fresh as Claude Code's own write of
+  `cachedUsageUtilization` - a fetch made before that write is labelled with the PREVIOUS
+  account, is kept, and can move that account's rate for up to `burn_window_min` (the review
+  measured one such row moving B's rate 0.249 → 0.555 %/min). With `$ANTHROPIC_TOKEN` set the
+  numbers belong to the token's owner, whom the profile does not know, so the label is
+  "unknown" and the gauge blank on the trailing baseline (the same decision `_account_ids()` makes; the review's one
+  BLOCKING finding, fixed in this version). Under `CLAUDE_CONFIG_DIR` the label follows it while
+  the credentials path is fixed at `~/.claude/`, so the two can come from different profiles
+  (pre-existing; named here, not changed). Old history rows never gain an `acct` and are not
+  repaired (owner's decision); the Fable / scoped-window logic is untouched (owner accepted the
+  current behaviour 2026-09-02).
+- README (both languages): the example history row shows `acct`.
 
 ---
 
