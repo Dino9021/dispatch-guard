@@ -1626,6 +1626,31 @@ def case_arm_on_stop(gate, sdir, root):
     # ...and an unrelated Write records nothing.
     wrote(os.path.join(root, "README.md"))
     assert gate.handoffs_written(sdir, sid) == [folder, older]
+    # ⛔ A BASH COMMAND THAT ONLY READS OR MENTIONS THE FILE RECORDS NOTHING. The round-2 review
+    # measured the first rule ("HANDOFF.md anywhere and a `>` anywhere") recording a folder from
+    # each of these - and one Stop then armed a finished task. Only a path that immediately
+    # follows `>` or `>>` is a write.
+    ppath = os.path.join(pdir, "HANDOFF.md").replace("\\", "/")
+    for cmd in ("cat %s 2>&1" % ppath,
+                "cat %s > /dev/null" % ppath,
+                "grep -n '>' %s" % ppath,
+                "echo 'see %s' >> notes.txt" % ppath,
+                "printf 'x' > %s.bak" % ppath,
+                "T=%s; printf 'x' > \"$T/HANDOFF.md\"" % pdir.replace("\\", "/")):
+        del spawned[:]
+        gated({"hook_event_name": "PostToolUse", "tool_name": "Bash", "cwd": root,
+               "session_id": sid, "tool_input": {"command": cmd}, "tool_response": {}})
+        assert gate.handoffs_written(sdir, sid) == [folder, older], (
+            "a Bash command that does not write HANDOFF.md was recorded as writing it: %r -> %r"
+            % (cmd, gate.handoffs_written(sdir, sid)))
+    # ...while the quoted and heredoc write shapes still record.
+    for cmd in ("cat <<EOF >> \"%s\"\nx\nEOF" % ppath, "printf 'x' >>%s" % ppath):
+        gated({"hook_event_name": "PostToolUse", "tool_name": "Bash", "cwd": root,
+               "session_id": sid, "tool_input": {"command": cmd}, "tool_response": {}})
+    assert gate.handoffs_written(sdir, sid) == [folder, older, pulled], gate.handoffs_written(sdir, sid)
+    # put the record back to the two real writes: the pulled folder is the "never written" case
+    with open(seen, "w", encoding="utf-8") as f:
+        f.write(folder + "\n" + older + "\n")
 
     # ⭐ GO: nothing armed, nothing said.
     usage_at(10)

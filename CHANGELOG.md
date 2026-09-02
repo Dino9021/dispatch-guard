@@ -33,6 +33,25 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.58.1
+
+**0.58.0 的 Bash 判斷把「讀」當成「寫」。** 第二輪程式碼審查透過真正的 hook 行程量到：
+「指令裡有 `HANDOFF.md`、也有 `>`」這條規則會把 `cat …/HANDOFF.md 2>&1`、`> /dev/null`、
+grep 樣式裡的 `>`、heredoc 裡的一句話全部記成「本 session 寫過那個資料夾」—— 於是一次 PACE 的
+`Stop` 又安排了一個已完成的任務（與 mtime 那個洞同一種失敗，門變窄了而已）。連本 session 自己的
+`state/<sid>.handoff-written` 也被審查者報告裡的 heredoc 塞進一個假資料夾名。
+
+- Bash 的規則改為：`>` 或 `>>`、可有空白與一個引號、**緊接著**以 `HANDOFF.md` 結尾的路徑。
+  `test_guards.py` 對六種「讀 / 提及 / 變數」的形狀斷言不記錄，對引號與 heredoc 的寫入形狀斷言記錄；
+  突變（放回舊規則）實測失敗於「a Bash command that does not write HANDOFF.md was recorded」。
+- GO 的 prompt 取消鬧鐘時，那行「已取消」現在也送到畫面（`systemMessage`）；0.58.0 只給了模型看。
+- `state/<sid>.warned` 與 `state/<sid>.handoff-written` 現在與 `.start` 一樣按時間清理；以前永遠不清。
+- 文件：PROTOCOL 缺口列、ADR ⟨R2b⟩、一段過期註解。
+- ⚠ 仍然看得到的殘餘：記錄的是資料夾**名稱**，另一棵樹裡同名的資料夾、`HANDOFF.md.bak`，都能
+  滿足它；ADR 有點名，未關閉。
+
+---
+
 ## 0.58.0
 
 **續跑（resume）改由 hook 在回合結束時安排，不再靠 agent 記得。** 2026-09-02 下午，兩台開發機、
@@ -2094,6 +2113,29 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.58.1
+
+**0.58.0's Bash rule counted a READ as a write.** The round-2 code review measured it through
+the real hook process: "the command contains `HANDOFF.md` and a `>` anywhere" recorded a folder
+from `cat …/HANDOFF.md 2>&1`, from `> /dev/null`, from a `>` inside a grep pattern and from a
+sentence in a heredoc - and one Stop at PACE armed a finished task again (the mtime failure
+through a narrower door). The live 0.58.0 gate on the reviewer's own session recorded a fake
+folder name from a heredoc in its report.
+
+- The Bash rule is now: `>` or `>>`, optional spaces and one quote, then IMMEDIATELY a path
+  ending in `HANDOFF.md`. `test_guards.py` asserts six read / mention / variable shapes record
+  nothing and the quoted and heredoc write shapes record; the mutation (old rule restored) fails
+  at "a Bash command that does not write HANDOFF.md was recorded".
+- When a GO prompt cancels the alarm, the CANCELLED line now reaches the screen
+  (`systemMessage`); 0.58.0 gave it to the model only.
+- `state/<sid>.warned` and `state/<sid>.handoff-written` are pruned by age like `.start`; they
+  never were.
+- Docs: the PROTOCOL gaps row, ADR ⟨R2b⟩, one stale comment.
+- ⚠ Residual, named and not closed: the record holds a folder NAME, so a same-named folder in
+  another tree or `HANDOFF.md.bak` can satisfy it.
 
 ---
 

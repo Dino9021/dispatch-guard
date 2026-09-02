@@ -2000,14 +2000,19 @@ def note_handoff_write(sdir, cfg, session_id, tool, tool_input):
     if tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
         text = str((tool_input or {}).get("file_path") or "")
     elif tool == "Bash":
+        # ⛔ ONLY A PATH THAT IMMEDIATELY FOLLOWS A REDIRECT COUNTS. The first rule was
+        # "HANDOFF.md anywhere and a `>` anywhere", and the round-2 review measured it
+        # recording a folder from `cat .../HANDOFF.md 2>&1`, from `> /dev/null`, from a `>`
+        # inside a grep pattern and from prose in a heredoc - one Stop then armed a finished
+        # task. `>` or `>>`, optional spaces and one quote, then the path, ending in HANDOFF.md.
         cmd = str((tool_input or {}).get("command") or "")
-        if HANDOFF in cmd and ">" in cmd:
-            text = cmd
+        text = " ".join(re.findall(r">>?\s*[\"']?(\S+?" + re.escape(HANDOFF) + r")(?=[\"'\s;&|)]|$)",
+                                   cmd))
     if HANDOFF not in text:
         return
     tr = str(cfg["task_root"]).replace("\\", "/")
-    names = re.findall(re.escape(tr) + r"/([A-Za-z0-9._-]+)/" + re.escape(HANDOFF),
-                       text.replace("\\", "/"))
+    names = re.findall(re.escape(tr) + r"/([A-Za-z0-9._-]+)/" + re.escape(HANDOFF)
+                       + r"(?=[\"'\s;&|)]|$)", text.replace("\\", "/"))
     have = handoffs_written(sdir, session_id)
     new = [n for n in dict.fromkeys(names) if n not in have]
     if not new:
@@ -2400,6 +2405,17 @@ def prune_state(sdir):
             removed += 1
         except OSError:
             pass
+    # .warned and .handoff-written - per-session records, by the same age as .start. ⚠ Found
+    # by the round-2 review of 0.58.0: neither was ever pruned - one tiny file per session, and
+    # the handoff record names a path.
+    for pattern in ("*.warned", "*." + HANDOFF_SEEN):
+        for path in glob.glob(os.path.join(sdir, "state", pattern)):
+            try:
+                if os.path.getmtime(path) < time.time() - STATE_KEEP_START_DAYS * 86400:
+                    os.remove(path)
+                    removed += 1
+            except OSError:
+                pass
     # .start - by age only, never by count
     cutoff = time.time() - STATE_KEEP_START_DAYS * 86400
     for path in glob.glob(os.path.join(sdir, "state", "*.start")):
@@ -2481,11 +2497,11 @@ def stand_down_resume(root, sdir, v):
     log(root, "STAND-DOWN %s the resume armed for %s (verdict %s)"
               % ("cancelled" if cancelled else "FAILED to cancel", when, v["verdict"]))
     if cancelled:
-        # ⛔ AND THE SPAWN FLOOR GOES WITH IT. A prompt at PACE cancels the resume the last
-        # turn end armed - correctly, the person is back - but the 300 s floor then blocked
-        # the re-arm at the NEXT turn end, so a PACE session closed inside five minutes ended
-        # unarmed: the incident again, one layer down. The floor exists for a machine that
-        # CANNOT arm; a cancel is proof this one can. ADR 20260902-142400, decision 6.
+        # ⛔ AND THE SPAWN FLOOR GOES WITH IT. A GO prompt cancels the resume the last turn
+        # end armed - the window reopened, the person is back - and without this the 300 s
+        # floor blocked the re-arm at the next PACE turn end when the window closed again
+        # inside five minutes. The floor exists for a machine that CANNOT arm; a cancel is
+        # proof this one can. ADR 20260902-142400, decision 6 (PACE itself keeps the alarm).
         try:
             os.remove(os.path.join(sdir, ARM_MARK))
         except OSError:
@@ -2635,8 +2651,11 @@ def on_user_prompt(payload, root, sdir, cfg):
     note = stand_down_resume(root, sdir, v)
     if v["verdict"] not in ("PACE", "STOP"):
         if note:
+            # ⭐ ON THE SCREEN TOO. A cancelled alarm is a fact the PERSON needs - "nothing
+            # will wake later" - and the round-2 review of 0.58.0 measured this branch putting
+            # it into additionalContext only, where only the model could read it.
             context_note(payload.get("hook_event_name", "UserPromptSubmit"),
-                         "[usage]" + note)
+                         "[usage]" + note, systemMessage=note.strip())
         return
     sid = payload.get("session_id")
     # ⭐ ARM HERE TOO, on every PACE/STOP prompt and BEFORE the once-per-level return: a handoff
