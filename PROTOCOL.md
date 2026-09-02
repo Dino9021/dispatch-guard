@@ -39,7 +39,7 @@ an inferred one. Only a literal count in an owner message is an approval.
 
 | behaviour | mechanism |
 |---|---|
-| (N+1)th concurrent sub-task refused | N atomic `O_CREAT\|O_EXCL` slot claims, released on `PostToolUse` |
+| (N+1)th concurrent sub-task refused | N atomic `O_CREAT\|O_EXCL` slot claims, released on `PostToolUse` — **and on `PostToolUseFailure`**, which is the event a FAILED tool call fires instead (measured against Claude Code 2.1.251: same `tool_use_id`, and `PostToolUse` never arrives). ⚠ A dispatch that dies with no event at all — the whole turn lost to an API error — keeps its slot until `slot_ttl_min` (default 30) reclaims it, and until then the refusal reads exactly like the rule working. ⭐ So the refusal names every holder, its age, and the minute it clears itself: the answer is to wait, never to delete a slot file |
 | background dispatch refused | `run_in_background` in the tool input |
 | dispatch before a plan was written this session refused | newest `prompts*.md` vs session start stamp |
 | mass-spawn tools refused | deny by tool name |

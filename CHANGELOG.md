@@ -33,6 +33,35 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.56.1
+
+**「已經有 1 個 sub-task 在跑」現在會說出那是誰、跑多久了、幾點自動放掉。**
+2026-09-02 在另一台開發機量到：第一次派工被 API 529 打死，`PostToolUse` 沒發生，
+那個位子沒被釋放；之後每一次派工都被拒絕；`ListAgents` 顯示零個 agent 活著；
+那個 session 判斷紀錄是假的 —— 判斷正確 —— 然後**手動刪掉本外掛自己的強制狀態檔**。
+
+那個位子本來 30 分鐘後（`slot_ttl_min`）會自己被回收，但拒絕訊息從來沒說過這件事。
+⇒ **一個看不到盡頭的等待，讀起來就是一個壞掉的 gate。**
+
+- 拒絕訊息現在逐行列出每一個被佔用的位子：desc、派出去的時間、已經過幾分鐘、
+  以及「幾點會自動回收」的實際時鐘時間。
+- 訊息明講：如果那個派工已經死了，這裡不是卡住，等到那一分鐘再派一次就好；
+  ⛔ **不要為了繞過這個拒絕去刪 slot 檔** —— 刪到一個還活著的，同一個位子會被發兩次。
+- ⭐ **而且根因不只是訊息：失敗的工具呼叫發的是 `PostToolUseFailure`，不是 `PostToolUse`。**
+  外掛以前只訂閱後者，所以**每一個失敗的派工**都會佔著位子直到 30 分鐘 TTL 到期 ——
+  不只是被回報的那個 529。2026-09-02 對 Claude Code 2.1.251 實測：一個會失敗的 Bash 呼叫
+  只發出 `PreToolUse` 與 `PostToolUseFailure`，兩者帶同一個 `tool_use_id`，
+  `PostToolUse` 完全沒有出現。
+  ⇒ `hooks.json` 現在訂閱 `PostToolUseFailure`，gate 在那個事件上釋放位子，
+  並在 `progress.md` 記一行 `FAILED: <錯誤訊息>`。
+- ⚠ 剩下的缺口寫清楚：如果整個 turn 死掉（API 錯誤打死的是父 session，不是那個工具呼叫），
+  沒有任何事件會發出來，那個位子仍然要等 `slot_ttl_min`。這正是上面那段拒絕訊息在講的情況。
+- 新增檢查 `Tools/Debug/test_slot_lifecycle.py`（進 `test_all.py`，現在 12 項）：
+  用真正的子行程跑一遍 allow → 被佔用 → 拒絕時指名 → 失敗時釋放 → 再次 allow。
+- 回收機制、TTL、原子佔位都和以前一樣。
+
+---
+
 ## 0.56.0
 
 **三輪審查通過的那份 ADR，進實作了。** 中心判斷：提醒是建議，模型可以忽略，
@@ -1917,6 +1946,40 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.56.1
+
+**"1 sub-task is already in flight" now says which one, how old it is, and when it clears.**
+Measured 2026-09-02 on another machine: the first dispatch died to an API 529, its
+`PostToolUse` never ran, so its slot was never released; every later dispatch was refused;
+`ListAgents` showed ZERO agents alive; and the session - reading the record as stale, which
+it was - **deleted this plugin's own enforcement state by hand.**
+
+That slot would have been reclaimed on its own after 30 minutes (`slot_ttl_min`), but the
+refusal never said so. ⇒ **A wait with no visible end reads as a broken gate.**
+
+- The refusal now lists every held slot: its description, the time it was dispatched, its age
+  in minutes, and the wall-clock minute the gate reclaims it.
+- It says plainly that a dead dispatch is not stuck - wait for that minute and dispatch again
+  - and ⛔ **never delete a slot file to get past the refusal**: deleting a live one hands the
+  same slot to two dispatches.
+- ⭐ **And the root cause was not only the wording: a FAILED tool call fires
+  `PostToolUseFailure`, not `PostToolUse`.** The plugin subscribed only to the latter, so
+  **every failed dispatch** held its slot for the full 30-minute TTL - not just the reported
+  529. Measured 2026-09-02 against Claude Code 2.1.251 with a probe hook: one failing Bash
+  call produced `PreToolUse` and `PostToolUseFailure` carrying the SAME `tool_use_id`, and no
+  `PostToolUse` at all.
+  ⇒ `hooks.json` now subscribes to `PostToolUseFailure`; the gate releases the slot on it and
+  writes one `FAILED: <error>` row to `progress.md`.
+- ⚠ The remaining gap, stated: if the whole turn dies (the API error kills the parent session
+  rather than the tool call), no event fires and the slot waits out `slot_ttl_min`. That is
+  the case the refusal text above is for.
+- New check `Tools/Debug/test_slot_lifecycle.py`, wired into `test_all.py` (now 12): it drives
+  the gate as real subprocesses through allow → held → refused BY NAME → released on failure →
+  allowed again.
+- The reclaim, the TTL and the atomic claim are unchanged.
 
 ---
 

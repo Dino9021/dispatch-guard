@@ -40,6 +40,10 @@ CHECKS = [
     ("install",       [os.path.join(DEBUG_DIR, "test_install.py")]),
     ("resume cancel", [os.path.join(DEBUG_DIR, "test_resume_cancel.py")]),
     ("cmd guards",    [os.path.join(DEBUG_DIR, "test_guards.py")]),
+    # ⚠ Drives the gate as a SUBPROCESS through allow / refuse / release. The defect it
+    # covers lived in the event wiring, not in any function: every unit involved passed
+    # while a failed dispatch held its slot for half an hour.
+    ("slot lifecycle", [os.path.join(DEBUG_DIR, "test_slot_lifecycle.py")]),
     ("usage debug dump", [os.path.join(DEBUG_DIR, "test_usage_debug_dump.py")]),
     # ⚠ Runs the watch LOOP for a few seconds and counts what comes out. The defect it
     # covers - an idle watcher redrawing a too-wide line for ever - cannot be seen from a

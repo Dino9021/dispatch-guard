@@ -2049,6 +2049,42 @@ def claim_slot(root, sdir, cfg, session_id, slots, tool_use_id, folder=None, des
     return False
 
 
+def held_slots_note(sdir, cfg, session_id, slots):
+    """One line per held slot: what holds it, how old it is, and the minute it self-clears.
+
+    ⛔ A REFUSAL THAT NAMES NOTHING GETS THE STATE FILE DELETED. Measured 2026-09-02 on
+    another machine: the first dispatch died to an API 529 before its PostToolUse, so its
+    slot was never released; every later dispatch was refused with "1 sub-task already in
+    flight"; `ListAgents` showed ZERO agents alive; and the session - correctly reading the
+    record as stale - removed this plugin's own enforcement state by hand. The slot would
+    have been reclaimed on its own (claim_slot, slot_ttl_min), but the refusal never said
+    so, and a wait nobody can see the end of looks like a broken gate.
+    ⇒ Say who holds it and when the clock runs out, so the answer is "wait" and never "edit
+    the enforcement state".
+    """
+    lines = []
+    for i in range(slots):
+        p = state_path(sdir, session_id, "slot%d" % i)
+        try:
+            started = os.path.getmtime(p)
+            with open(p, encoding="utf-8") as f:
+                raw = f.read().strip()
+        except OSError:
+            continue                       # free, or unreadable - either way not a holder
+        try:
+            held = json.loads(raw)
+        except Exception:
+            held = {}                      # an older version's slot: age still reads true
+        lines.append("  slot%d: %s - dispatched %s (%.0f min ago), reclaimed automatically "
+                     "at %s if it never returns"
+                     % (i, held.get("desc") or "(unnamed)",
+                        time.strftime("%H:%M", time.localtime(started)),
+                        (time.time() - started) / 60.0,
+                        time.strftime("%H:%M", time.localtime(
+                            started + cfg["slot_ttl_min"] * 60))))
+    return "\n".join(lines)
+
+
 def release_slot(sdir, cfg, session_id, tool_use_id):
     """Free this dispatch's slot.
 
@@ -2644,7 +2680,16 @@ def on_pre_agent(payload, root, sdir, cfg, wind=None):
                     "the owner approved. Dispatch one at a time - that needs no "
                     "permission. To raise the limit, ask the owner; when they answer with "
                     "a count, record it as %s/<task>/PARALLEL-APPROVED containing that "
-                    "number in the form 'parallel N'." % (slots, cfg["task_root"]))
+                    "number in the form 'parallel N'.\n\n%s\n\n"
+                    "⚠ If one of those dispatches DIED without returning - an API error, "
+                    "an interrupt, a killed process - it still holds its slot, and this "
+                    "refusal looks exactly like the rule working. It is not stuck: the "
+                    "gate reclaims that slot by itself at the time shown above. Wait for "
+                    "that minute and dispatch again, or do the work in this session "
+                    "meanwhile. ⛔ Do NOT delete a slot file to get past this refusal. It "
+                    "is this plugin's enforcement state, deleting a LIVE one hands the "
+                    "same slot to two dispatches, and the wait it saves is minutes."
+                    % (slots, cfg["task_root"], held_slots_note(sdir, cfg, sid, slots)))
         return
 
     log(root, "ALLOW(slots=%d) %s" % (slots, desc))
@@ -2689,6 +2734,28 @@ def main():
         return on_session_start(payload, root, sdir, cfg)
     if event == "UserPromptSubmit":
         return on_user_prompt(payload, root, sdir, cfg)
+
+    # ⛔ A TOOL CALL THAT FAILS FIRES PostToolUseFailure, AND PostToolUse NEVER RUNS. So
+    # until this branch existed, EVERY failed dispatch kept its slot for the full
+    # slot_ttl_min - not only the API-error case that was reported. Measured 2026-09-02
+    # against Claude Code 2.1.251, one failing Bash call through a probe hook: PreToolUse
+    # and PostToolUseFailure both arrived, carrying the SAME tool_use_id, and PostToolUse
+    # did not arrive at all.
+    # ⚠ IT RETURNS SILENTLY. Releasing the slot is all this event is used for; a hook that
+    # prints on an event whose output contract is not needed here can only cost.
+    if event == "PostToolUseFailure":
+        if tool == "Agent":
+            err = " ".join(str(payload.get("error") or "no error text").split())[:200]
+            result = release_slot(sdir, cfg, sid, payload.get("tool_use_id"))
+            if isinstance(result, dict):
+                log(root, "RELEASE(dispatch failed) %s" % err)
+                record_progress(root, cfg, result.get("folder"), result.get("desc"),
+                                result.get("at"), "FAILED: %s" % err)
+            else:
+                # ⛔ SAID OUT LOUD. "No slot was held" and "the release did not run" must
+                # not look the same in the log - that is the whole shape of this defect.
+                log(root, "RELEASE-MISS(dispatch failed, no slot held) %s" % err)
+        return
 
     # ⛔ ULTRACODE IS REFUSED BEFORE ANY OTHER CHECK, and for every tool - not only Agent.
     # `effort` rides on the tool-use payload and nowhere else (see effort_level), so this is
@@ -3112,6 +3179,9 @@ def selftest():
     assert "winding down" in src, "the acknowledgement line was dropped"
     src2 = inspect.getsource(on_pre_agent)
     assert "systemMessage=" in src2, "a refused dispatch no longer speaks to the user"
+    # ⛔ AND A FULL-SLOTS REFUSAL MUST CARRY THE HOLDER AND ITS CLOCK. The function exists
+    # and passes its own check even when nothing calls it; this is the wiring.
+    assert "held_slots_note(" in src2, "the full-slots refusal names nothing again"
     # ⚠ And the emitters must actually put it in the JSON, or the calls above are decoration.
     import io as _io2, json as _json2, contextlib
     for fn, kw in ((context_note, {"systemMessage": "SEEN"}),
@@ -3142,6 +3212,31 @@ def selftest():
             assert (not same) is speaks, verdict
         # ⚠ and it is keyed by SESSION: another session has no mark and must be told.
         assert not os.path.exists(state_path(sd, "s2", "warned"))
+
+    # ⛔ THE SLOT HOLDS, THE SLOT CLEARS ITSELF, AND THE REFUSAL SAYS BOTH. A dispatch that
+    # dies before its PostToolUse keeps its slot, and the only thing between that and a
+    # session editing this plugin's enforcement state by hand is a refusal that names the
+    # holder and the minute the clock runs out. Measured 2026-09-02: another machine lost a
+    # dispatch to an API 529 and deleted the slot file for want of those two facts.
+    with tempfile.TemporaryDirectory() as sd:
+        cfg_s = dict(DEFAULTS)
+        held = state_path(sd, "s1", "slot0")
+        assert claim_slot(sd, sd, cfg_s, "s1", 1, "tool_A", "F", "round 1 review")
+        assert not claim_slot(sd, sd, cfg_s, "s1", 1, "tool_B", "F", "round 2"), \
+            "one slot was handed to two dispatches"
+        note = held_slots_note(sd, cfg_s, "s1", 1)
+        assert "round 1 review" in note, note
+        assert re.search(r"reclaimed automatically at \d\d:\d\d", note), note
+        # ⛔ AND THE CLOCK MUST ACTUALLY TICK. Age the slot past slot_ttl_min: the next claim
+        # takes it. Without this the refusal promises a reclaim that never happens, which is
+        # the promise that makes waiting reasonable.
+        old = time.time() - (cfg_s["slot_ttl_min"] * 60 + 60)
+        os.utime(held, (old, old))
+        assert claim_slot(sd, sd, cfg_s, "s1", 1, "tool_C", "F", "after the wait"), \
+            "a slot older than slot_ttl_min was never reclaimed"
+        assert "after the wait" in held_slots_note(sd, cfg_s, "s1", 1)
+        assert release_slot(sd, cfg_s, "s1", "tool_C"), "release_slot found no slot"
+        assert held_slots_note(sd, cfg_s, "s1", 1) == "", "a released slot still reads held"
 
     # ⛔ ULTRACODE IS REFUSED, EVERY TOOL, EVERY CALL. max and below proceed. This is the
     # rule the owner asked to be hard rather than advisory: ultracode re-states its workflow
