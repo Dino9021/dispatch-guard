@@ -1497,6 +1497,270 @@ def case_unpushed(gate, sdir, root):
     print("ok - unpushed commits reported, a missing upstream stays quiet")
 
 
+def case_arm_on_stop(gate, sdir, root):
+    """⛔ THE ARM RUNS WHEN THE TURN ENDS, not only when a dispatch is attempted.
+
+    Measured 2026-09-02 on two machines: the session that dispatched a reviewer after writing
+    its HANDOFF.md was armed (the arm lived on the Agent PreToolUse path); the session that
+    obeyed PACE - no new wave - wrote its handoff, dispatched nothing more, and ended unarmed.
+    Its agent confirmed the manual `resume.py --arm` was forgotten. ⇒ `Stop` and every
+    PACE/STOP prompt now arm for the freshest HANDOFF.md THIS session wrote.
+
+    ⛔ "THIS SESSION WROTE" IS RECORDED, NOT INFERRED FROM A CLOCK. The first version used
+    mtime ≥ the session stamp, and the code review measured `git checkout` handing every
+    tracked HANDOFF.md mtime=now: one Stop armed a FINISHED task's folder. Now the gate records
+    the folder from the Write/Edit/Bash PostToolUse payload, and only recorded folders are
+    candidates.
+
+    ⛔ NOTHING HERE REGISTERS OR DELETES A REAL OS TASK: `subprocess.Popen` is a recorder and
+    `resume.do_cancel` is replaced for the stand-down step. ADR: Memory/tasks/
+    20260902-142400-auto-arm-on-stop/ADR.md.
+    """
+    import json as _json
+    import time as _time
+    sid = "s-stoparm"
+    folder = "20260902-150000-stop-arm-case"
+    older = "20260902-140000-stop-arm-older"
+    pulled = "20260902-170000-pulled-finished-task"
+    tdir = os.path.join(root, "Memory", "tasks", folder)
+    odir = os.path.join(root, "Memory", "tasks", older)
+    pdir = os.path.join(root, "Memory", "tasks", pulled)
+    for d in (tdir, odir, pdir):
+        os.makedirs(d, exist_ok=True)
+    now = _time.time()
+    r5, r7 = now + 2 * 3600, now + 3 * 86400
+    spawned = []
+
+    class _Rec(object):
+        def __init__(self, argv, **kw):
+            spawned.append(list(argv))
+
+    def usage_at(p5, p7=10):
+        with open(os.path.join(sdir, "token_usage.json"), "w", encoding="utf-8") as f:
+            _json.dump({"ts": int(_time.time() * 1000),
+                        "five_hour": {"used_percentage": p5, "resets_at": int(r5)},
+                        "seven_day": {"used_percentage": p7, "resets_at": int(r7)}}, f)
+
+    def level():
+        return gate.usage.verdict(sdir, gate.usage.config(sdir))["verdict"]
+
+    def armed(**state):
+        path = os.path.join(sdir, "resume.json")
+        if state:
+            with open(path, "w", encoding="utf-8") as f:
+                _json.dump(state, f)
+        elif os.path.exists(path):
+            os.remove(path)
+
+    def handoff(d, text, when=None):
+        p = os.path.join(d, "HANDOFF.md")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(text)
+        if when is not None:
+            os.utime(p, (when, when))
+
+    def gated(payload):
+        keep = gate.subprocess.Popen
+        gate.subprocess.Popen = _Rec
+        try:
+            return run_gate(gate, payload)
+        finally:
+            gate.subprocess.Popen = keep
+
+    def fire(event, clear_floor=True, cwd=None):
+        del spawned[:]
+        mark = os.path.join(sdir, gate.ARM_MARK)
+        if clear_floor and os.path.exists(mark):
+            os.remove(mark)
+        payload = {"hook_event_name": event, "cwd": cwd or root, "session_id": sid}
+        if event == "Stop":
+            payload["stop_hook_active"] = False
+        else:
+            payload["prompt"] = "hello"
+        return gated(payload)
+
+    def wrote(path, tool="Write"):
+        """The PostToolUse the harness sends after the file tool wrote `path`."""
+        del spawned[:]
+        if tool == "Bash":
+            ti = {"command": "printf 'x' > %s" % path.replace("\\", "/")}
+        else:
+            ti = {"file_path": path, "content": "..."}
+        return gated({"hook_event_name": "PostToolUse", "tool_name": tool, "cwd": root,
+                      "session_id": sid, "tool_input": ti, "tool_response": {}})
+
+    def said(result):
+        return (result or {}).get("systemMessage", "") if isinstance(result, dict) else ""
+
+    seen = gate.state_path(sdir, sid, gate.HANDOFF_SEEN)
+    if os.path.exists(seen):
+        os.remove(seen)
+    stamp_session(gate, sdir, sid)
+    _time.sleep(1.1)
+    armed()
+
+    # ⛔ THE PULL. A HANDOFF.md that is fresh by mtime but that this session never wrote -
+    # `git checkout` gives every tracked file mtime=now - is NOT a candidate. Nothing recorded,
+    # nothing armed, and the log says what was missing.
+    handoff(pdir, "p" * 500)
+    usage_at(75)
+    assert level() == "PACE", level()
+    before = len(gitlog(root))
+    r = fire("Stop")
+    assert not spawned and r == "", (
+        "a fresh-by-mtime HANDOFF.md nobody in this session wrote was armed: %r" % (spawned,))
+    assert "AUTO-ARM-STOP-SKIPPED no HANDOFF.md write observed this session" in gitlog(root)[before:], (
+        "the Stop payload did not reach the arm path at all - nothing was logged: %r"
+        % (gitlog(root)[before:],))
+
+    # ⭐ THE RECORD. The Write's PostToolUse names the file; the gate remembers the folder.
+    handoff(tdir, "h" * 500)
+    assert wrote(os.path.join(tdir, "HANDOFF.md")) == ""
+    assert gate.handoffs_written(sdir, sid) == [folder], gate.handoffs_written(sdir, sid)
+    # ...a second Write of the same file records nothing new; a Bash redirect records too.
+    wrote(os.path.join(tdir, "HANDOFF.md"))
+    assert gate.handoffs_written(sdir, sid) == [folder]
+    handoff(odir, "o" * 500)
+    wrote(os.path.join(odir, "HANDOFF.md"), tool="Bash")
+    assert gate.handoffs_written(sdir, sid) == [folder, older], gate.handoffs_written(sdir, sid)
+    # ...and an unrelated Write records nothing.
+    wrote(os.path.join(root, "README.md"))
+    assert gate.handoffs_written(sdir, sid) == [folder, older]
+
+    # ⭐ GO: nothing armed, nothing said.
+    usage_at(10)
+    assert level() == "GO"
+    r = fire("Stop")
+    assert not spawned and r == "", (spawned, r)
+
+    # ⛔ PACE + this session's handoff + the turn ends => armed for the NEWEST of the recorded
+    # folders (`folder` was written last), never the pulled one, and the person is told.
+    handoff(tdir, "h" * 500)                                  # recorded
+    _time.sleep(1.1)
+    handoff(pdir, "p" * 500)                                  # NEWEST by mtime, never recorded
+    usage_at(75)
+    before = len(gitlog(root))
+    r = fire("Stop")
+    assert spawned and "--arm" in spawned[0], (
+        "the turn ended at PACE with a fresh handoff and nothing was armed: %r" % (spawned,))
+    assert pulled not in spawned[0], (
+        "a folder this session never wrote was armed because its mtime was newest - time is "
+        "not authorship: %r" % (spawned,))
+    assert folder in spawned[0], spawned
+    assert folder in said(r) and "ARMED" in said(r), r
+    tail = gitlog(root)[before:]
+    assert "AUTO-ARM-STOP %s (written=2 usable=2 session=%s)" % (folder, sid[:8]) in tail, tail
+
+    # ⛔ ONCE: armed for this folder and this reset already => silent.
+    armed(task=folder, armed_for_reset=r5)
+    r = fire("Stop")
+    assert not spawned and r == "", (spawned, r)
+    armed()
+
+    # ⛔ A RECORDED HANDOFF THAT IS STALE OR THIN IS NOT USABLE: skipped, and said.
+    handoff(tdir, "h" * 500, when=now - 3600)
+    handoff(odir, "tiny")
+    before = len(gitlog(root))
+    r = fire("Stop")
+    assert not spawned and r == "", (spawned, r)
+    assert "AUTO-ARM-STOP-SKIPPED the 2 HANDOFF.md this session wrote are missing, thin or older" \
+        in gitlog(root)[before:], gitlog(root)[before:]
+    handoff(tdir, "h" * 500)
+
+    # ⛔ NO SESSION STAMP => no freshness test => NOTHING, and the log says why (ADR review B-2).
+    stamp = gate.state_path(sdir, sid, "start")
+    os.remove(stamp)
+    before = len(gitlog(root))
+    r = fire("Stop")
+    assert not spawned and r == "", (spawned, r)
+    assert "AUTO-ARM-STOP-SKIPPED no session stamp" in gitlog(root)[before:]
+    stamp_session(gate, sdir, sid)
+    _time.sleep(1.1)
+    handoff(tdir, "h" * 500)
+
+    # ⭐ THE SAME ON A PROMPT AT PACE: a handoff written after the warning still gets armed.
+    armed()
+    r = fire("UserPromptSubmit")
+    assert spawned and folder in spawned[0], (
+        "a PACE prompt with a fresh handoff armed nothing - the prompt path does not arm: %r"
+        % (spawned,))
+    assert "ARMED" in said(r) and folder in said(r), r
+
+    # ⭐ THE SCAN ROOT IS THE START-TIME CWD, not the payload's. A stamp that recorded another
+    # repository: the handoff recorded there is what gets armed, whatever cwd the payload says.
+    root2 = os.path.join(sdir, "other-root")
+    try:
+        os.makedirs(os.path.join(root2, ".git"))
+        f2 = "20260902-180000-other-root-task"
+        d2 = os.path.join(root2, "Memory", "tasks", f2)
+        os.makedirs(d2)
+        with open(stamp, "w", encoding="utf-8") as f:
+            _json.dump({"cwd": root2}, f)
+        _time.sleep(1.1)
+        handoff(d2, "z" * 500)
+        wrote(os.path.join(d2, "HANDOFF.md"))
+        armed()
+        r = fire("Stop", cwd=root)
+        assert spawned and f2 in spawned[0], (
+            "the start-time cwd was recorded and the payload cwd won: %r" % (spawned,))
+    finally:
+        stamp_session(gate, sdir, sid)
+        shutil.rmtree(root2, ignore_errors=True)
+    _time.sleep(1.1)
+    handoff(tdir, "h" * 500)
+
+    # ⛔ THE STAND-DOWN TABLE, AMENDED (ADR decision 6 ⟨R2⟩): a PACE prompt KEEPS the alarm
+    # (no cancel, no re-arm: the de-dup sees the same target) - measured before the change, 20
+    # arms and 19 cancels in a 20-turn PACE session. A GO prompt cancels it AND clears the spawn
+    # floor, so the next turn end at PACE re-arms without waiting out the 300 s.
+    sys.path.insert(0, repo_path("hooks"))
+    import resume as _resume
+    cancelled = []
+
+    def _fake_cancel(sdir_, quiet=False):
+        cancelled.append(sdir_)
+        try:
+            os.remove(os.path.join(sdir_, "resume.json"))
+        except OSError:
+            pass
+        return 0
+
+    mark = os.path.join(sdir, gate.ARM_MARK)
+    keep_cancel = _resume.do_cancel
+    _resume.do_cancel = _fake_cancel
+    try:
+        armed(task=folder, armed_for_reset=r5, at=now + 3600)
+        with open(mark, "w") as f:
+            f.write(str(_time.time()))                     # a fresh floor, as after an arm
+        usage_at(75)
+        r = fire("UserPromptSubmit", clear_floor=False)
+        assert not cancelled, "a PACE prompt cancelled the alarm the turn end armed"
+        assert os.path.exists(os.path.join(sdir, "resume.json")), "the alarm went away at PACE"
+        assert not spawned, "a PACE prompt re-armed an alarm that was already armed"
+        usage_at(10)
+        r = fire("UserPromptSubmit", clear_floor=False)
+        assert cancelled, "a GO prompt did not stand the armed resume down"
+        assert not os.path.exists(mark), (
+            "the stand-down left the spawn floor in place - the next turn end cannot re-arm")
+        assert "CANCELLED" in said(r) or "CANCELLED" in str(r), r
+        # ...and the very next turn end at PACE arms again, floor or no floor.
+        usage_at(75)
+        r = fire("Stop", clear_floor=False)                # the cancel above removed the floor
+        assert spawned and folder in spawned[0], spawned
+    finally:
+        _resume.do_cancel = keep_cancel
+
+    os.remove(os.path.join(sdir, "token_usage.json"))
+    armed()
+    if os.path.exists(seen):
+        os.remove(seen)
+    for d in (tdir, odir, pdir):
+        shutil.rmtree(d, ignore_errors=True)
+    print("ok - the turn's end arms the resume for the handoff THIS session wrote (recorded, not "
+          "mtime), once, said on screen; a pulled file, no stamp, stale, thin and GO stay silent "
+          "and logged; PACE keeps the alarm, GO cancels it and clears the floor")
+
+
 def case_selftests_never_read_the_terminal():
     """⛔ NO SHIPPED `--selftest` MAY BLOCK ON STDIN. Measured, and it cost two hours.
 
@@ -1622,6 +1886,7 @@ def main():
         case_price_refresh(gate, sdir)
         case_handoff_past_soft(gate, sdir, root)
         case_auto_arm(gate, sdir, root)
+        case_arm_on_stop(gate, sdir, root)
         case_model_price_limit(gate, sdir, root)
         case_session_cwd_is_recorded(gate, sdir, root)
         case_wind_down_on_every_tool(gate, sdir, root)

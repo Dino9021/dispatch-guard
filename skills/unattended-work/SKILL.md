@@ -167,7 +167,9 @@ completely alone. Re-verify every cited line number at the moment of writing.
 
 The same rule when the USAGE runs short: the verdict line says `SPENT in ~N min - M min BEFORE
 it resets`. N is the budget for finishing AND handing over, and the reset is further away than
-the money. Write the handover inside N, not after the STOP.
+the money. Write the handover inside N, not after the STOP. Once HANDOFF.md is on disk, the gate
+arms the resume itself when your turn ends at PACE/STOP (0.58.0); `resume.py --status` shows it,
+and if it shows none, arm it yourself — an unarmed handoff is a handoff nothing will ever read.
 
 ## 18. The working-style checklist
 

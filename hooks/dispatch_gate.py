@@ -1979,6 +1979,143 @@ def maybe_auto_arm(root, sdir, cfg, folder, started, session_id=None, cwd=None):
     return True
 
 
+HANDOFF_SEEN = "handoff-written"      # state/<sid>.handoff-written: one task folder per line
+
+
+def note_handoff_write(sdir, cfg, session_id, tool, tool_input):
+    """Record that THIS session wrote <task_root>/<folder>/HANDOFF.md, from a PostToolUse payload.
+
+    ⛔ TIME IS NOT AUTHORSHIP. The first version of arm_from_handoff() called a HANDOFF.md
+    "written this session" when its mtime was newer than the session stamp - and `git pull`,
+    `checkout`, `merge`, `stash pop` set mtime=now on every tracked file. Measured 2026-09-02 by
+    the code review: one Stop at PACE after such a checkout armed a FINISHED task's folder
+    (`fresh=3`, the newest-dated one - exactly the guess maybe_auto_arm() refuses). The gate
+    already sees every Write/Edit `file_path` and every Bash command on PostToolUse, so a
+    HANDOFF.md path that names a task folder in either is direct evidence of authorship.
+    ⚠ A Bash write whose path is hidden in a shell variable is NOT seen (the file tool is the
+    documented route); a session started before this shipped has no record and arms nothing -
+    the safe direction.
+    """
+    text = ""
+    if tool in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
+        text = str((tool_input or {}).get("file_path") or "")
+    elif tool == "Bash":
+        cmd = str((tool_input or {}).get("command") or "")
+        if HANDOFF in cmd and ">" in cmd:
+            text = cmd
+    if HANDOFF not in text:
+        return
+    tr = str(cfg["task_root"]).replace("\\", "/")
+    names = re.findall(re.escape(tr) + r"/([A-Za-z0-9._-]+)/" + re.escape(HANDOFF),
+                       text.replace("\\", "/"))
+    have = handoffs_written(sdir, session_id)
+    new = [n for n in dict.fromkeys(names) if n not in have]
+    if not new:
+        return
+    path = state_path(sdir, session_id, HANDOFF_SEEN)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            for n in new:
+                f.write(n + "\n")
+    except OSError:
+        pass
+
+
+def handoffs_written(sdir, session_id):
+    """The task folders whose HANDOFF.md this session wrote, in the order first seen."""
+    try:
+        with open(state_path(sdir, session_id, HANDOFF_SEEN), encoding="utf-8") as f:
+            return [l.strip() for l in f if l.strip()]
+    except OSError:
+        return []
+
+
+def arm_from_handoff(root, sdir, cfg, session_id, v=None):
+    """Arm for the freshest HANDOFF.md THIS session wrote, when the window is closing.
+
+    ⛔ THE ARM USED TO LIVE ONLY ON THE DISPATCH PATH, so a session that obeyed PACE - "finish
+    what is in flight, no new wave" - wrote its handoff, dispatched nothing more, and ended
+    unarmed. Measured 2026-09-02 on two machines the same afternoon: the session that dispatched
+    a reviewer after its handoff was armed at 13:35; the one that stopped dispatching was not,
+    and its agent confirmed the manual `resume.py --arm` was simply forgotten. A step that
+    depends on an agent remembering is not a step. ⇒ This runs when the TURN ENDS (`Stop`) and
+    on every prompt at PACE/STOP, and the agent is not asked. ADR:
+    Memory/tasks/20260902-142400-auto-arm-on-stop/ADR.md.
+
+    ⭐ A NARROWER RULE THAN "THE NEWEST TASK FOLDER", which maybe_auto_arm() refuses to guess for
+    good reason: the candidates are the folders whose HANDOFF.md THIS SESSION WROTE - recorded
+    by note_handoff_write() from the PostToolUse payloads, never inferred from a clock - and of
+    those only the ones handoff_state() calls "ok" (present, ≥ 200 chars, mtime at or after the
+    session stamp). No stamp → no freshness test → nothing, logged. No recorded write → nothing,
+    logged. Several usable → the newest, and the log carries both counts and the session id so
+    the ADR's reconsideration criteria can be read off it.
+
+    ⚠ The scan root is the START-time cwd when the session recorded one (session_cwd), because
+    the payload's cwd follows the Bash tool's `cd`; see the earlier resume ADR. Every log line
+    here goes to that root too, so one event lands in one repository log. Returns the one-line
+    screen message when it armed, else None. May raise: callers wrap it, like the two existing
+    callers of maybe_auto_arm().
+    """
+    v = v if v is not None else usage.verdict(sdir, usage.config(sdir))
+    if not arm_trigger(v):
+        return None
+    sid8 = str(session_id or "")[:8]
+    start_cwd = session_cwd(sdir, session_id)
+    scan_root = repo_root(start_cwd) if start_cwd else root
+    started = session_start(sdir, session_id)
+    if not started:
+        log(scan_root, "AUTO-ARM-STOP-SKIPPED no session stamp session=%s" % sid8)
+        return None
+    written = handoffs_written(sdir, session_id)
+    if not written:
+        log(scan_root, "AUTO-ARM-STOP-SKIPPED no HANDOFF.md write observed this session "
+                       "(root %s) session=%s" % (scan_root, sid8))
+        return None
+    usable = []
+    for folder in dict.fromkeys(written):
+        state, path = handoff_state(scan_root, cfg, folder, started)
+        if state != "ok":
+            continue
+        try:
+            usable.append((os.path.getmtime(path), folder))
+        except OSError:
+            continue
+    if not usable:
+        log(scan_root, "AUTO-ARM-STOP-SKIPPED the %d HANDOFF.md this session wrote are missing, "
+                       "thin or older than the session stamp under %s session=%s"
+                       % (len(written), scan_root, sid8))
+        return None
+    usable.sort()
+    folder = usable[-1][1]
+    if not maybe_auto_arm(scan_root, sdir, cfg, folder, started, session_id, start_cwd):
+        return None                    # already armed for this target, floor, or off switch
+    log(scan_root, "AUTO-ARM-STOP %s (written=%d usable=%d session=%s)"
+                   % (folder, len(written), len(usable), sid8))
+    return (" ⭐ dispatch-guard: a resume was ARMED for `%s` (the HANDOFF.md written this "
+            "session) because the usage window is closing (%s); it wakes a few minutes after "
+            "%s and continues from that handoff. Cancel it with `%s --cancel` if you do not "
+            "want that." % (folder, v["verdict"], v.get("resets_clock", "the reset"),
+                            runnable("resume.py")))
+
+
+def on_stop(payload, root, sdir, cfg):
+    """The turn ended. Arm for this session's fresh handoff if the window is closing.
+
+    ⚠ Prints ONLY when it armed - one `systemMessage` for the person - and nothing otherwise,
+    because a Stop hook's empty stdout changes nothing about the turn (measured in the 2.0.56
+    binary's hook-output schema, which also accepts systemMessage on every event). It never
+    blocks the turn from ending.
+    """
+    line = None
+    try:
+        line = arm_from_handoff(root, sdir, cfg, payload.get("session_id"))
+    except Exception as exc:
+        log(root, "AUTO-ARM-FAILED %r" % (exc,))
+    if line:
+        print(json.dumps({"systemMessage": line.strip()}, ensure_ascii=False))
+
+
 def approved_slots(root, cfg, cutoff, folder, log_to=None):
     """How many sub-tasks the owner approved running at once. 1 unless they said more.
 
@@ -2298,7 +2435,14 @@ def stand_down_resume(root, sdir, v):
         NO-DATA  KEEP. We do not know whether the window reopened. ⛔ Never discard a
                  backup on the strength of ignorance - that is the fail-open direction
                  turned into data loss.
-        GO/PACE  CANCEL. There is MEASURED headroom, so the work can proceed now, in this
+        PACE     KEEP (since 0.58.0; it used to CANCEL). The window has NOT reopened - PACE
+                 is the closing window - and since the turn's end arms at PACE, cancelling
+                 here made every prompt cancel and every turn end re-arm: measured by the
+                 0.58.0 review, 20 arms and 19 cancels in a 20-turn PACE session, with a
+                 screen line on every prompt. The alarm is inert while the session lives
+                 (do_run stands down on a live session) and costs nothing to keep.
+                 ADR 20260902-142400, decision 6 ⟨R2⟩.
+        GO       CANCEL. There is MEASURED headroom, so the work can proceed now, in this
                  session, with its context. The alarm has nothing left to do.
 
     ⭐ A route (A) wake lands here too - the cron wake arrives as a UserPromptSubmit - so
@@ -2313,7 +2457,7 @@ def stand_down_resume(root, sdir, v):
     can never match again. If schtasks were to hang past the hook's timeout the gate is
     killed and fails open, which is the same outcome as any other gate failure.
     """
-    if v["verdict"] not in ("GO", "PACE"):
+    if v["verdict"] != "GO":
         return ""
     state = usage.read_json(os.path.join(sdir, "resume.json"), None)
     if not isinstance(state, dict):
@@ -2336,6 +2480,16 @@ def stand_down_resume(root, sdir, v):
                 "work that is already done." % (when, v["verdict"]))
     log(root, "STAND-DOWN %s the resume armed for %s (verdict %s)"
               % ("cancelled" if cancelled else "FAILED to cancel", when, v["verdict"]))
+    if cancelled:
+        # ⛔ AND THE SPAWN FLOOR GOES WITH IT. A prompt at PACE cancels the resume the last
+        # turn end armed - correctly, the person is back - but the 300 s floor then blocked
+        # the re-arm at the NEXT turn end, so a PACE session closed inside five minutes ended
+        # unarmed: the incident again, one layer down. The floor exists for a machine that
+        # CANNOT arm; a cancel is proof this one can. ADR 20260902-142400, decision 6.
+        try:
+            os.remove(os.path.join(sdir, ARM_MARK))
+        except OSError:
+            pass
     if not cancelled:
         # ⛔ do_cancel() returns non-zero when the SCHEDULER refused, and the record is kept
         # on purpose so the orphan can still be chased. Announcing "nothing will wake later"
@@ -2485,10 +2639,21 @@ def on_user_prompt(payload, root, sdir, cfg):
                          "[usage]" + note)
         return
     sid = payload.get("session_id")
+    # ⭐ ARM HERE TOO, on every PACE/STOP prompt and BEFORE the once-per-level return: a handoff
+    # written after the warning still gets its resume on the next prompt, and the arm runs after
+    # stand_down_resume() so the two never race inside one hook. See arm_from_handoff().
+    armed_line = ""
+    try:
+        armed_line = arm_from_handoff(root, sdir, cfg, sid, v) or ""
+    except Exception as exc:
+        log(root, "AUTO-ARM-FAILED %r" % (exc,))
     mark = state_path(sdir, sid, "warned")
     try:
         with open(mark, encoding="utf-8") as f:
             if f.read().strip() == v["verdict"]:
+                if armed_line:
+                    context_note(payload.get("hook_event_name", "UserPromptSubmit"),
+                                 "[usage]" + armed_line, systemMessage=armed_line.strip())
                 return
     except OSError:
         pass
@@ -2529,7 +2694,8 @@ def on_user_prompt(payload, root, sdir, cfg):
                if v["verdict"] == "STOP" else "Dispatch is still allowed; scope should shrink.",
                v["verdict"], round(v.get("pct") or 0)))
     context_note(payload.get("hook_event_name", "UserPromptSubmit"),
-                 "[usage] " + v["text"] + extra + ack + note, systemMessage=seen)
+                 "[usage] " + v["text"] + extra + ack + note + armed_line,
+                 systemMessage=seen + armed_line)
 
 
 def _wake_hint(v):
@@ -2818,6 +2984,16 @@ def main():
         return on_session_start(payload, root, sdir, cfg)
     if event == "UserPromptSubmit":
         return on_user_prompt(payload, root, sdir, cfg)
+    # ⛔ BEFORE the `tool != "Agent"` fall-through below: a Stop payload carries no tool name.
+    if event == "Stop":
+        return on_stop(payload, root, sdir, cfg)
+    # ⭐ WHO WROTE WHICH HANDOFF.md - recorded here, before the Bash branch below returns, so a
+    # Write, an Edit and a Bash redirect are all seen. Never decides anything; never returns.
+    if event == "PostToolUse":
+        try:
+            note_handoff_write(sdir, cfg, sid, tool, payload.get("tool_input") or {})
+        except Exception as exc:
+            log(root, "HANDOFF-NOTE-FAILED %r" % (exc,))
 
     # ⛔ A TOOL CALL THAT FAILS FIRES PostToolUseFailure, AND PostToolUse NEVER RUNS. So
     # until this branch existed, EVERY failed dispatch kept its slot for the full

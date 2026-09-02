@@ -33,6 +33,52 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.58.0
+
+**續跑（resume）改由 hook 在回合結束時安排，不再靠 agent 記得。** 2026-09-02 下午，兩台開發機、
+同一版外掛：一個 session 在 PACE 寫好 HANDOFF.md 之後又派了一個審查者 —— 自動 arm 掛在 Agent
+派遣的 `PreToolUse` 上，所以它被排了續跑；另一個 session 照 PACE 的規則「不開新一波」，寫好
+HANDOFF.md 就結束回合 —— arm 的程式碼一次都沒執行，STOP 提示要它手動跑 `resume.py --arm`，
+它沒有跑，事後承認是漏掉。⛔ **一個要靠 agent 記得才會發生的步驟，等於沒有那個步驟。**
+ADR：`Memory/tasks/20260902-142400-auto-arm-on-stop/ADR.md`（一輪對抗式審查，owner 已決定）。
+
+- `hooks.json` 訂閱 `Stop`。回合結束時，判定為 PACE 或 STOP、而且 task_root 下有一份
+  **這個 session 開始之後寫的** HANDOFF.md（mtime ≥ session 戳記、≥ 200 字），gate 就自己
+  安排續跑，並在畫面上印一行「已為 `<資料夾>` 安排續跑，幾點喚醒，取消請跑 `resume.py --cancel`」。
+  不會阻擋回合結束；沒有 arm 時什麼都不印。
+- `UserPromptSubmit` 在 PACE / STOP 也跑同一段：警告之後才寫的 HANDOFF.md，下一個 prompt 就會被安排。
+- ⛔ **「本 session 寫的」是記錄下來的，不是用時間推的。** 第一版用「mtime ≥ session 戳記」，
+  程式碼審查實測 `git checkout` 會把每一份已追蹤的 `Memory/tasks/*/HANDOFF.md` 的 mtime 變成現在：
+  一次 PACE 的 `Stop` 就安排了一個**已完成任務**的資料夾（`fresh=3`，日期最新的那個 —— 正是
+  `maybe_auto_arm()` 拒絕的猜法）。時間是 pull / checkout / merge 可以動的代理證據。gate 在每一次
+  `PostToolUse` 本來就看得到 Write / Edit 的 `file_path` 與 Bash 的指令，所以現在直接記下
+  「本 session 寫過哪些資料夾的 HANDOFF.md」（`state/<sid>.handoff-written`），候選只有那些資料夾，
+  再過 `handoff_state()`（存在、≥ 200 字、mtime ≥ 戳記）。⚠ 路徑藏在 shell 變數裡的 Bash 寫入
+  看不到（file tool 是文件上的正途）；看不到就不安排並記 log，是安全的方向。
+  幾份可用 → 最新的，log 記 `written=N usable=M session=`；⛔ 沒有 session 戳記 → 不安排並記
+  `AUTO-ARM-STOP-SKIPPED no session stamp`（ADR 審查 B-2）；沒有記錄到寫入 → 不安排並記 log。
+- ⛔ `stand_down_resume()` 的判定表改了一列：**PACE 的 prompt 現在保留鬧鐘，只有 GO 取消。**
+  原本 GO 或 PACE 都取消；配上回合結束就 arm 之後，程式碼審查模擬 20 個回合的 PACE session 量到
+  **20 次 arm、19 次取消、每回合三行 log、19 個 prompt 印出「已安排」**。PACE 不是「視窗提早重開」，
+  它就是正在關閉的視窗；session 活著時鬧鐘是惰性的（`do_run()` 見到活的 session 就退下）。
+  結果：第一次 PACE 的回合結束印一行「已安排」，之後靜默（去重），GO 到來時印一行「已取消」。
+  取消成功時仍會移除 300 秒的 spawn floor 標記（GO → PACE 五分鐘內回來時需要它）。
+  ⚠ 後果說清楚：在 PACE 做完工作就離開的人，會在重置後被喚醒一次去讀一份描述已完成工作的
+  HANDOFF —— 與今天 STOP 的暴露相同；畫面那一行與 `resume.py --cancel` 是邊界。
+- 留下的檢查（`test_guards.py::case_arm_on_stop`，用記錄器取代 `subprocess.Popen` 與
+  `resume.do_cancel`，不會真的登錄或刪除 OS 排程）：mtime 很新但本 session 沒寫過的 HANDOFF.md →
+  靜默、log 記「no HANDOFF.md write observed」；Write 的 PostToolUse 會記錄資料夾，Bash 重導向也會，
+  不相關的 Write 不會；GO 靜默；PACE 的 `Stop` → 安排最新的**有記錄**資料夾、畫面提示、
+  log 帶 `written=2 usable=2`；同一目標只一次；有記錄但過期 / 太短 → 靜默且 log 說明；沒戳記 → 靜默且 log；
+  PACE 的 prompt 也安排；掃描根目錄取 session 開始時的 cwd；PACE 的 prompt 保留鬧鐘；GO 的 prompt
+  取消並清 floor；下一次 PACE 回合結束能重新安排。突變檢查（五個）見 progress.md。
+- ⚠ 這個改動看不到的事：`Stop` 在使用者中斷時不會發出（下一個 prompt 會補上）；兩個 session 共用
+  一棵工作樹時，各自只會安排自己寫過的 HANDOFF.md（記錄是 per session 的）；`Stop` hook 是同步等待的，
+  透過 `run.sh` 實測每個回合結束約 **1.0 秒**（與本外掛每一次工具呼叫的 hook 成本相同）。
+- 需要 Claude Code 2.0.56 以上（既有的最低版本）；`Stop` 事件在該版執行檔中已存在（實測）。
+
+---
+
 ## 0.57.0
 
 **燃燒率的歷史把兩個帳號混在一起，而事後沒有任何東西能把它們分開。** 2026-09-02 實測：
@@ -2048,6 +2094,65 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.58.0
+
+**The resume is now armed by the hook when the turn ends, not by the agent remembering.**
+On the afternoon of 2026-09-02, two dev machines, same plugin version: one session wrote its
+HANDOFF.md at PACE and then dispatched a reviewer - the auto-arm lived on the Agent `PreToolUse`
+path, so it was armed; the other obeyed PACE ("no new wave"), wrote its HANDOFF.md and ended the
+turn - the arm code never ran, the STOP text asked it to run `resume.py --arm` by hand, it did
+not, and it later confirmed the omission. ⛔ **A step that depends on an agent remembering is
+not a step.** ADR: `Memory/tasks/20260902-142400-auto-arm-on-stop/ADR.md` (one adversarial
+review round; the owner had decided).
+
+- `hooks.json` subscribes to `Stop`. When a turn ends at PACE or STOP and the task root holds a
+  HANDOFF.md **written after this session started** (mtime ≥ the session stamp, ≥ 200 chars), the
+  gate arms the resume itself and puts one line on the screen: armed for `<folder>`, wakes after
+  the reset, cancel with `resume.py --cancel`. It never blocks the turn; when it does not arm it
+  prints nothing.
+- `UserPromptSubmit` at PACE / STOP runs the same step, so a handoff written after the warning is
+  armed on the next prompt.
+- ⛔ **"Written this session" is RECORDED, not inferred from a clock.** The first version used
+  "mtime ≥ the session stamp", and the code review measured `git checkout` handing every tracked
+  `Memory/tasks/*/HANDOFF.md` mtime=now: one Stop at PACE armed a **finished** task's folder
+  (`fresh=3`, the newest-dated one - exactly the guess `maybe_auto_arm()` refuses). Time is a
+  proxy that pull / checkout / merge can move. The gate already sees every Write/Edit `file_path`
+  and every Bash command on `PostToolUse`, so it now records which task folders' HANDOFF.md this
+  session wrote (`state/<sid>.handoff-written`); the candidates are exactly those folders, then
+  `handoff_state()` (present, ≥ 200 chars, mtime ≥ stamp). ⚠ A Bash write whose path hides in a
+  shell variable is not seen (the file tool is the documented route); unseen means nothing armed
+  and a log line - the safe direction. Several usable → the newest, logged as
+  `written=N usable=M session=`; ⛔ no session stamp → nothing and `AUTO-ARM-STOP-SKIPPED no
+  session stamp` (ADR review B-2); no recorded write → nothing and a log line.
+- ⛔ One row of `stand_down_resume()`'s verdict table changed: **a PACE prompt now KEEPS the
+  alarm; only GO cancels.** It used to cancel on GO or PACE; with the turn's end arming at PACE
+  the code review simulated a 20-turn PACE session and measured **20 arms, 19 cancels, three log
+  lines per turn and an "ARMED" line on 19 of 20 prompts**. PACE is not "the window reopened
+  early" - it IS the closing window - and the alarm is inert while the session lives (`do_run()`
+  stands down on a live session). Result: one ARMED line at the first PACE turn end, silence
+  after (de-dup), one CANCELLED line when GO arrives. A successful cancel still clears the 300 s
+  spawn-floor file (a GO → PACE return inside five minutes needs it). ⚠ Consequence stated: a
+  person who finishes at PACE and leaves gets one wake after the reset that reads a handoff
+  describing finished work - the same exposure STOP has today; the screen line and
+  `resume.py --cancel` are the bound.
+- Checks left behind (`test_guards.py::case_arm_on_stop`; `subprocess.Popen` and
+  `resume.do_cancel` are recorders, so no real OS task is created or deleted): a HANDOFF.md fresh
+  by mtime that this session never wrote → silent, logged `no HANDOFF.md write observed`; a Write
+  `PostToolUse` records the folder, a Bash redirect records too, an unrelated Write does not; GO
+  silent; `Stop` at PACE → the newest RECORDED folder, said on screen, logged `written=2
+  usable=2`; once per target; recorded-but-stale / thin → silent and logged; no stamp → silent
+  and logged; a PACE prompt arms too; the start-time cwd decides the scan root; a PACE prompt
+  keeps the alarm; a GO prompt cancels it and clears the floor; the next PACE turn end re-arms.
+  Five mutations in progress.md.
+- ⚠ What this change cannot see: `Stop` does not fire on a user interrupt (the next prompt
+  covers it); two sessions on one working tree each arm only what they themselves wrote (the
+  record is per session); the `Stop` hook is awaited - measured through `run.sh` at about
+  **1.0 s** per turn end, the same as every other hook call this plugin makes.
+- Needs Claude Code 2.0.56 or later, the existing minimum; the `Stop` event is present in that
+  build (measured).
 
 ---
 

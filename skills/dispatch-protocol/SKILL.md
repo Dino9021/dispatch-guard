@@ -152,8 +152,11 @@ The only thing the next run gets (a transcript re-read costs ~95k tokens/MB with
 cache; a 3 KB handoff ~800). Six sections: Goal (standalone) · Done (with every output
 path) · Next step (nothing left to decide) · Tried and failed (with reasons) · Decided
 (not to be re-litigated) · Every path, command and branch. No backward references; never
-"continue the previous work". Then `resume.py --arm --task <task>`. The 200-character floor
-catches EMPTY, not BAD — quality is yours.
+"continue the previous work". ⭐ Since 0.58.0 the gate arms the resume ITSELF when your turn
+ends (or on your next prompt) at PACE/STOP, for the HANDOFF.md this session wrote — a line on
+the screen says so. Check with `resume.py --status`; if it says none is armed, run
+`resume.py --arm --task <task>` yourself. The 200-character floor catches EMPTY, not BAD —
+quality is yours.
 
 ## External model runs
 

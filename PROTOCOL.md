@@ -34,7 +34,7 @@ an inferred one. Only a literal count in an owner message is an approval.
 
 ## 3. What the hook enforces
 
-`hooks/dispatch_gate.py` runs on `SessionStart`, `UserPromptSubmit`, `PreToolUse`,
+`hooks/dispatch_gate.py` runs on `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `Stop`,
 `PostToolUse`, and binds sub-tasks at every depth (their dispatches hit the same hook).
 
 | behaviour | mechanism |
@@ -44,6 +44,7 @@ an inferred one. Only a literal count in an owner message is an approval.
 | dispatch before a plan was written this session refused | newest `prompts*.md` vs session start stamp |
 | mass-spawn tools refused | deny by tool name |
 | dispatch refused at the hard usage threshold | the verdict |
+| a resume is armed when a turn ENDS at PACE/STOP with a HANDOFF.md this session wrote | the `Stop` hook and every PACE/STOP `UserPromptSubmit` call `arm_from_handoff()`: the candidates are the task folders whose HANDOFF.md THIS session wrote — recorded on `PostToolUse` from the Write/Edit `file_path` or a Bash redirect (`state/<sid>.handoff-written`), never inferred from mtime (a `git checkout` gives every tracked file mtime=now; measured) — then `handoff_state()` must say "ok" (present, ≥ 200 chars, mtime ≥ the session stamp); no stamp or no recorded write → nothing, logged; the newest usable wins; `maybe_auto_arm()`'s guards (de-dup on `resume.json`, 300 s spawn floor, off switch) apply; one `systemMessage` names the folder and the wake time. ⚠ A PACE prompt KEEPS the alarm; a GO prompt cancels it (`stand_down_resume`) and clears the spawn floor so the next PACE turn end can re-arm. ADR `Memory/tasks/20260902-142400-auto-arm-on-stop/` |
 | every dispatch refused until `dispatch-protocol` has been invoked | `require_dispatch_protocol`, default true; the `Skill` call is recorded on `PostToolUse`. `require_unattended_work` (default **false**) adds the second skill |
 | a sub-agent's model costing more than the limit refused | `tool_input.model` priced with the catalog's published `pricing` tier, per MODEL — `max_model_price`, default **5** ($/M input), narrowed by the `availableModels` settings allowlist. ⭐ The same limit and table are in `dispatch-protocol` and in the injected block, so an agent reads them BEFORE choosing |
 | a sub-agent returns without the file its prompt demanded → a note on screen and to the model | `guard_agent_report_file`, default true. The paths a prompt says to CREATE (a whole-word creation verb, then a `.md` path, within the same sentence **and** at most one line break) are resolved at `PreToolUse` and stashed in the slot; `PostToolUse` stats them. ⛔ **Advisory, never a refusal.** This half needs no knowledge of any agent's tool list, so it cannot go stale, and it catches an agent that COULD write and did not |
@@ -90,7 +91,8 @@ logs to `.claude/dispatch_gate.log` (fallback `%TEMP%/dispatch_gate_error.log`).
 | the plan check is a timestamp, not a reading | it catches forgetting, not cheating |
 | the gate is per session | deliberate; two sessions sharing one working tree is a separate hazard — give each a worktree |
 | sessions started before the plugin was enabled are advisory only | self-heals next session |
-| waking the live session (resume route A) can only be reminded, never enforced | act on the line `resume.py --arm` prints |
+| waking the live session (resume route A) can only be reminded, never enforced | act on the line `resume.py --arm` prints. ⭐ Route B (the OS task) IS enforced since 0.58.0: the `Stop` hook arms it for this session's fresh HANDOFF.md |
+| the `Stop` hook does not fire on a user interrupt, and two sessions on one tree can each see the other's fresh HANDOFF.md | the next PACE/STOP prompt arms; two arms for one folder de-duplicate through `resume.json` |
 | the alarm-cancel check runs only on `SessionStart`/`UserPromptSubmit` | an alarm can fire early inside a `PreToolUse`-only gap |
 | the wind-down does not fire for a FAILED tool call | `PostToolUse` does not run for one. The gate does register `PostToolUseFailure` (since 0.56.1), but that branch only releases the dispatch's slot and records `FAILED:` in `progress.md`; it prints nothing, so the wind-down still does not fire there. ⚠ The note is on `PreToolUse` precisely so a failing loop still hears it, but a tool that fails after its `PreToolUse` produces no second chance |
 | nothing prunes `<state>/handoffs/` | one small directory per session that reaches STOP without writing its own handoff |
