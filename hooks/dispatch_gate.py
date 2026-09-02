@@ -346,6 +346,51 @@ def repo_root(cwd):
     return os.path.abspath(cwd or os.getcwd())
 
 
+def _positive_number(value):
+    """A number > 0 out of a config value, or None. Strings that parse are accepted; a whole
+    number comes back as int, because `range()` and `%d` downstream need one.
+
+    ⛔ A WRONG TYPE HERE IS A FAIL-OPEN, NOT A WRONG NUMBER. Measured 2026-09-02 by the review
+    of 0.56.2: `"slot_ttl_min": "abc"` (or `null`, `"30"`, `[30]`) made `claim_slot()` raise
+    TypeError at `cfg["slot_ttl_min"] * 60`; main()'s outer handler swallowed it, the process
+    exited 0 with nothing on stdout, and the dispatch that should have been REFUSED went
+    through. `false` and a negative number reclaimed every slot on every dispatch, which is
+    the concurrency limit switched off. ⚠ bool is a subclass of int and is rejected on purpose.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        try:
+            value = float(value)
+        except ValueError:
+            return None
+    # ⚠ NaN and ±inf are floats too: "inf" and "1e999" parse, and range(inf) is the same
+    # TypeError this function exists to keep out of the decision path.
+    if not isinstance(value, (int, float)) or value != value or value in (float("inf"),
+                                                                            float("-inf")):
+        return None
+    if value <= 0:
+        return None
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+# The keys arithmetic or a comparison is done on. A string or null in any of them raised
+# TypeError inside a decision path, and a decision path that raises prints nothing - an ALLOW.
+# ⚠ NOT `max_model_price`: it has its own parsing in model_refusal() and three decisions of its
+# own that this coercion would silently overturn - a model NAME is accepted where a number was
+# meant, `null` switches the check off, and a mistyped ceiling fails OPEN with a
+# MODEL-PRICE-LIMIT-UNKNOWN log line (test_guards.py case_model_price_limit pins all three).
+NUMERIC_KEYS = ("slot_ttl_min", "approval_ttl_min", "max_slots")
+# ⛔ AND ONE OF THEM MUST BE A WHOLE NUMBER. `max_slots` reaches range() in claim_slot() and
+# release_slot(); 1.5 passes "a number > 0" and range(1.5) is the same TypeError - measured
+# 2026-09-02 by the round-2 review through the real process: with an approval for 2 and
+# max_slots 1.5, the refusal printed nothing and the dispatch was ALLOWED, and no slot was
+# ever released again.
+INTEGER_KEYS = ("max_slots",)
+
+
 def gate_config(root, sdir):
     cfg = dict(DEFAULTS)
     for path in (os.path.join(sdir, "config.json"),
@@ -355,6 +400,19 @@ def gate_config(root, sdir):
             for k in DEFAULTS:
                 if k in source:
                     cfg[k] = source[k]
+    for k in NUMERIC_KEYS:
+        good = _positive_number(cfg[k])
+        if k in INTEGER_KEYS and not isinstance(good, int):
+            good = None
+        if good is None:
+            # ⚠ SAID IN THE LOG, on every read. A setting that is silently replaced by the
+            # default is the same defect as a setting that silently crashes the gate - the
+            # person who wrote it thinks it is in force. This fires once per hook call for
+            # as long as the value stays wrong, which is the right volume for "your config
+            # is being ignored".
+            log(root, "CONFIG-IGNORED(%s=%r) using %r" % (k, cfg[k], DEFAULTS[k]))
+            good = DEFAULTS[k]
+        cfg[k] = good
     if not cfg["task_root"]:
         cfg["task_root"] = next((t for t in TASK_ROOTS
                                  if os.path.isdir(os.path.join(root, t.replace("/", os.sep)))),
@@ -2085,6 +2143,26 @@ def held_slots_note(sdir, cfg, session_id, slots):
     return "\n".join(lines)
 
 
+def safe_held_slots_note(root, sdir, cfg, session_id, slots):
+    """held_slots_note(), and it NEVER raises. The refusal must print; the note is optional.
+
+    ⛔ A CRASH INSIDE deny()'S ARGUMENT LIST APPROVES THE DISPATCH. main()'s outer handler
+    swallows the exception and exits 0 with nothing on stdout - and a hook that prints
+    nothing is an allow. Measured 2026-09-02 by the review of 0.56.1: `slot_ttl_min` set to a
+    huge value made `time.localtime(started + ttl * 60)` raise OSError(22), so the log said
+    DENY(slots-full) and the dispatch went through. The words added to make the refusal
+    SAFER were the words that made it disappear.
+    ⇒ One boundary, here, for every failure the note can have: the refusal goes out with
+    the note replaced by "", and the log says why - a blank note and a note that was never
+    attempted must not look the same afterwards.
+    """
+    try:
+        return held_slots_note(sdir, cfg, session_id, slots)
+    except Exception as exc:
+        log(root, "HELD-NOTE-FAILED %r" % (exc,))
+        return ""
+
+
 def release_slot(sdir, cfg, session_id, tool_use_id):
     """Free this dispatch's slot.
 
@@ -2689,7 +2767,13 @@ def on_pre_agent(payload, root, sdir, cfg, wind=None):
                     "meanwhile. ⛔ Do NOT delete a slot file to get past this refusal. It "
                     "is this plugin's enforcement state, deleting a LIVE one hands the "
                     "same slot to two dispatches, and the wait it saves is minutes."
-                    % (slots, cfg["task_root"], held_slots_note(sdir, cfg, sid, slots)))
+                    % (slots, cfg["task_root"],
+                       # ⚠ A BLANK NOTE STILL SAYS SOMETHING. Without this the text above
+                       # reads "at the time shown above" over three empty lines.
+                       safe_held_slots_note(root, sdir, cfg, sid, slots)
+                       or ("  (the holder could not be listed - the gate log has a "
+                           "HELD-NOTE-FAILED line saying why. The slot still clears itself "
+                           "%s minutes after it was claimed.)" % (cfg["slot_ttl_min"],))))
         return
 
     log(root, "ALLOW(slots=%d) %s" % (slots, desc))
@@ -2899,6 +2983,43 @@ def selftest():
         root2 = tempfile.mkdtemp()
         os.makedirs(os.path.join(root2, "tasks"))
         assert gate_config(root2, sdir)["task_root"] == "tasks"
+        # ⛔ A NON-NUMBER IN A NUMERIC KEY IS THE DEFAULT, NEVER A TypeError LATER. Measured
+        # 2026-09-02: "slot_ttl_min": "abc" crashed claim_slot() inside the refusal path, the
+        # hook printed nothing, and the dispatch was ALLOWED. Strings that parse are kept;
+        # bool, null, lists, zero and negatives fall back; and the log says so.
+        sdir3 = tempfile.mkdtemp()
+        with open(os.path.join(sdir3, "config.json"), "w", encoding="utf-8") as fh:
+            json.dump({"slot_ttl_min": "abc", "max_slots": "4", "approval_ttl_min": None,
+                       "dispatch": {"max_model_price": "opus"}}, fh)
+        cfg3 = gate_config(root2, sdir3)
+        assert cfg3["slot_ttl_min"] == DEFAULTS["slot_ttl_min"], cfg3["slot_ttl_min"]
+        assert cfg3["max_slots"] == 4 and type(cfg3["max_slots"]) is int, cfg3["max_slots"]
+        assert cfg3["approval_ttl_min"] == DEFAULTS["approval_ttl_min"], cfg3
+        # ⚠ and max_model_price is NOT coerced: the name form is a documented input there.
+        assert cfg3["max_model_price"] == "opus", cfg3["max_model_price"]
+        for k in NUMERIC_KEYS:
+            assert cfg3[k] * 60 > 0                    # the arithmetic the gate does on them
+        list(range(cfg3["max_slots"]))                 # release_slot() iterates it: int only
+        with open(os.path.join(root2, ".claude", "dispatch_gate.log"), encoding="utf-8") as fh:
+            said = fh.read()
+        assert "CONFIG-IGNORED(slot_ttl_min='abc')" in said, said
+        assert "CONFIG-IGNORED(max_slots=" not in said, "a parseable string was reported"
+        for bad in (True, False, -5, 0, [30], {"a": 1}, float("nan"), "", "1e", None,
+                    "inf", "1e999", float("inf"), "-inf", "nan"):
+            assert _positive_number(bad) is None, bad
+        list(range(_positive_number("1e2")))           # 100: a parsed float is range()-safe
+        assert _positive_number("60") == 60 and type(_positive_number("60")) is int
+        assert _positive_number(2.5) == 2.5 and _positive_number(7) == 7
+        # ⛔ max_slots must be WHOLE: 1.5 is a positive number and range(1.5) is a TypeError
+        # in both the claim and the release path. A fraction there is the default, and said.
+        for frac in (1.5, "1.5", 0.5):
+            with open(os.path.join(sdir3, "config.json"), "w", encoding="utf-8") as fh:
+                json.dump({"max_slots": frac}, fh)
+            cfg4 = gate_config(root2, sdir3)
+            assert cfg4["max_slots"] == DEFAULTS["max_slots"], (frac, cfg4["max_slots"])
+            list(range(cfg4["max_slots"]))
+        with open(os.path.join(root2, ".claude", "dispatch_gate.log"), encoding="utf-8") as fh:
+            assert "CONFIG-IGNORED(max_slots=1.5)" in fh.read()
         # An explicit project setting beats both, and task_roots() puts it first.
         os.makedirs(os.path.join(root2, ".claude"), exist_ok=True)
         with open(os.path.join(root2, ".claude", "dispatch-guard.json"), "w",
@@ -3182,6 +3303,11 @@ def selftest():
     # ⛔ AND A FULL-SLOTS REFUSAL MUST CARRY THE HOLDER AND ITS CLOCK. The function exists
     # and passes its own check even when nothing calls it; this is the wiring.
     assert "held_slots_note(" in src2, "the full-slots refusal names nothing again"
+    # ⛔ AND THROUGH THE WRAPPER THAT CANNOT RAISE. A crash inside deny()'s argument list is
+    # an ALLOW (see safe_held_slots_note); the bare function at this call site is the 0.56.1
+    # fail-open, verbatim.
+    assert "safe_held_slots_note(" in src2, \
+        "the full-slots refusal calls held_slots_note() bare - a crash there allows the dispatch"
     # ⚠ And the emitters must actually put it in the JSON, or the calls above are decoration.
     import io as _io2, json as _json2, contextlib
     for fn, kw in ((context_note, {"systemMessage": "SEEN"}),
@@ -3237,6 +3363,27 @@ def selftest():
         assert "after the wait" in held_slots_note(sd, cfg_s, "s1", 1)
         assert release_slot(sd, cfg_s, "s1", "tool_C"), "release_slot found no slot"
         assert held_slots_note(sd, cfg_s, "s1", 1) == "", "a released slot still reads held"
+        # ⛔ THE NOTE MUST NOT BE ABLE TO TAKE THE REFUSAL DOWN WITH IT. slot_ttl_min large
+        # enough that started + ttl leaves the range time.localtime() accepts: the bare
+        # function raises OSError(22), and inside deny()'s argument list that is an ALLOW.
+        # The wrapper returns "" and logs HELD-NOTE-FAILED instead. ⚠ The bare function is
+        # asserted to raise on purpose: if a future Python stops raising here, this check
+        # stops proving anything and must find a different failure to inject.
+        assert claim_slot(sd, sd, cfg_s, "s1", 1, "tool_D", "F", "huge ttl")
+        huge = dict(cfg_s, slot_ttl_min=1000000000)
+        try:
+            held_slots_note(sd, huge, "s1", 1)
+            raise AssertionError("the bare note no longer raises on a huge slot_ttl_min - "
+                                 "this check needs a new failure to inject")
+        except OSError:
+            pass
+        os.makedirs(os.path.join(sd, "repo"))
+        note = safe_held_slots_note(os.path.join(sd, "repo"), sd, huge, "s1", 1)
+        assert note == "", "the guarded note returned %r instead of blank" % (note,)
+        with open(os.path.join(sd, "repo", ".claude", "dispatch_gate.log"),
+                  encoding="utf-8") as fh:
+            assert "HELD-NOTE-FAILED" in fh.read(), "the note failed and nothing said so"
+        assert release_slot(sd, cfg_s, "s1", "tool_D")
 
     # ⛔ ULTRACODE IS REFUSED, EVERY TOOL, EVERY CALL. max and below proceed. This is the
     # rule the owner asked to be hard rather than advisory: ultracode re-states its workflow

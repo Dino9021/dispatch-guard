@@ -216,6 +216,12 @@ claude --plugin-dir C:/WorkSpace/dispatch-guard             # 開發用，只影
 
 ⚠ **外掛的 hook 是在 SESSION 開始時載入的。** 裝完請開一個新的 session 再看效果。
 
+⛔ **需要 Claude Code 2.0.56 以上。** 更舊的版本不認識 `PostToolUseFailure` 這個事件，
+而一個外掛只要有一個 hook 掛在該版本不認識的事件上，那個外掛的**每一個** hook 都會被安靜地
+關掉 —— 什麼都不強制，也沒有任何訊息（2026-09-02 以 2.0.30 / 2.0.55 / 2.0.56 實測）。
+`python install.py --status`（也就是 `/dispatch-guard:status`）會讀 `claude --version`，
+版本太舊時警告；找不到 `claude` 時寫「unknown」，不會假裝是 OK。
+
 > ⛔ **裝的是舊版本？先看 [CHANGELOG.md](CHANGELOG.md) 最上面那則安全公告。**
 > 有幾個版本因為一個 hook 例外而完全沒有在強制任何規則，而且是安靜的。
 
@@ -1745,6 +1751,13 @@ claude --plugin-dir /path/to/dispatch-guard             # development; this sess
 ```
 
 ⚠ **A plugin's hooks load at SESSION START.** Open a new session before expecting anything.
+
+⛔ **Needs Claude Code 2.0.56 or later.** Earlier builds do not know the `PostToolUseFailure`
+event, and one hook on an event a build does not know silences **every** hook of that plugin —
+nothing is enforced, and nothing says so (measured 2026-09-02 on 2.0.30 / 2.0.55 / 2.0.56).
+`python install.py --status` (which is what `/dispatch-guard:status` runs) reads
+`claude --version` and warns when it is older; with no `claude` on PATH it says "unknown"
+rather than pretending OK.
 
 > ⛔ **On an older version? Read the advisory at the top of
 > [CHANGELOG.md](CHANGELOG.md) first.** Several releases enforced nothing at all, silently,

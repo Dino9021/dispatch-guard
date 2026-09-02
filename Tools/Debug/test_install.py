@@ -404,6 +404,31 @@ def main():
         quiet = say(mod.HERE)
         assert quiet == "", "a current shim was reported as stale: %r" % quiet
 
+    # ⛔ THE CLAUDE CODE VERSION CHECK, ALL FOUR SHAPES. Below 2.0.56 the harness silences
+    # every hook of a plugin that subscribes to PostToolUseFailure, so --status must warn
+    # there - and it must never turn garbage or a missing CLI into "OK", because "OK" on an
+    # inert install is the exact confident-wrong-answer this plugin exists to prevent.
+    with scratch_dir("claude-version-verdict") as tmp:
+        import contextlib
+        import io as _io
+        mod = load_install_module(tmp)
+        cases = (("2.0.55 (Claude Code)", "OLD"), ("2.0.56 (Claude Code)", "OK"),
+                 ("2.1.258 (Claude Code)", "OK"), ("garbage", "UNKNOWN"),
+                 ("", "UNKNOWN"), (None, "UNKNOWN"), ("1.9.999", "OLD"),
+                 ("2.0.56-beta", "OK"), ("10.0.0", "OK"))
+        for text, want in cases:
+            got = mod.claude_version_verdict(text)[0]
+            assert got == want, "claude_version_verdict(%r) = %r, wanted %r" % (text, got, want)
+        # ...and no `claude` on PATH is UNKNOWN out of the real function, not a crash.
+        mod.shutil.which = lambda name: None
+        buf = _io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            verdict = mod.claude_version_line()
+        assert verdict == "UNKNOWN", verdict
+        assert "unknown" in buf.getvalue() and "no `claude` on PATH" in buf.getvalue(), \
+            buf.getvalue()
+        assert "OK" not in buf.getvalue().replace("Unknown is not OK", ""), buf.getvalue()
+
     print("ok - --check neither wrote nor removed anything, and said so")
 
 
@@ -414,8 +439,10 @@ def _status_text(tmp):
     re-implements the comparison it is checking passes while the real one is broken -
     measured on this very block, where breaking install.py's drift comparison left the whole
     suite green.
-    ⚠ status() makes no network request: the verdict it shells out for reads token_usage.json and
-    never fetches.
+    ⚠ status() makes no network request of its own: the verdict it shells out for reads
+    token_usage.json and never fetches, and `claude --version` (since 0.56.2) is a local
+    process - measured 0.09 s, no file written under ~/.claude. Whether that binary phones home
+    on --version was not measurable here; it is Claude Code's call, not this plugin's.
     """
     import contextlib
     import io as _io

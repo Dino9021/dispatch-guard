@@ -165,6 +165,10 @@ Prepare first: (1) a standalone handover document (state, decisions, done/not-do
 tried-and-failed); (2) the next session's prompt saved as its own file, written to stand
 completely alone. Re-verify every cited line number at the moment of writing.
 
+The same rule when the USAGE runs short: the verdict line says `SPENT in ~N min - M min BEFORE
+it resets`. N is the budget for finishing AND handing over, and the reset is further away than
+the money. Write the handover inside N, not after the STOP.
+
 ## 18. The working-style checklist
 
 **Before coding:** restate the task boundary · list sources used · list files you expect to

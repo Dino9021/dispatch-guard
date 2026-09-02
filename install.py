@@ -295,6 +295,64 @@ def check_python():
     return None, None
 
 
+# ⛔ THE FIRST CLAUDE CODE BUILD THAT KNOWS `PostToolUseFailure`. hooks.json subscribes to it
+# (0.56.1), and a build that does not know an event name silences EVERY hook of the plugin
+# that names it - the gate, the reminder, all of it - with nothing on screen. Measured
+# 2026-09-02 with a minimal pair on 2.0.30 / 2.0.55 / 2.0.56 (the review of 0.56.1).
+MIN_CLAUDE_CODE = (2, 0, 56)
+
+
+def claude_version_verdict(text):
+    """("OK" | "OLD" | "UNKNOWN", "x.y.z" or None) from `claude --version` output.
+
+    ⚠ Defensive on purpose: garbage, an empty string and None are all UNKNOWN, never OK.
+    A wrong "OK" here says the plugin is live on a build where it is inert.
+    """
+    m = re.match(r"\s*(\d+)\.(\d+)\.(\d+)", text or "")
+    if not m:
+        return "UNKNOWN", None
+    v = tuple(int(x) for x in m.groups())
+    return ("OK" if v >= MIN_CLAUDE_CODE else "OLD"), "%d.%d.%d" % v
+
+
+def claude_version_line():
+    """Print the Claude Code version line of --status; return its verdict.
+
+    ⛔ A MISSING `claude` IS "unknown", NEVER A CRASH AND NEVER A FALSE OK. --status is what a
+    person runs when nothing seems to work, so it must survive a PATH without the CLI on it
+    (the VS Code extension bundles its own binary and puts nothing on PATH).
+    """
+    exe = shutil.which("claude")
+    text = ""
+    if exe:
+        try:
+            # ⚠ The timeout bounds the CHILD. An npm-installed `claude` on Windows is a .cmd
+            # shim that spawns node, and when node stalls the pipe stays open in the
+            # grandchild - measured 2026-09-02: a stalled shim held --status 39.5 s, not 20.
+            # Slow, never wrong: the verdict is still UNKNOWN.
+            r = subprocess.run([exe, "--version"], capture_output=True, timeout=20)
+            text = r.stdout.decode("utf-8", "replace")
+        except Exception:
+            text = ""
+    verdict, ver = claude_version_verdict(text)
+    need = "%d.%d.%d" % MIN_CLAUDE_CODE
+    if verdict == "OK":
+        print("Claude Code version : %s (needs %s or later)" % (ver, need))
+    elif verdict == "OLD":
+        print("Claude Code version : ⛔ %s is OLDER than %s. This build does not know the"
+              % (ver, need))
+        print("                      PostToolUseFailure event the plugin subscribes to, and")
+        print("                      one unknown event silences EVERY hook of the plugin -")
+        print("                      nothing is enforced. Update Claude Code, then open a")
+        print("                      new session.")
+    else:
+        print("Claude Code version : unknown - `claude --version` gave nothing usable%s"
+              % ("" if exe else " (no `claude` on PATH)"))
+        print("                      ⚠ The plugin needs %s or later; check the version" % need)
+        print("                        yourself. Unknown is not OK.")
+    return verdict
+
+
 REFRESH_SECONDS = 60
 
 
@@ -469,6 +527,10 @@ def status():
     found = next((k for k in installed if k.startswith("dispatch-guard@")), None)
     print("plugin installed    : %s" % (found or "NO - install it first"))
     print("plugin enabled      : %s" % (enabled.get(found) if found else False))
+    # ⛔ OLD flips the verdict: an installed, enabled plugin on a build that silences it is
+    # NOT live. UNKNOWN does not - not knowing is reported as not knowing, never as either.
+    if claude_version_line() == "OLD":
+        ok = False
     # ⭐ THE ANSWER TO "so where IS it installed?", printed every time - not only when
     # something is already wrong. There is no fixed path to put in a document: the cache
     # path carries the VERSION, and `plugin update` leaves the old directory behind, so

@@ -91,15 +91,59 @@ def main():
         assert re.search(r"reclaimed automatically at \d\d:\d\d", why), why
         assert "Do NOT delete a slot file" in why, why
 
+        # ⛔ THE REFUSAL MUST PRINT EVEN WHEN ITS NOTE CANNOT BE BUILT. Measured 2026-09-02 by
+        # the review of 0.56.1: with slot_ttl_min huge, held_slots_note() raised OSError(22)
+        # from time.localtime() INSIDE deny()'s argument list, main()'s outer handler swallowed
+        # it, the process exited 0 with nothing on stdout - and nothing on stdout is an ALLOW.
+        # The log said DENY(slots-full); the dispatch went through. This is that exact path,
+        # through the real process. ⚠ `None` here IS the fail-open, so it is named before the
+        # decision is read - otherwise the failure reads as an AttributeError in this file.
+        with open(os.path.join(sdir, "config.json"), "w", encoding="utf-8") as f:
+            json.dump({"slot_ttl_min": 1000000000}, f)
+        fourth = dispatch("toolu_HUGE", "huge ttl probe")
+        assert fourth is not None, \
+            "FAIL-OPEN: the gate printed nothing with slot_ttl_min huge - the dispatch is allowed"
+        assert fourth.get("permissionDecision") == "deny", fourth
+        assert "Do NOT delete a slot file" in fourth.get("permissionDecisionReason", ""), fourth
+        # ⚠ And the guard must have FIRED, not merely not been needed: the note's failure is
+        # logged by name. The state-directory copy of the log is the authoritative one.
+        with open(os.path.join(sdir, "dispatch_gate.log"), encoding="utf-8") as f:
+            gate_log = f.read()
+        assert "HELD-NOTE-FAILED" in gate_log, \
+            "the refusal printed but the note never failed - this check injected nothing"
+        assert "could not be listed" in fourth.get("permissionDecisionReason", ""), fourth
+
+        # ⛔ AND A WRONG TYPE IN THE CONFIG IS NOT A WAY PAST THE REFUSAL EITHER. Measured
+        # 2026-09-02 by the review of 0.56.2: "slot_ttl_min": "abc" raised TypeError inside
+        # claim_slot() - BEFORE the note - and the process printed nothing: allowed. The
+        # refusal must print for every value a JSON file can hold there.
+        for n, bad in enumerate(("abc", None, "30", [30], False, -5)):
+            with open(os.path.join(sdir, "config.json"), "w", encoding="utf-8") as f:
+                json.dump({"slot_ttl_min": bad}, f)
+            got = dispatch("toolu_BAD%d" % n, "bad ttl probe %r" % (bad,))
+            assert got is not None, \
+                "FAIL-OPEN: the gate printed nothing with slot_ttl_min=%r" % (bad,)
+            assert got.get("permissionDecision") == "deny", (bad, got)
+            assert os.path.exists(slot0), "slot_ttl_min=%r reclaimed a live slot" % (bad,)
+        os.remove(os.path.join(sdir, "config.json"))      # default TTL for the rest
+
         # ⛔ THE EVENT THE PLUGIN USED TO MISS. A failed dispatch fires PostToolUseFailure,
         # never PostToolUse. Measured against Claude Code 2.1.251: same tool_use_id, and no
         # PostToolUse at all.
+        # ⛔ AND THE RELEASE MUST SURVIVE A FRACTIONAL max_slots. release_slot() iterates
+        # range(cfg["max_slots"]); 1.5 is "a number > 0" and range(1.5) is a TypeError, so
+        # until the round-2 review of 0.56.2 measured it, that config leaked every slot for
+        # ever. A whole-number rule in gate_config() is what this probes.
+        with open(os.path.join(sdir, "config.json"), "w", encoding="utf-8") as f:
+            json.dump({"max_slots": 1.5}, f)
         fire(env, dict(base, hook_event_name="PostToolUseFailure", tool_name="Agent",
                        tool_use_id="toolu_FIRST", error="API Error: 529 Overloaded",
                        is_interrupt=False,
                        tool_input={"subagent_type": "general-purpose"}))
         assert not os.path.exists(slot0), \
-            "a failed dispatch still holds its slot - PostToolUseFailure is not wired"
+            "a failed dispatch still holds its slot - PostToolUseFailure is not wired, " \
+            "or max_slots=1.5 broke release_slot()"
+        os.remove(os.path.join(sdir, "config.json"))
 
         third = dispatch("toolu_THIRD", "round 2 review, retried")
         assert third.get("permissionDecision") == "allow", third

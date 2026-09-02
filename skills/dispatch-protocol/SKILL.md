@@ -139,6 +139,13 @@ finish what is in flight, no new wave. **STOP** = wrap up, write `HANDOFF.md`, a
 (both routes the gate prints), end the turn. **NO-DATA** = report usage as UNKNOWN, never a
 number. Never compute headroom from raw percentages.
 
+⭐ **The same line also says WHEN the window is spent at the current rate** — `⛔ At the
+current rate the 5h window is SPENT in ~N min - M min BEFORE it resets. Plan for the gap, not
+for the reset.` That N is your budget, not a forecast to note and move past: fit the remaining
+work into it, and write the handover BEFORE it runs out, because the reset is M minutes further
+away than the money. GO with a small N is still GO for the step you are on and STOP for a new
+wave. Do not compute N yourself; act on the number the line prints.
+
 ## HANDOFF.md after a STOP
 
 The only thing the next run gets (a transcript re-read costs ~95k tokens/MB with zero

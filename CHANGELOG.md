@@ -33,6 +33,62 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.56.2
+
+**0.56.1 那段「指名佔位者」的拒絕訊息，本身可以讓拒絕消失。** 0.56.1 的審查
+（`Memory/tasks/20260902-082020-stale-slot-after-a-failed-dispatch/agent-01-adversarial-review.md`）
+量到：`slot_ttl_min` 設得夠大時，`held_slots_note()` 裡的 `time.localtime(started + ttl * 60)`
+拋出 `OSError(22)`，而那個呼叫就寫在 `deny()` 的參數列裡 —— `main()` 最外層的處理器吞掉例外、
+以 0 結束、stdout 什麼都沒有。⛔ **一個什麼都不印的 hook 等於批准。** log 寫著
+`DENY(slots-full)`，派工照樣過。為了讓拒絕更安全而加的那幾行字，正是讓拒絕消失的那幾行。
+
+- 那個 note 現在走 `safe_held_slots_note()`：任何例外都換成空字串，並在 gate log 寫一行
+  `HELD-NOTE-FAILED <exception>`。拒絕一定會印出來；note 是選配。note 空白時，拒絕訊息改說
+  「佔位者列不出來，gate log 有 HELD-NOTE-FAILED 說明原因；位子仍在 N 分鐘後自行清除」，
+  而不是「見上方時間」配三行空白。
+- ⛔ **同一類的第二個洞，審查在本版找到、本版修掉：`slot_ttl_min` 填錯型別也會放行。**
+  `"abc"`、`null`、`"30"`、`[30]` 都讓 `claim_slot()` 在 `cfg["slot_ttl_min"] * 60` 拋
+  `TypeError` —— 比 note 更早、在拒絕之前 —— 行程什麼都不印，派工被放行；`false` 或負數則
+  每一次派工都回收所有位子，等於併發上限關掉。`gate_config()` 現在對三個數字鍵
+  （`slot_ttl_min`、`approval_ttl_min`、`max_slots`）做型別檢查：
+  能解析的字串保留、其他一律回到預設值，並在 gate log 寫 `CONFIG-IGNORED(<key>=<value>)`。
+  ⚠ `max_model_price` 刻意不在內：它自己有解析規則（接受模型名稱、`null` 等於關閉、
+  打錯字時 fail-open 並記 `MODEL-PRICE-LIMIT-UNKNOWN`），`test_guards.py` 釘住這三件事。
+  ⛔ 第二輪審查再量到一個：`max_slots` 是 `1.5` 這種正數但非整數時，`range(1.5)` 在佔位與
+  釋放兩條路都拋 `TypeError` —— 有併發核准時派工被放行，而且之後再也沒有位子被釋放。
+  `max_slots` 現在必須是整數，否則回預設值並記 log；lifecycle 檢查在 `max_slots: 1.5` 下
+  透過真正的行程走一次 `PostToolUseFailure`，位子必須被放掉。
+- ⭐ `dispatch-protocol` skill 多一段：`--verdict` 那一行同時說「照目前速度，視窗在 N 分鐘後
+  用盡，比重置早 M 分鐘」。N 就是預算 —— 把剩下的工作塞進去，在它用完之前寫好交接；
+  不要自己算，照那一行印出來的數字行動。（owner 於 2026-09-02 要求，因為這個判斷在本版的
+  開發過程中真的救了一次。）
+  `test_slot_lifecycle.py` 用六個壞值逐一透過真正的 hook 行程派工，判定都必須是 `deny`，
+  而且活著的位子不能被回收。拆掉型別檢查後實測失敗於 `FAIL-OPEN: ... slot_ttl_min='abc'`。
+- `--selftest` 多一項：`slot_ttl_min = 1000000000` 時裸的 `held_slots_note()` 必須拋
+  `OSError`（否則這項檢查就沒在注入任何失敗），包過的版本必須回空字串並留下那行 log。
+  拆掉 `try` 後實測失敗，失敗訊息是 `OSError: [Errno 22] Invalid argument`，不是 `AssertionError`。
+- `Tools/Debug/test_slot_lifecycle.py` 多一段：slot0 被佔住時，把
+  `{"slot_ttl_min": 1000000000}` 寫進沙盒的 `config.json`，再透過**真正的 hook 行程**派工一次，
+  判定必須仍然是 `deny`，而且 log 裡必須有 `HELD-NOTE-FAILED`。⚠ 這裡 `None` 就是 fail-open，
+  所以在讀判定之前先以那個名字斷言它。拆掉 `try` 後實測失敗於
+  `FAIL-OPEN: the gate printed nothing with slot_ttl_min huge - the dispatch is allowed`。
+- ⛔ **最低 Claude Code 版本：2.0.56。** 那是第一個認識 `PostToolUseFailure` 的版本；
+  更舊的版本遇到一個不認識的事件名稱，會把該外掛的**每一個** hook 安靜關掉（審查以
+  2.0.30 / 2.0.55 / 2.0.56 做最小對照實測）。寫進 `README.md`（兩種語言）與
+  `plugin.json` 的 `description`。`install.py --status`（`/dispatch-guard:status` 跑的就是它）
+  現在讀 `claude --version`：低於 2.0.56 印 ⛔ 並把 OVERALL 判成 not live；讀不到或看不懂
+  一律「unknown」，不會當機、也不會假裝 OK。`test_install.py` 留下比較的檢查：
+  2.0.55 → OLD、2.0.56 → OK、2.1.258 → OK、垃圾 / 空字串 / 找不到 `claude` → UNKNOWN。
+- `PROTOCOL.md` 第 95 行那一列改成和第 42 行一致：gate 現在有註冊 `PostToolUseFailure`，
+  但那個分支只釋放位子並在 `progress.md` 記 `FAILED:`，wind-down 在那裡仍然不會發出。
+- 剩餘缺口寫寬：不只「整個 turn 死掉」—— 一個 `subagent_type` 無效的 `Agent` 呼叫，
+  兩個終止事件都不會發出，而 turn 照樣繼續。兩種情況都要等完 `slot_ttl_min`。
+- 已知但沒修（另開任務）：`test_resume_cancel.py` 寫 703 bytes 進真正的 state log，
+  落在 `test_guards` 的視窗裡，所以 `test_all.py` **第一次**跑可能 11/12、之後乾淨。
+  記在 `Memory/tasks/20260902-103321-slot-fail-open-and-account-mixing/progress.md`。
+
+---
+
 ## 0.56.1
 
 **「已經有 1 個 sub-task 在跑」現在會說出那是誰、跑多久了、幾點自動放掉。**
@@ -56,6 +112,8 @@ GATE-ERROR NameError("name 'now' is not defined")
   並在 `progress.md` 記一行 `FAILED: <錯誤訊息>`。
 - ⚠ 剩下的缺口寫清楚：如果整個 turn 死掉（API 錯誤打死的是父 session，不是那個工具呼叫），
   沒有任何事件會發出來，那個位子仍然要等 `slot_ttl_min`。這正是上面那段拒絕訊息在講的情況。
+  ⚠ **（0.56.2 補充）不只這一種。** 一個 `subagent_type` 無效的 `Agent` 呼叫，**兩個**終止事件
+  都不會發出，而 turn 照樣繼續（2026-09-02 實測）。兩種情況都要等完 `slot_ttl_min`。
 - 新增檢查 `Tools/Debug/test_slot_lifecycle.py`（進 `test_all.py`，現在 12 項）：
   用真正的子行程跑一遍 allow → 被佔用 → 拒絕時指名 → 失敗時釋放 → 再次 allow。
 - 回收機制、TTL、原子佔位都和以前一樣。
@@ -1949,6 +2007,81 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.56.2
+
+**The 0.56.1 refusal that names the slot holder could take the refusal down with it.** The
+review of 0.56.1
+(`Memory/tasks/20260902-082020-stale-slot-after-a-failed-dispatch/agent-01-adversarial-review.md`)
+measured it: with `slot_ttl_min` large enough, `time.localtime(started + ttl * 60)` inside
+`held_slots_note()` raises `OSError(22)`, and that call sat inside `deny()`'s argument list -
+so `main()`'s outer handler swallowed it, the process exited 0, and stdout was empty.
+⛔ **A hook that prints nothing has approved the call.** The log said `DENY(slots-full)`; the
+dispatch went through. The words added to make the refusal safer were the words that made it
+disappear.
+
+- The note now goes through `safe_held_slots_note()`: any exception becomes an empty string
+  plus one gate-log line `HELD-NOTE-FAILED <exception>`. The refusal always prints; the note
+  is the optional part. When the note is blank the refusal says so - "the holder could not be
+  listed, the gate log has a HELD-NOTE-FAILED line, the slot still clears itself N minutes
+  after it was claimed" - instead of "at the time shown above" over three empty lines.
+- ⛔ **A second hole of the same class, found by this version's review and closed here: a
+  wrong TYPE in `slot_ttl_min` also let the dispatch through.** `"abc"`, `null`, `"30"` and
+  `[30]` made `claim_slot()` raise `TypeError` at `cfg["slot_ttl_min"] * 60` - earlier than
+  the note, before any refusal - so the process printed nothing and the dispatch was allowed;
+  `false` or a negative number reclaimed every slot on every dispatch, which is the
+  concurrency limit switched off. `gate_config()` now type-checks the three numeric keys
+  (`slot_ttl_min`, `approval_ttl_min`, `max_slots`): a string that parses is kept, anything
+  else falls back to the default, and the gate log gets one `CONFIG-IGNORED(<key>=<value>)`
+  line per read for as long as it stays wrong. ⚠ `max_model_price` is deliberately NOT in
+  that list: it has its own parsing (a model name is accepted, `null` switches the check off,
+  a typo fails open with `MODEL-PRICE-LIMIT-UNKNOWN`), and `test_guards.py` pins all three.
+  ⛔ Round 2 of the review measured one more: `max_slots` = `1.5` - a positive number that is
+  not whole - made `range(1.5)` raise `TypeError` on both the claim and the release path: with
+  a concurrency approval in place the dispatch was ALLOWED, and no slot was ever released again.
+  `max_slots` must now be a whole number, else the default plus a log line; the lifecycle check
+  drives one `PostToolUseFailure` through the real process under `max_slots: 1.5` and requires
+  the slot to be released.
+- ⭐ The `dispatch-protocol` skill gains a paragraph: the `--verdict` line also says "at the
+  current rate the window is SPENT in N min, M min BEFORE it resets". N is the budget - fit
+  the remaining work into it and write the handover before it runs out; do not compute it, act
+  on the number the line prints. (Asked for by the owner on 2026-09-02, because that reading
+  saved this very release once.)
+  `test_slot_lifecycle.py` fires six bad values through the real hook process; each must be
+  `deny` and the live slot must survive. Mutation-checked: with the type check removed it fails
+  at `FAIL-OPEN: ... slot_ttl_min='abc'`.
+- `--selftest` gains a case: with `slot_ttl_min = 1000000000` the bare `held_slots_note()`
+  must raise `OSError` (or the check injects nothing), and the wrapped one must return blank
+  and leave that log line. Mutation-checked: with the `try` removed it fails, and the failure
+  text is `OSError: [Errno 22] Invalid argument`, not an `AssertionError`.
+- `Tools/Debug/test_slot_lifecycle.py` gains a step: while slot0 is held, write
+  `{"slot_ttl_min": 1000000000}` into the sandbox `config.json`, fire one more dispatch
+  through the **real hook process**, and require the decision to still be `deny` and the log to
+  hold `HELD-NOTE-FAILED`. ⚠ `None` from the process IS the fail-open, so it is asserted by
+  that name before the decision is read. Mutation-checked: with the `try` removed it fails at
+  `FAIL-OPEN: the gate printed nothing with slot_ttl_min huge - the dispatch is allowed`.
+- ⛔ **Minimum Claude Code version: 2.0.56** - the first build that knows
+  `PostToolUseFailure`. An earlier build meeting one unknown event name silences **every**
+  hook of that plugin (the review measured it with a minimal pair on 2.0.30 / 2.0.55 /
+  2.0.56). Declared in `README.md` (both languages) and in `plugin.json`'s `description`.
+  `install.py --status` (which is what `/dispatch-guard:status` runs) now reads
+  `claude --version`: below 2.0.56 it prints ⛔ and OVERALL reads not live; unreadable or
+  missing is "unknown" - never a crash, never a false OK. `test_install.py` keeps the
+  comparison honest: 2.0.55 → OLD, 2.0.56 → OK, 2.1.258 → OK, garbage / empty / no `claude`
+  on PATH → UNKNOWN.
+- `PROTOCOL.md` line 95 now agrees with line 42: the gate does register
+  `PostToolUseFailure`, but that branch only releases the slot and records `FAILED:` in
+  `progress.md`; the wind-down still does not fire there.
+- The residual gap is stated wider: not only "the whole turn dies" - an `Agent` call with an
+  invalid `subagent_type` fires **neither** terminal event while the turn carries on. Both
+  cases wait out `slot_ttl_min`.
+- Known and NOT fixed here (recorded as its own task in
+  `Memory/tasks/20260902-103321-slot-fail-open-and-account-mixing/progress.md`):
+  `test_resume_cancel.py` writes 703 bytes into the real state log, which lands in
+  `test_guards`' window, so the **first** `test_all.py` run can show 11/12 and later runs are
+  clean.
+
+---
+
 ## 0.56.1
 
 **"1 sub-task is already in flight" now says which one, how old it is, and when it clears.**
@@ -1976,6 +2109,9 @@ refusal never said so. ⇒ **A wait with no visible end reads as a broken gate.*
 - ⚠ The remaining gap, stated: if the whole turn dies (the API error kills the parent session
   rather than the tool call), no event fires and the slot waits out `slot_ttl_min`. That is
   the case the refusal text above is for.
+  ⚠ **(Added in 0.56.2) It is not the only such case.** An `Agent` call with an invalid
+  `subagent_type` fires **neither** terminal event while the turn carries on (measured
+  2026-09-02). Both cases wait out `slot_ttl_min`.
 - New check `Tools/Debug/test_slot_lifecycle.py`, wired into `test_all.py` (now 12): it drives
   the gate as real subprocesses through allow → held → refused BY NAME → released on failure →
   allowed again.
