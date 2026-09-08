@@ -1,0 +1,7 @@
+Memory/
+.gitignore
+Tools/publish-public.py
+Tools/PUBLISHING.md
+Tools/Debug/scratch/
+__pycache__/
+*.pyc
