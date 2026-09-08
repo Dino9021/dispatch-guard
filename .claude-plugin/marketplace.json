@@ -1,0 +1,30 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "dispatch-guard",
+  "description": "One-plugin marketplace: this repository is both the marketplace and the plugin it lists, so `claude plugin marketplace add Dino9021/dispatch-guard` followed by `claude plugin install dispatch-guard@dispatch-guard` is the whole installation.",
+  "owner": {
+    "name": "Dino9021"
+  },
+  "plugins": [
+    {
+      "name": "dispatch-guard",
+      "source": "./",
+      "description": "Makes sub-agent dispatch discipline binding instead of advisory, and refuses to dispatch once the usage window is nearly spent. One sub-task at a time unless the owner approves a count; the plan and every sub-task prompt land on disk before any dispatch; every outcome is recorded; and a one-shot resume can be armed for after the window reopens. Ships two skills: dispatch-protocol, and unattended-work for long stretches with nobody watching. Standard-library Python only - nothing to install.",
+      "author": {
+        "name": "Dino9021"
+      },
+      "category": "workflow",
+      "keywords": [
+        "subagents",
+        "dispatch",
+        "usage-limits",
+        "rate-limit",
+        "guardrails",
+        "hooks",
+        "statusline",
+        "unattended",
+        "autonomy"
+      ]
+    }
+  ]
+}

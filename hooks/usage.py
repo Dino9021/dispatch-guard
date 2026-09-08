@@ -1,0 +1,4769 @@
+#!/usr/bin/env python3
+"""Usage-limit awareness for the dispatch skill. Two entry points, one file.
+
+    usage.py --statusline    Claude Code's statusLine command. Reads the payload on
+                             stdin, PERSISTS the rate-limit numbers, prints one line.
+    usage.py --verdict       Prints GO / PACE / STOP / NO-DATA and exits 0/1/2/3.
+    usage.py --verdict --json    Same, as a JSON object.
+    usage.py --fetch-now     Spend ONE API call, then print the verdict. ⭐ The answer to
+                             a NO-DATA you want to confirm: --verdict never fetches, so
+                             without this the only repair was piping `{}` into
+                             --statusline, which nobody discovers. A diagnostic, not a
+                             replacement for the statusline or --watch.
+    usage.py --watch [--every N] Print the usage line every N seconds (default 30).
+                             ⭐ For the VS Code extension, whose panel does NOT render a
+                             statusline: measured on 2.1.246, `statusLine` appears 0 times
+                             in the webview bundle while `hooks`, `permissions`, `plugins`
+                             and `subagent` all appear - so the 0 is real, not minification.
+                             The CLI binary mentions it 34 times and does render it.
+                             ⭐ AND IT NOW FETCHES ITS OWN NUMBERS, so running this in a
+                             VS Code terminal is a complete answer rather than a partial
+                             one - it no longer needs a statusline to exist anywhere.
+
+Adapted from claude-pacer (https://github.com/drpwchen/claude-pacer) - its reset
+arithmetic, seven-day false-alarm rule, burn projection and near-reset exemption are
+reproduced here in Python so the skill has no Node dependency and nothing to install.
+The statusline RENDERING (bars, responsive tiers, width probing, topic/model display)
+was deliberately not taken: it is the large half of that project and none of it is
+needed to decide whether to dispatch.
+
+WHERE THE NUMBERS COME FROM - a direct HTTP GET, as of 2026-08-26:
+
+    GET https://api.anthropic.com/api/oauth/usage
+        Authorization: Bearer <accessToken from ~/.claude/.credentials.json>
+        anthropic-beta: oauth-2025-04-20
+
+⛔ THIS REPLACED THE STATUSLINE PAYLOAD AS THE SOURCE, AND THE REASON IS A MEASUREMENT.
+The payload route still works and is still the only thing a statusline receives - but a
+session REPLAYS the `rate_limits` it last saw, and it advertises nothing when it does.
+Measured 2026-08-26: one session reported 6% on twelve consecutive renders across eleven
+minutes while the true figure climbed 15 -> 18 -> 22, and its `resets_at` was CORRECT the
+whole time, so no staleness check on the reset could have caught it. Sixteen points low,
+in the direction that keeps dispatching. Two sessions once read 97% and 74% at the same
+moment for the same account, which is the same defect seen from the side.
+⭐ The endpoint, by contrast, matched the extension's own `Account & Usage` panel to the
+digit on both windows at 15:21 - the panel reaches it over an SDK channel a hook cannot
+speak, which is why this file goes to HTTP instead.
+
+⚠ It is UNDOCUMENTED. Anthropic's published Usage/Cost and Rate Limits Admin APIs are a
+different quantity (tokens and dollars against a Console org, admin key required) and
+carry no plan-window percentage at all. The client's own wrapper for the neighbouring
+call is named `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET`. So every
+failure here must end as "no number", never as a wrong number and never as a crash.
+
+Standard library only, by design. No pip install, no npm install, nothing to vendor.
+"""
+
+import atexit
+import datetime
+import glob
+import json
+import os
+import random
+import re
+import shutil
+import sys
+import time
+import unicodedata
+import urllib.error
+import urllib.request
+
+DEFAULTS = {
+    # The two the owner asked to keep: brake, then stop.
+    # ⭐ ALIGNED WITH THE COLOUR THRESHOLDS BELOW, ON PURPOSE, and kept as separate keys.
+    # The bar turning orange now means exactly "PACE has begun" and red means "STOP has
+    # begun", so the line a person glances at and the decision the gate makes cannot drift
+    # apart. ⚠ They stay four keys rather than two: colour is what a person reads, the
+    # thresholds are what refuses a tool call, and somebody who wants a warning colour
+    # earlier than the slow-down - or no colour at all - must not have to give up the brake
+    # to get it.
+    # ⛔ ONE PAIR PER WINDOW, because one pair could only ever watch one window. The brake
+    # read the five-hour percentage and nothing else, so an account at 7d 99% and 5h 0% was
+    # told GO and dispatched until the server refused - the 5h number was true and the
+    # answer was wrong. ⚠ The 7d pair sits high on purpose: that window is usually NOT the
+    # constraint, and pacing on it at 70% would throttle a week of work for nothing.
+    "soft_pct_5h": 70,       # PACE  - finish what is in flight, start nothing heavy
+    "hard_pct_5h": 85,       # STOP  - wrap up and schedule a resume
+    "soft_pct_7d": 95,
+    "hard_pct_7d": 97,
+    # ⭐ HOW FAR BACK THE BURN GAUGE LOOKS. The gauge answers "how fast am I burning NOW",
+    # so it reads the last `burn_window_min` minutes rather than the whole five-hour window.
+    # ⚠ 0 means the WHOLE WINDOW - steady, and roughly `pct / minutes elapsed`, but it takes
+    # over an hour to notice that the rate changed. See _burn_rate() for the trade this buys
+    # and what it costs.
+    # ⚠ 10, THE OWNER'S CHOICE, AND IT BUYS REACTION AT THE COST OF RESOLUTION. It was 30.
+    # `used_percentage` arrives in WHOLE percent, so one step over a 10-minute baseline is
+    # 0.1 %/min against 0.033 at 30 - the gauge is three times twitchier, and on a quiet
+    # stretch it reads `--` rather than a small number, because _burn_rate() returns None
+    # when nothing moved. That is the intended trade, not a regression. ⛔ Safe for exactly
+    # one reason, the same one _burn_rate() names: NO BURN FIGURE REACHES GO/PACE/STOP.
+    "burn_window_min": 10,
+    # ⭐ THE BURN GAUGE'S COLOUR BANDS, as MULTIPLES OF CLOCK SPEED. Clock speed is
+    # 100 / window minutes - 0.333 %/min for a five-hour window - and means "at this pace you
+    # finish the window exactly as it resets". So 1.00 is "spending as fast as the clock",
+    # 2.25 is "two and a quarter times that".
+    # ⭐ FITTED, NOT PICKED. The owner asked for red 10% / orange 15% / yellow 25% / green 50%
+    # of the time and for the multiples that produce it; measured over 255 minutes of real
+    # history across two windows, these give 53 / 27 / 12 / 8. See
+    # Memory/tasks/20260829-133237-burn-two-signals/ for the fit and both review rounds.
+    # ⚠ THEY ARE CALIBRATED AGAINST burn_window_min = 10 AND ARE NOT INDEPENDENT OF IT. At 15
+    # or above the red band is never reached at all; `install.py --status` says so rather
+    # than this file warning on every render.
+    # ⛔ THREE SCALARS, NOT A LIST, AND THAT IS FORCED. config() copies a value from disk only
+    # `if isinstance(source.get(k), (int, float))`, so a list under a known key would be
+    # SILENTLY IGNORED and the reader would get the default while believing otherwise.
+    "burn_x_yellow": 1.00,   # at or above this multiple of clock speed: yellow
+    "burn_x_orange": 1.75,   # ...orange
+    "burn_x_red": 2.25,      # ...red
+    "stale_min": 15,         # data older than this is not trusted
+    "near_reset_min": 20,    # within this long of the reset, soften by one level
+    "colour_warn_pct": 70,   # bar turns orange at or above this
+    "colour_alarm_pct": 85,  # bar turns red at or above this
+    # ⛔ HOW FAR PAST ITS OWN ┃ MARKER A BAR MUST BE BEFORE IT TURNS YELLOW, in percentage
+    # points. ⚠ WITHOUT A DEADBAND THIS FIRES ON THE FIRST PERCENT OF EVERY WINDOW: just
+    # after a reset the elapsed fraction is near zero, so any spending is "past the marker".
+    # Measured 2026-09-01, minutes after the seven-day window reset - 1% used against 0.48%
+    # elapsed drew a yellow bar and a yellow dot, and a seven-day clock advances 0.0099%/min,
+    # so one percent of usage stays yellow for about a hundred minutes.
+    # ⭐ Points, not a ratio, because a ratio against a near-zero baseline is what broke.
+    # Five points is a quarter-hour of a five-hour window and eight hours of a seven-day one.
+    # 0 restores the old always-on behaviour.
+    "colour_warn_margin_pct": 5,
+    # How often the API may be asked. ⚠ THE REAL INTERVAL IS THIS PLUS UP TO
+    # fetch_seconds_jitter of randomness - see _interval(). See FETCH_FLOOR_SECONDS:
+    # values below that floor are clamped, and the reason is not a preference.
+    # ⚠ THE DEFAULT AND THE FLOOR ARE THE SAME NUMBER AGAIN (120). A config asking for less
+    # is clamped UP to 120 and told so on stderr - measured 2026-08-31, a 60 s poll drew
+    # three HTTP 429s in ten minutes on this account. 120 is the floor, not a preference.
+    "fetch_seconds": 120,
+    # Randomness ADDED to every interval, never subtracted. 0 disables it. See _interval()
+    # for why it is not merely politeness, and config() for the two things it is clamped
+    # against.
+    "fetch_seconds_jitter": 30,
+    # ⚠ A DIFFERENT interval, and the two are easy to confuse. This one is how often
+    # Claude Code RE-RUNS the statusline; install.py copies it into Claude Code's own
+    # statusLine.refreshInterval. usage.py never acts on it. Each re-run consults the
+    # cache and only reaches the network once fetch_seconds has elapsed, so leaving this
+    # at 60 costs nothing: the display stays responsive while the API is asked at most
+    # once every fetch_seconds.
+    "refresh_seconds": 60,
+    # ⛔ WHEN `--watch` STOPS ASKING THE API. That task is bound to the FOLDER being open,
+    # not to a session being alive, so without this it polls all night against an endpoint
+    # that allows about five calls per access token. The gate touches state/<id>.alive on
+    # every hook event, so "is anyone working?" is already answered on disk.
+    # ⚠ Conservative on purpose: a single long tool call fires no hook between its Pre and
+    # Post, so a short value would pause the watcher during a build and unpause after it.
+    # 15 minutes is longer than that and far shorter than a night.
+    # ⚠ Only --watch is gated. --statusline is invoked BECAUSE a session is interacting, so
+    # testing there would suppress the refresh exactly when it is due.
+    "idle_after_min": 15,
+}
+
+
+def state_dir(argv=None):
+    """Where token_usage.json and the logs/ folder live.
+
+    `--dir` wins, then $CLAUDE_DISPATCH_DIR, then **~/.claude/dispatch-guard/**.
+
+    ⛔ THAT LAST PATH USED TO BE WRITTEN HERE AS "~/.claude/", WHICH IS NOT WHERE ANYTHING
+    GOES. It is the one sentence somebody reads when they are trying to find their files,
+    so being one directory out made it worse than saying nothing.
+    ⚠ install.py does NOT read $CLAUDE_DISPATCH_DIR - it hard-codes the default - so with
+    that variable set, `install.py --status` reports paths the hooks are not using. It says
+    so on its own 'log files' line rather than leaving the reader to find out.
+    """
+    argv = argv if argv is not None else sys.argv[1:]
+    if "--dir" in argv:
+        i = argv.index("--dir")
+        if i + 1 < len(argv):
+            return os.path.abspath(argv[i + 1])
+    env = os.environ.get("CLAUDE_DISPATCH_DIR")
+    if env:
+        return os.path.abspath(env)
+    home = os.path.expanduser("~")
+    return os.path.join(home, ".claude", "dispatch-guard")
+
+
+def read_json(path, fallback=None):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return fallback
+
+
+# ⭐ How long a file in history_dir survives, in days. 0 keeps everything for ever.
+# ⚠ Thirty days of the debug dump is about 40 MB at the measured 1.2-1.4 MB a day, and
+# thirty days of token_usage is well under 30 MB. Both are small enough to keep and
+# enough to be worth bounding, which is why the default deletes rather than hoards.
+HISTORY_KEEP_DAYS_DEFAULT = 30
+
+# ⭐ EVERY DEBUG SWITCH AND ITS DEFAULT, in one place, because "what switches exist?" was
+# otherwise answerable only by reading config.example.json.
+# ⛔ The two defaults differ on purpose. token_usage writes two percentages a row -
+# 82 KB a day, MEASURED (132 bytes a row, about 640 readings, and only when a number
+# actually moved) - and it is what makes the burn PROJECTION work at all, so it is
+# ON. API_response_usage writes whole response bodies at 1.2-1.4 MB a day to answer a
+# question and then be switched off again, so it is OFF.
+DEBUG_DEFAULTS = {
+    "API_response_usage": False,
+    "token_usage": True,
+}
+
+
+def _days(value, default):
+    """A retention setting -> a number of days. ⛔ ANYTHING UNUSABLE KEEPS FILES FOR EVER.
+
+    ⚠ THE DEFAULT DIRECTION MATTERS MORE HERE THAN ANYWHERE ELSE IN THIS FILE, because this
+    is the one setting that DELETES. Every other bad value in config.json costs a wrong
+    number on a line; a bad value here could cost a record that cannot be recovered. So a
+    string, a null, a negative, a bool - anything this cannot read as a positive number -
+    means KEEP EVERYTHING, never "fall back to 30 days and start deleting".
+    ⭐ A hand-written "30" still works: the digits are read, because refusing them would be
+    surprising in the other direction.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):          # True is not 1 day, and False is not 0
+        return 0
+    try:
+        days = float(value)
+    except (TypeError, ValueError):
+        return 0
+    if days != days or days in (float("inf"), float("-inf")) or days <= 0:
+        return 0
+    return days
+
+
+def _truthy(value, default=False):
+    """A config value -> bool. ⛔ A STRING IS READ FOR ITS MEANING, NOT ITS LENGTH.
+
+    ⚠ `bool("false")` is True, and so is `bool("0")` and `bool("no")`. JSON writes a real
+    boolean, but config.json gets hand-edited, and somebody typing the word for OFF must not
+    switch something ON. Measured by a refuting pass: `"API_response_usage": "false"` turned
+    the dump on.
+
+    ⛔ AN UNRECOGNISED STRING RETURNS `default`, NOT True. A first version returned True for
+    anything it did not recognise, which switches a diagnostic ON for a typo - the same
+    "reads as off, behaves as on" failure the function exists to remove.
+
+    ⭐ THIS IS DELIBERATELY A SECOND COPY of `cmd_guards._truthy`, and the semantics are kept
+    identical on purpose - including the `default` for an unrecognised value. It is not
+    imported because the dependency runs the other way: dispatch_gate.py and resume.py both
+    `import usage`, while usage.py imports nothing from its siblings, and cmd_guards is
+    itself a dispatch_gate dependency. Reaching sideways from here would invert that and
+    risk a cycle. ⚠ If you change one, change both.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ("false", "0", "no", "off", ""):
+        return False
+    if text in ("true", "1", "yes", "on"):
+        return True
+    return default
+
+
+def config(sdir):
+    """DEFAULTS overlaid with config.json, if one exists. Unknown keys are ignored."""
+    cfg = dict(DEFAULTS)
+    disk = read_json(os.path.join(sdir, "config.json"), {}) or {}
+    for source in (disk, disk.get("guard") or {}):
+        for k in DEFAULTS:
+            if isinstance(source.get(k), (int, float)):
+                cfg[k] = source[k]
+    # ⛔ The floor is ENFORCED, not merely documented, and the clamp SAYS SO when it
+    # fires. A configured 30 silently becoming 120 is indistinguishable from a bug.
+    if cfg["fetch_seconds"] < FETCH_FLOOR_SECONDS:
+        sys.stderr.write(
+            "usage.py: fetch_seconds=%s raised to the %d s floor - the usage endpoint "
+            "rate-limits hard and a 429 makes the brake fail OPEN; see FETCH_FLOOR_SECONDS.\n"
+            % (cfg["fetch_seconds"], FETCH_FLOOR_SECONDS))
+        cfg["fetch_seconds"] = FETCH_FLOOR_SECONDS
+    # ⛔ CLAMPED UP, NOT REJECTED, and it SAYS SO. Below BURN_WINDOW_FLOOR_MIN the span guard
+    # in _burn_rate() refuses every sample, so a well-meant "burn_window_min": 2 would not
+    # make the gauge twitchy - it would switch the gauge OFF, silently and for ever.
+    # ⚠ 0 IS NOT CLAMPED: it is the documented way to ask for the whole window instead.
+    if cfg["burn_window_min"] < 0:
+        cfg["burn_window_min"] = DEFAULTS["burn_window_min"]
+    # ⛔ THE THREE BAND EDGES MUST ASCEND, AND ALL THREE FALL BACK TOGETHER. An out-of-order
+    # set does not error - it makes a band unreachable, and a colour that never appears is
+    # indistinguishable from a speed that never happened. ⚠ All three are restored, not just
+    # the offending one: a half-honoured set is a calibration nobody chose.
+    _edges = [cfg["burn_x_yellow"], cfg["burn_x_orange"], cfg["burn_x_red"]]
+    if not (0 < _edges[0] < _edges[1] < _edges[2]):
+        sys.stderr.write(
+            "usage.py: burn_x_yellow/orange/red = %g/%g/%g must be positive and ascending; "
+            "using the defaults %g/%g/%g.%s"
+            % tuple(_edges + [DEFAULTS["burn_x_yellow"], DEFAULTS["burn_x_orange"],
+                              DEFAULTS["burn_x_red"], chr(10)]))
+        for _k in ("burn_x_yellow", "burn_x_orange", "burn_x_red"):
+            cfg[_k] = DEFAULTS[_k]
+    if 0 < cfg["burn_window_min"] < BURN_WINDOW_FLOOR_MIN:
+        sys.stderr.write(
+            "usage.py: burn_window_min=%g raised to the %d min floor - a shorter baseline "
+            "cannot resolve a rate from whole-percent readings; 0 asks for the whole "
+            "window.%s" % (cfg["burn_window_min"], BURN_WINDOW_FLOOR_MIN, chr(10)))
+        cfg["burn_window_min"] = BURN_WINDOW_FLOOR_MIN
+    # ⛔ NEGATIVE JITTER IS REFUSED, and this is the load-bearing clamp. Jitter is added,
+    # so a negative value would SUBTRACT and could push the real interval under the floor -
+    # which is the one thing the floor exists to prevent.
+    if cfg["fetch_seconds_jitter"] < 0:
+        sys.stderr.write("usage.py: fetch_seconds_jitter=%s is negative and would subtract "
+                         "from the interval; using 0.%s"
+                         % (cfg["fetch_seconds_jitter"], chr(10)))
+        cfg["fetch_seconds_jitter"] = 0
+    # ⚠ A jitter big enough to push the longest interval past stale_min makes the data go
+    # stale between fetches, which renders as -- and reads NO-DATA - a brake that fails
+    # OPEN. Warned rather than clamped: the person may have raised stale_min on purpose,
+    # and silently overriding a deliberate choice is its own trap.
+    if cfg["fetch_seconds"] + cfg["fetch_seconds_jitter"] > cfg["stale_min"] * 60:
+        sys.stderr.write(
+            "usage.py: fetch_seconds+jitter (%ds) can exceed stale_min (%d min), so the "
+            "number will intermittently read -- and the brake will not fire.%s"
+            % (cfg["fetch_seconds"] + cfg["fetch_seconds_jitter"], cfg["stale_min"],
+               chr(10)))
+    # An explicit token_usage_file lets this skill read an EXISTING claude-pacer install
+    # instead of collecting its own, so a machine that already has one is not broken
+    # by installing this.
+    cfg["token_usage_file"] = (disk.get("token_usage_file")
+                          or os.path.join(sdir, "token_usage.json"))
+    cfg["colour"] = disk.get("colour", disk.get("color", True))
+    # ⭐ ON by default, and it did not use to be. token_usage_history_*.jsonl records how
+    # much was used and when - two percentages a row, nothing else. It is on because burn
+    # PROJECTION needs two samples of the same window, so with it off the "projected to
+    # exceed before the reset" half of PACE has never fired for anybody who did not go and
+    # switch it on. The soft and hard thresholds were always unaffected either way.
+    # ⚠ THE COST IS NOW BOUNDED, which is what changed: roughly a megabyte a day, and
+    # history_keep_days removes whole files after 30 days. Kept for ever, it was a record of
+    # a person's usage that nobody had asked for; kept for a month, it is what makes the
+    # projection work.
+    # ⛔ THE SWITCH IS `debug.token_usage` NOW, and it is set further down, once the
+    # debug block has been parsed. See the assignment there - putting it here would mean
+    # parsing that block twice, and the second copy is the one that drifts.
+    cfg["history_dir"] = disk.get("history_dir")     # None -> <state dir>/logs
+    # ⛔ HOW LONG THE FILES IN history_dir SURVIVE, and it is the only setting here that
+    # DELETES something. 0 - or any value that is not a positive number - keeps them for
+    # ever, which is what this plugin did before the key existed.
+    # ⚠ WHOLE FILES, BY AGE, AND NOTHING ELSE. See prune_logs(): a day's file is kept
+    # entire or removed entire, so a record is never left half there. And only files
+    # carrying one of this plugin's own two prefixes are touched, because history_dir can
+    # be pointed at a folder that holds somebody else's files too.
+    cfg["history_keep_days"] = _days(disk.get("history_keep_days"),
+                                     HISTORY_KEEP_DAYS_DEFAULT)
+    # ⛔ OFF by default, and it is meant to be switched back off. With
+    # "debug": {"API_response_usage": true} every successful fetch appends the WHOLE
+    # response body to <history_dir>/API_response_usage_<stamp>.jsonl, rotated rather than
+    # trimmed. ⚠ COST, MEASURED: a whole line is 2006 bytes (the body alone 1887), and
+    # fetch_seconds 120 with fetch_seconds_jitter 30 gives a MEAN interval of 135 s - about
+    # 640 lines a day, where 720 would be the no-jitter ceiling. So AT MOST ABOUT
+    # 1.2-1.4 MB A DAY, and only across a full day of continuous work: while nothing is
+    # happening, idle_after_min stops the watcher asking at all.
+    # ⛔ AN EARLIER VERSION OF THIS COMMENT SAID "2.9 KB a response, about 2 MB a day" AND
+    # WAS WRONG BY ROUGHLY 60%. 2.9 KB was the size of a capture FILE - a wrapper around a
+    # response - and 720 ignored the jitter. It exists to answer a question from disk
+    # instead of by spending another API call, not to run forever.
+    # ⭐ A NAMED BLOCK rather than a flat key, so the next debug switch needs no new schema.
+    # ⚠ A LIST IS AN ALIAS for the same thing: "debug": ["API_response_usage"] means
+    # {"API_response_usage": true}, because that is how the setting was described.
+    # ⚠ Position 1 of a dumped row is the per-seat accountUuid and CAN BE null. A null
+    # there does not mean "the same account as the row above" - it means the row could not
+    # be attributed to a seat at all, so a reader computing statistics must EXCLUDE it
+    # rather than average it in. See _account_ids().
+    d = disk.get("debug") or {}
+    if isinstance(d, list):
+        d = {k: True for k in d}
+    elif not isinstance(d, dict):
+        # ⛔ WARNED, NOT SILENTLY DROPPED. `"debug": true` reads as "switch debugging on"
+        # and used to mean the exact opposite - every switch off, with nothing anywhere
+        # saying so. A person who wrote that would wait all day for a file that never
+        # arrives, and the config would look right the whole time.
+        # ⚠ "NO debug switch is on" WAS TRUE AND IS NOT ANY MORE. Once one switch defaults
+        # to ON, an unusable block means "every switch keeps its default", not "everything
+        # is off" - and saying the wrong one sends a person hunting for a file that is in
+        # fact being written. Found by a refuting pass.
+        sys.stderr.write('usage.py: debug=%r is not an object or a list, so it is IGNORED '
+                         'and every switch keeps its default. Use '
+                         '{"API_response_usage": true}.%s' % (d, chr(10)))
+        d = {}
+    # ⚠ VALUES ARE COERCED, and the string is the reason. JSON `false` arrives as a bool,
+    # but a hand-edited config carries "false", "0" and "no" - every one of them TRUTHY in
+    # Python, so the switch would come ON for somebody who wrote the word for off.
+    # ⛔ EACH SWITCH HAS ITS OWN DEFAULT, from DEBUG_DEFAULTS, and an unrecognised value
+    # falls back to that switch's default rather than to False. ⚠ A first version defaulted
+    # every value to False, which is wrong the moment one switch is on by default: an absent
+    # key then read as OFF and the default could never take effect.
+    # ⚠ Every value here is coerced to a bool, so a future switch needing a STRING (a level,
+    # a path) cannot live in this block as-is - it needs its own key.
+    cfg["debug"] = dict(DEBUG_DEFAULTS)
+    for key, value in d.items():
+        cfg["debug"][key] = _truthy(value, DEBUG_DEFAULTS.get(key, False))
+
+    # ⛔ `keep_history` IS NO LONGER READ AT ALL, and neither is anything else this switch has
+    # been called. There is ONE name now - `debug.token_usage` - and cfg["debug"] is the only
+    # place it lives; there is no second copy at the top level to drift from it.
+    # ⚠ A config still carrying `"keep_history": false` therefore gets the DEFAULT, which is
+    # ON. That is the owner's decision, taken deliberately: carrying a rename forward for ever
+    # is how a settings file ends up with three names for one switch and nobody able to say
+    # which one wins. `install.py --status` names every unrecognised key it finds.
+    cfg["show_context"] = bool(disk.get("show_context", True))
+    cfg["show_model"] = bool(disk.get("show_model", True))
+    cfg["width"] = disk.get("width")        # None -> detect
+    # ⭐ MAY THE DISPLAY SPEND A SECOND ROW when one will not hold everything? ON by default,
+    # for both the statusline and `--watch`: the alternative is throwing information away,
+    # and the context bar and the note are the parts that get thrown. ⚠ A second row costs a
+    # row of the terminal above the input box, which on a narrow one is a row of
+    # conversation - so it is switchable, and false packs one row exactly as before.
+    cfg["two_rows"] = _truthy(disk.get("two_rows"), True)
+    # ⚠ Reads as a gap in the bar until you know what it is, so it is switchable.
+    cfg["show_time_marker"] = bool(disk.get("show_time_marker", True))
+    # ⛔ Default is to REWRITE one line. A watcher that scrolls fills a panel with history
+    # nobody asked for, and only the newest line means anything.
+    cfg["watch_scroll"] = bool(disk.get("watch_scroll", False))
+    # ⛔ A stale percentage is shown as dashes rather than as a number. See _window().
+    cfg["stale_hides_numbers"] = bool(disk.get("stale_hides_numbers", True))
+    SHOW_MARK[0] = cfg["show_time_marker"]
+    return cfg
+
+
+# ----------------------------------------------------------------------------- fetch
+
+USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+OAUTH_BETA = "oauth-2025-04-20"
+# Seconds. The client itself budgets 5 for this same call, which is why 5 and not a number
+# picked here. ⚠ MEASURED COST: against a non-routable address the request takes 5.05 s to
+# give up, and collect() runs on the statusline's timer - so a dark network delays a render
+# by five seconds. That is tolerable ONLY because _claim_attempt() bounds it to once per
+# fetch_seconds instead of once per render: offline, one late line every three minutes
+# rather than every sixty seconds. ⛔ Do not shorten it to shave that: cutting off a slow
+# but working network loses the reading AND spends a call AND arms the same backoff, so a
+# short timeout buys a cosmetic win with a blind brake.
+FETCH_TIMEOUT = 5
+
+# ⛔ THE FLOOR IS 120 AGAIN, AND THIS TIME IT IS A MEASUREMENT RATHER THAN A CITATION.
+# The floor equals DEFAULTS["fetch_seconds"]: anything under 120 in a config is clamped UP
+# to 120, and the clamp says so on stderr. ⚠ NOT A TUNING PARAMETER. The 2026-08-29
+# experiment that lowered it to 60 is OVER and it ENDED THE WAY ITS OWN STOP RULE SAID:
+#
+#   MEASURED 2026-08-31, owner-reported, at fetch_seconds 60 - three HTTP 429s in ten
+#   minutes, 08:42:59, 08:47:30 and 08:52:01, each logged by _log_fetch() as
+#   "HTTP 429 rate limited - backing off, NOT retrying". The endpoint DOES rate-limit this
+#   account, and 60 s reaches that limit. ⇒ Restored to 120 by owner instruction the same
+#   day. See Memory/tasks/20260829-124223-fetch-floor-60s/ for the ADR that authorised the
+#   experiment; the result is here because this is the line somebody edits next.
+#
+# ⚠ WHAT THE TWO MEASUREMENTS TOGETHER SAY, because neither one alone is the answer.
+# At 120 s (2026-08-29, same account): at least 26 SUCCESSFUL calls inside 100 minutes, no
+# fetch.log written at all, no 429 anywhere in the state tree. At 60 s (2026-08-31): 429
+# within minutes. ⇒ The real limit is NOT the cited "~5 requests per token" - 26 calls
+# passed - but it is also NOT absent. It sits between the two intervals, it is unknown, and
+# 120 is the interval this plugin has actually seen work. Do not read "26 calls passed" as
+# permission to go faster; that is the reading the 2026-08-31 run refuted.
+#
+# The citation that used to carry this rule alone, kept because it is still the only
+# published figure: onWatch, a Go quota monitor covering ten providers -
+# https://github.com/onllm-dev/onwatch - documents the endpoint as having "aggressive
+# rate limits (~5 requests per token)" and its OWN default poll interval is 120 s
+# (ONWATCH_POLL_INTERVAL) while it serves its dashboard from a local SQLite cache rather
+# than from the API. ⚠ Its NUMBER is contradicted above; its INTERVAL is now corroborated.
+#
+# What goes wrong below ~120 s, in order - no longer hypothetical, item 2 is what happened:
+#   1. `usage.py --statusline` re-runs on a timer and `--watch` loops, so a short interval
+#      turns into a steady stream of calls rather than an occasional one.
+#   2. The allowance is exhausted within minutes, and every later call in that session
+#      returns HTTP 429. claude-code issue #31021 is exactly this, reported with a
+#      persistent 429 that broke both the statusline and `/usage` - and CLOSED AS NOT
+#      PLANNED, so there is no fix coming and no retry that recovers from it.
+#   3. ⛔ The brake then goes BLIND for the rest of the window - during precisely the
+#      heavy run it exists to govern, because that is what was burning the calls.
+#   4. ⛔ Blind here means the LAST GOOD NUMBER goes stale and reads LOW. A too-fast poll
+#      does not merely waste calls; it converts a working brake into one that FAILS OPEN.
+#
+# ⚠ And the recovery onWatch uses is not available here: it answers a 429 by refreshing
+# the OAuth token to mint a fresh window. See _token_and_expiry() for why this file
+# must not - and fetch(), which refuses to spend a call on a token that file shows is dead.
+#
+# ⛔ HOW TO REOPEN THIS, if somebody ever wants to. Not by editing the number: by running
+# the experiment again with debug.API_response_usage on, and reading BOTH
+# API_response_usage_<date>.jsonl and fetch.log. A 429 in fetch.log ends it immediately.
+# ⚠ AND A RESULT IS ONLY VALID IF THE FASTER POLL ACTUALLY HAPPENED. The inter-call gaps in
+# that log must read ~60-90 s (60 plus the jitter). If they read ~120-150, the process that
+# ran was an installed copy carrying a different floor - see shim.recorded() and
+# `install.py --status` - and the run measured NOTHING. A false negative written into this
+# comment would be worse than the citation it replaced.
+FETCH_FLOOR_SECONDS = 120
+
+# ⭐ Randomness is ADDED to every interval - never subtracted, so the effective wait is
+# always fetch_seconds..fetch_seconds+jitter and can never dip under the floor. The amount
+# is `fetch_seconds_jitter` in config.json (default 30, 0 disables it); this constant is
+# only the fallback for a caller that passes no config. Two reasons, and the second is why
+# it is not merely tidiness:
+#   1. It DE-SYNCHRONISES independent processes. Several sessions' statuslines all tick on
+#      the same 60 s refresh, so without jitter they drift into lockstep and arrive at the
+#      interval boundary together - which is precisely the burst _claim_attempt() has to
+#      absorb. Jitter makes them stop arriving together in the first place; the claim then
+#      only has to catch what is left.
+#   2. It spreads the load rather than delivering it as a spike, which is the polite thing
+#      to do to an endpoint that rate-limits at about five calls per token and whose
+#      maintainers have already declined to fix a 429 report.
+JITTER_SECONDS = 30
+
+
+def _interval(cfg):
+    """fetch_seconds plus 0..fetch_seconds_jitter seconds. Rolled ONCE per ensure_fresh().
+
+    ⚠ Rolled once and passed down, not called twice: the freshness check and the claim
+    check must agree on the same deadline, or a process can pass one and fail the other
+    for no reason a reader could reconstruct.
+
+    ⛔ The jitter is never negative - config() clamps it - because a negative one would
+    subtract and could put the real interval under FETCH_FLOOR_SECONDS.
+    """
+    jitter = cfg.get("fetch_seconds_jitter", JITTER_SECONDS)
+    return cfg["fetch_seconds"] + random.uniform(0, max(0, jitter))
+
+
+def _token_and_expiry():
+    """(token, expiry epoch seconds or None). READ ONLY - never written, never refreshed.
+
+    ⛔ DO NOT ADD A REFRESH HERE, however tempting a 429 makes it. onWatch bypasses the
+    rate limit by refreshing the token, and that works for onWatch because it is a
+    standalone daemon that owns its own polling. This file runs as a hook inside the same
+    account as the client that MAINTAINS that token: writing it would race whatever Claude
+    process is running and rewriting the same file, and it would mean a hook writing
+    credentials. Deliberately accepted trade: a 429 here reports no number and waits.
+
+    ⚠ Only the JSON file and $ANTHROPIC_TOKEN are read. onWatch also reads the macOS
+    keychain and the Linux keyring, neither of which is implemented here - so on a machine
+    where the token lives only in a keychain this returns (None, None), and the caller
+    degrades to "no data" rather than to a wrong number.
+
+    ⭐ The file is re-read on EVERY call, deliberately. That is what makes a long-running
+    `--watch` survive a token rotation with no restart: whichever Claude client is running
+    refreshes the token and rewrites this file, and the next fetch picks up the new one.
+    Measured 2026-08-26: rewritten at 15:29:40 with a new expiry of 23:29:40, about five
+    minutes before the old one was due to die.
+
+    ⚠ AN ACCESS TOKEN LASTS ABOUT EIGHT HOURS, not one. An earlier note here said "about an
+    hour", which was a reading taken 45 minutes before an expiry and mistaken for the whole
+    lifetime. The refresh token lasts about 30 days.
+    """
+    env = os.environ.get("ANTHROPIC_TOKEN")      # onWatch uses the same variable name
+    if env and env.strip():
+        return env.strip(), None                 # supplied by hand; no expiry to read
+    blob = read_json(os.path.join(os.path.expanduser("~"), ".claude",
+                                  ".credentials.json"), {}) or {}
+    if not isinstance(blob, dict):
+        return None, None
+    inner = blob.get("claudeAiOauth")
+    inner = inner if isinstance(inner, dict) else blob
+    token = inner.get("accessToken")
+    if not (isinstance(token, str) and token):
+        return None, None
+    expires = inner.get("expiresAt")
+    if isinstance(expires, (int, float)) and not isinstance(expires, bool):
+        expires = expires / 1000.0 if expires > 1e11 else float(expires)
+    else:
+        expires = None
+    return token, expires
+
+
+# ⛔ token_note() IS GONE, AND IT IS NOT COMING BACK BY ACCIDENT. The owner removed it in two
+# steps on 2026-08-29 - first the ten-minute countdown ("OAuth 那行不要顯示"), then the
+# expired form ("「已過期」也不顯示") - so nothing on the bar reports an OAuth token any more.
+#
+# ⚠ THE EXPIRY IS STILL READ, and that half must not be removed with it: fetch() refuses to
+# spend one of the five calls on a token it can already see is dead, and returns that as its
+# `reason`. See _token_and_expiry(), which fetch() calls for the token anyway.
+# ⇒ So one OAuth sentence can still reach the display, by the ordinary failure-reason route
+# and only once the stored number has gone stale. That is not this note returning; it is the
+# line saying why the figures on it stopped, which is the one moment it must not stay quiet.
+
+
+def _snap_minute(epoch):
+    """A reset instant, snapped to the NEAREST whole minute.
+
+    ⛔ MEASURED IN REAL DATA, on two machines. The API stamps microseconds and they differ on
+    every response for the SAME window - and it does not even keep the same second: one
+    machine's history holds `19:10:00`, `19:10:00`, `19:09:59`, `19:10:00` for ONE window.
+    ⇒ Anything comparing reset instants for equality flaps, and every displayed clock is a
+    second out half the time.
+
+    ⚠ NEAREST, NOT ALWAYS UP. `19:09:59.7` and `19:10:00.2` are the same window and both must
+    land on `19:10:00`; rounding up would push the second to 19:11 - a whole minute wrong, in
+    the direction that makes the window look longer than it is.
+
+    ⚠ It assumes resets fall on a whole minute, which is what both machines show. A window
+    that genuinely reset at 19:10:30 would be reported half a minute early - the safe
+    direction, because it under-states the time left.
+    """
+    return int(round(float(epoch) / 60.0)) * 60
+
+
+def _iso_epoch(value):
+    """ISO-8601 with an offset -> epoch seconds. Numbers pass through unstamp().
+
+    ⚠ unstamp() cannot read what this API sends. It handles epochs and this file's own
+    "YYYY-MM-DD HH:MM:SS", while the API sends "2026-08-26T11:00:00.203505+00:00" -
+    fractional seconds and a UTC offset. Verified against a measured pair: that string
+    parses to 1787742000, which is the exact epoch the stored file already held for the
+    same window.
+    """
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return unstamp(value)
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+# Which row of the response's `limits` array describes the same window as which top-level
+# key. Measured live 2026-08-27: `session` carries the five-hour figure, `weekly_all` the
+# seven-day one, and both give `percent` as a WHOLE NUMBER.
+_LIMIT_KIND = {"five_hour": "session", "seven_day": "weekly_all"}
+
+
+# ⭐ A WINDOW SCOPED TO ONE MODEL. Measured on two accounts, 2026-08-27, captured in
+# Memory/tasks/20260827-153945-usage-api-fable-window/: `limits[]` carries a third row whose
+# `kind` is "weekly_scoped" and whose `scope.model.display_name` is the plain string "Fable".
+_SCOPED_KIND = "weekly_scoped"
+
+
+def _scoped_window(data):
+    """The model-scoped window the account is actually using, or None.
+
+    ⛔ THE RESPONSE CARRIES NO ENTITLEMENT FLAG, and that is measured rather than assumed.
+    Two accounts were captured - one that may use Fable and one that may not - and the row
+    EXISTS on both, `is_active` is false on both (it stayed false at 19% used), and
+    `nimbus_quill` read 0.0 while the scoped row read 19%, which is evidence AGAINST that
+    top-level codename being Fable's counterpart rather than for it. ⇒ Nothing in the
+    payload says "this account may use Fable".
+
+    ⇒ SO THIS ANSWERS A DIFFERENT QUESTION, and says so: is there a scoped window RUNNING?
+    `percent > 0` or a non-null `resets_at`. On the two captures that is exactly the
+    difference - the account that cannot use Fable had 0 and null, the one that can had 19
+    and a timestamp. ⚠ An entitled account that used none this week therefore shows nothing
+    until its first use. That is the acceptable direction: the owner asked for no extra text
+    when it does not apply, and a bar that appears on first use is not a lie.
+
+    ⭐ THE MODEL IS NOT HARD-CODED. The row names itself, so a scoped window for any other
+    model works the same day it appears. ⚠ Only the first qualifying row is returned; the
+    line has one column of room for this, and no account has yet shown two.
+
+    ⛔ `percent` HERE NEEDS NO SCALE CHECK, unlike `utilization`. See _whole_percent(): the
+    `limits[]` figure is a whole number by construction, which is the whole reason that
+    function exists.
+    """
+    for row in (data or {}).get("limits") or []:
+        if not isinstance(row, dict) or row.get("kind") != _SCOPED_KIND:
+            continue
+        scope = row.get("scope")
+        model = (scope or {}).get("model") if isinstance(scope, dict) else None
+        name = (model or {}).get("display_name") if isinstance(model, dict) else None
+        if not isinstance(name, str) or not name.strip():
+            continue
+        pct = row.get("percent")
+        if not isinstance(pct, (int, float)) or isinstance(pct, bool):
+            continue
+        if not 0 <= pct <= 100:
+            continue
+        resets = _iso_epoch(row.get("resets_at"))
+        if not (pct > 0 or resets):
+            continue                     # present but not running - see the docstring
+        out = {"label": name.strip(), "used_percentage": float(pct)}
+        if resets:
+            out["resets_at"] = _snap_minute(resets)
+        return out
+    return None
+
+
+def _whole_percent(data, name):
+    """The same window's percent from the `limits` array, or None.
+
+    ⭐ WHY THIS EXISTS: it is the response telling us its own scale. `utilization` is
+    ambiguous in (0, 1] - 1% and 100% look identical - but `limits[].percent` is a whole
+    number by construction, so the two together pin the scale down. Before this, a genuine
+    1% window was thrown away and the segment vanished from the line entirely, which is how
+    the seven-day bar disappeared the moment the week rolled over.
+    """
+    kind = _LIMIT_KIND.get(name)
+    if not kind or not isinstance(data, dict):
+        return None
+    for row in data.get("limits") or []:
+        if isinstance(row, dict) and row.get("kind") == kind:
+            pct = row.get("percent")
+            if isinstance(pct, (int, float)) and not isinstance(pct, bool):
+                return float(pct)
+    return None
+
+
+def _api_window(win, whole=None):
+    """One API window -> the {used_percentage, resets_at} shape token_usage.json stores.
+
+    ⛔ THE SCALE IS ASSERTED, NOT ASSUMED, and a value that cannot be told apart is
+    REJECTED. This endpoint returns WHOLE PERCENT - measured 2026-08-26 15:21,
+    `utilization: 22.0` beside a UI reading 22%. But the VS Code webview's own meters
+    receive the SAME FIELD NAME as a FRACTION and multiply it out
+    (`Math.floor($.utilization * 100)`), so two scales for one name exist in this system.
+    ⚠ A value in (0, 1] is therefore ambiguous: 1% and 100% are indistinguishable, and
+    guessing wrong reads LOW - the direction that keeps dispatching. Refusing it costs a
+    "no data" at under 1% used, where the brake has nothing to do anyway.
+    """
+    if not isinstance(win, dict):
+        return None
+    pct = win.get("utilization")
+    if not isinstance(pct, (int, float)) or isinstance(pct, bool):
+        return None
+    if 0 < pct <= 1:
+        # ⭐ Ask the response which scale it meant, instead of refusing the reading. `whole`
+        # is the same window's percent from `limits[]`, a whole number, so exactly one of
+        # the two readings can match it. ⚠ Still refused when there is nothing to compare
+        # against: guessing here reads LOW, and low is the direction that keeps dispatching.
+        if whole is None:
+            return None
+        if abs(whole - pct) < 0.5:            # 1.0 beside percent 1 -> already whole
+            pass
+        elif abs(whole - pct * 100) < 0.5:    # 0.01 beside percent 1 -> a fraction
+            pct = pct * 100
+        else:
+            return None
+    if not 0 <= pct <= 100:
+        return None
+    out = {"used_percentage": pct}
+    resets = _iso_epoch(win.get("resets_at"))
+    if resets:
+        # ⛔ TRUNCATED TO WHOLE SECONDS ON PURPOSE. The API stamps microseconds and they
+        # DIFFER ON EVERY RESPONSE for the same window (.203505, then .390781), so a
+        # float here makes two identical readings compare unequal - which would defeat
+        # _write_record()'s "did a number actually move?" check and append a history row
+        # on every single fetch. The reset instant is a wall-clock minute; sub-second
+        # precision on it is noise that carries a bug.
+        # ⚠ SNAPPED TO THE WHOLE MINUTE, not merely rounded to the second. Rounding to the
+        # second was the first fix and it was not enough: real history from another machine
+        # holds 19:10:00 and 19:09:59 for ONE window, so the flap survived. See _snap_minute.
+        out["resets_at"] = _snap_minute(resets)
+    return out
+
+
+def fetch(cfg=None, sdir=None):
+    """One HTTP GET. Returns a record dict on success, or a STRING naming why not.
+
+    ⚠ It returns a reason instead of raising, because every failure here must end as
+    "no number" - in a statusline, in a watcher, and in a hook. A crash in any of those
+    is worse than a dash, and a wrong number is worse than both.
+
+    ⚠ `sdir` is used ONLY by the debug response dump below, which does nothing unless
+    debug.API_response_usage is on. None disables it, so a caller that has no state
+    directory (the selftest) simply gets the old behaviour. ⛔ It cannot be replaced by
+    state_dir(): the state directory is a parameter everywhere else in this file, and the
+    selftest drives ensure_fresh() against a temp directory state_dir() would never name.
+    """
+    token, expires = _token_and_expiry()
+    if not token:
+        return "no OAuth token (~/.claude/.credentials.json or $ANTHROPIC_TOKEN)"
+    # ⭐ Do not spend one of the five calls on a token we can already see is dead. The
+    # request would return 401, arm the same backoff, and tell us nothing the file did not.
+    if expires is not None and expires <= time.time():
+        return ("OAuth token expired %s - open a Claude session to refresh it"
+                % (stamp(expires) or "recently"))
+    req = urllib.request.Request(USAGE_URL, headers={
+        "Authorization": "Bearer " + token,
+        "anthropic-beta": OAUTH_BETA,
+        "Content-Type": "application/json",
+        "User-Agent": "dispatch-guard/1.0",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=FETCH_TIMEOUT) as resp:
+            body = resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            # ⛔ Not retried, and not worked around. See FETCH_FLOOR_SECONDS.
+            return "HTTP 429 rate limited - backing off, NOT retrying"
+        if exc.code in (401, 403):
+            return "HTTP %d - token expired or rejected" % exc.code
+        return "HTTP %d" % exc.code
+    except Exception as exc:                      # timeout, DNS, TLS, offline
+        return "%s" % (exc.__class__.__name__,)
+    try:
+        data = json.loads(body)
+    except ValueError:
+        return "unparseable response"
+    if not isinstance(data, dict):
+        return "unexpected response shape"
+    # ⛔ THE DEBUG DUMP GOES HERE, AND THE POSITION IS THE WHOLE POINT - not style.
+    # `if not five: return` a few lines below fires when a response's five_hour cannot be
+    # used, and that is PRECISELY the shape a diagnostic exists to capture. Any later
+    # position silently drops the most interesting responses. ⚠ Measured 2026-08-27: a
+    # real response came back with five_hour.resets_at null beside utilization 0.0, an
+    # unanticipated shape which happened to pass the check below. The next surprise may
+    # not, and a diagnostic that only keeps the responses the parser already understood is
+    # worth nothing.
+    if sdir and ((cfg or {}).get("debug") or {}).get("API_response_usage"):
+        _dump_response(sdir, cfg or {}, data)
+    five = _api_window(data.get("five_hour"), _whole_percent(data, "five_hour"))
+    if not five:
+        # ⚠ A THIRD STATE, distinct from "no data" and from "stale data": the response
+        # arrived and carried no usable window. Seen for real - a payload containing the
+        # `rate_limits` key with no usable `five_hour` inside it. It must not overwrite a
+        # good stored value with nulls.
+        return "response carried no usable five_hour"
+    record = {"ts": int(time.time() * 1000), "five_hour": five}
+    seven = _api_window(data.get("seven_day"), _whole_percent(data, "seven_day"))
+    if seven:
+        record["seven_day"] = seven
+    # ⭐ Only when one is RUNNING, so an account without it carries no extra key and its
+    # display gains no extra text. See _scoped_window().
+    scoped = _scoped_window(data)
+    if scoped:
+        record["scoped"] = scoped
+    return record
+
+
+def _write_record(sdir, cfg, record, prev):
+    """Atomically replace token_usage.json, and append history only when a number moved.
+
+    ⭐ ts IS ALWAYS STAMPED on a successful fetch, even when the numbers are identical -
+    and that is the OPPOSITE of what the statusline path had to do. There, an unchanged
+    payload was a REPLAY of an old reading, so stamping it made staleness invisible. Here
+    an unchanged reading is the SERVER CONFIRMING the value right now, so the age of the
+    file is honestly the age of the number, and stale_min means what it says again.
+    """
+    os.makedirs(sdir, exist_ok=True)
+    # ⭐ A HEARTBEAT ROW, AND THE CODE ALREADY ARGUED FOR IT BEFORE IT EXISTED - see the
+    # comment inside _burn_rate() that ends "Not built". Owner-asked 2026-09-01, after
+    # noticing API responses with no matching history row.
+    # ⛔ WHAT IT BUYS IS THE ABSENCE, NOT THE PRESENCE. A gap in the history has two causes
+    # the timestamps cannot tell apart: nothing was spent (the reading is right), or nothing
+    # was WATCHING - the machine off, the client closed - and the quota is account-wide, so
+    # another seat may have spent through the gap. That second case UNDER-states the rate,
+    # which is the dangerous direction. With a row written at least every burn_window_min,
+    # a gap is evidence recorded by the passage of time rather than by an event somebody had
+    # to catch.
+    # ⚠ THE COST IS BOUNDED: at worst one row per burn_window_min (10 minutes by default),
+    # and history_keep_days already prunes whole files by age.
+    # ⚠ THE CLOCK COMES FROM THE RECORD'S OWN `ts`, so this needs no new argument and cannot
+    # disagree with the timestamp the file is about to carry.
+    _now = (record.get("ts") or 0) / 1000.0
+    _win_min = cfg.get("burn_window_min", 10) or 10
+    _last = (prev or {}).get("history_at") if isinstance(prev, dict) else None
+    heartbeat_due = not isinstance(_last, (int, float)) or (_now - _last) >= _win_min * 60
+    moved = heartbeat_due or not (isinstance(prev, dict)
+                 and prev.get("five_hour") == record.get("five_hour")
+                 and prev.get("seven_day") == record.get("seven_day")
+                 # ⭐ The model-scoped window counts as a number that can move. Left out, a
+                 # session that spent only on the scoped model would look like a session
+                 # where nothing happened, and the history would have no row for it.
+                 and prev.get("scoped") == record.get("scoped"))
+    write_row = moved and cfg["debug"]["token_usage"]
+    # ⛔ STAMPED BEFORE THE FILE IS WRITTEN, or the next call cannot tell when the last row
+    # went in and every call would look overdue. ⚠ Carried FORWARD when no row is written,
+    # so the heartbeat measures time since the last ROW and not since the last fetch.
+    record["history_at"] = _now if write_row else (_last if _last else _now)
+    # ⭐ WHICH ACCOUNT THESE NUMBERS BELONG TO, stamped on the record and on every history row
+    # it produces, from one read. ⛔ AND A SWITCH IS SAID ONCE, in the state-directory copy of
+    # the gate log: after a switch the gauge reads `--` for up to burn_window_min because the
+    # old account's rows are (correctly) refused, and a blank gauge and a broken gauge look the
+    # same on screen. Only two KNOWN, DIFFERENT ids count as a switch - unknown says nothing.
+    _acct = _current_account()
+    record["acct"] = _acct
+    _prev_acct = prev.get("acct") if isinstance(prev, dict) else None
+    if _acct and isinstance(_prev_acct, str) and _prev_acct and _prev_acct != _acct:
+        try:
+            with open(os.path.join(sdir, "dispatch_gate.log"), "a", encoding="utf-8") as f:
+                f.write("%s ACCOUNT-SWITCH %s.. -> %s.. (the burn gauge starts over: on the "
+                        "trailing baseline it reads -- for up to burn_window_min)\n"
+                        % (time.strftime("%Y-%m-%d %H:%M:%S"), _prev_acct[:8], _acct[:8]))
+        except OSError:
+            pass
+    tmp = cfg["token_usage_file"] + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(record, f)
+        os.replace(tmp, cfg["token_usage_file"])      # atomic; never a half-written file
+    except OSError:
+        return
+    if write_row:
+        # ⚠ model and session are no longer recorded, and that is accepted rather than
+        # overlooked: they came off the statusline payload, which this path does not see.
+        # Checked before accepting it - _projection() reads only `pct`, `at`/`ts` and
+        # `resets_at`, so nothing computes on either field. They were context for a human
+        # reading the log. If a per-model breakdown
+        # is ever wanted, it has to come from the payload in collect(), not from here.
+        _append_history(sdir, cfg, record.get("five_hour") or {},
+                        record.get("seven_day") or {}, acct=_acct)
+
+
+def _claim_attempt(sdir, due):
+    """True if THIS process may spend one of the five calls. Written BEFORE the request.
+
+    ⛔ WITHOUT THIS THE FLOOR PROTECTS NOTHING. fetch_seconds is enforced against the age
+    of token_usage.json, and several processes share that one file: two sessions' statuslines,
+    or a statusline and a `--watch`, crossing the interval boundary together all see the
+    same stale timestamp and all fetch. At about five calls per token that is not a
+    rounding error - it is most of the budget spent on one boundary. Several sessions open
+    at once is the normal state on a working machine, not an edge case.
+
+    ⭐ It doubles as the ONLY BACKOFF THERE IS, and that is the load-bearing half. Reaching
+    this function means token_usage.json is NOT fresh, so any recent attempt recorded here must
+    have FAILED. Refusing for `due` after a failure is therefore exactly the 429 backoff: a
+    claim is not released on failure, deliberately, because releasing it would let the next
+    caller retry at once and a persistent 429 is not something retrying cures.
+
+    ⚠ `due` is fetch_seconds plus this caller's jitter, rolled by ensure_fresh() and passed
+    in rather than re-rolled here - see _interval(). Jitter also reduces how often this
+    function has to do anything, by stopping independent processes arriving together.
+
+    # ponytail: mtime clock, not a real mutex. Two processes hitting the same instant
+    # still get two calls; the cost is one wasted call, bounded and rare. A real lock
+    # (O_EXCL plus stale-owner recovery plus release-on-crash) is a lot of machinery to
+    # save an occasional single request. Upgrade only if fetch.log shows paired 429s.
+    """
+    path = os.path.join(sdir, "fetch.claim")
+    try:
+        if time.time() - os.path.getmtime(path) < due:
+            return False
+    except OSError:
+        pass                                     # no claim yet, or unreadable
+    try:
+        os.makedirs(sdir, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S"))
+        os.replace(tmp, path)                    # atomic, and stamps a fresh mtime
+    except OSError:
+        return True     # cannot record the attempt; better to fetch than to go blind
+    return True
+
+
+def ensure_fresh(sdir, cfg):
+    """Refresh token_usage.json when the stored number is older than fetch_seconds.
+
+    Returns None when nothing needed doing or the fetch succeeded, else the reason string.
+
+    ⛔ DELIBERATELY NOT CALLED FROM verdict(). verdict() runs inside the dispatch hook, on
+    EVERY dispatch. A synchronous HTTP call there stalls the dispatch every time the
+    interval boundary is crossed, and a hook that hangs is worse than a number a few
+    minutes old. Fetching therefore belongs to the two callers already on a timer:
+    --statusline, which Claude Code re-runs, and --watch.
+
+    ⭐ THAT GAP IS CLOSED, and not by making verdict() fetch. dispatch_gate's
+    keep_clock_running() FORKS this refresh, detached, when token_usage.json goes stale, on a
+    hook event it was running anyway. The dispatch never waits on the network - the number
+    lands for a later call to read - so the extension gets a working brake with no
+    statusline, no watcher and nothing per-project. ⚠ Those two are now DISPLAY: they are
+    how a person sees the line, not how the brake stays alive.
+
+    ⚠ Freshness is judged from token_usage.json, which SEVERAL PROCESSES SHARE - so the age
+    check alone does not bound the call count. _claim_attempt() does, and it is also the
+    only backoff after a failure. Read its docstring before changing anything here.
+
+    ⭐ The deadline is fetch_seconds PLUS UP TO 30 SECONDS OF JITTER, rolled once here and
+    passed to both checks. See _interval() and JITTER_SECONDS.
+
+    ⭐ RETURNS (record, reason) - the record IN MEMORY, so a caller never re-reads the file
+    this function just read or wrote. Within one process the number is passed by value;
+    token_usage.json exists for the CROSS-PROCESS hop only, which is the one that cannot be
+    memory: the dispatch gate is a fresh process on every tool call and shares nothing with
+    a long-running --watch.
+    """
+    due = _interval(cfg)                         # fetch_seconds + up to 30 s of jitter
+    prev = read_json(cfg["token_usage_file"], None)
+    if isinstance(prev, dict) and isinstance(prev.get("ts"), (int, float)):
+        if (time.time() * 1000 - prev["ts"]) / 1000.0 < due:
+            return prev, None                    # still fresh; spend no call
+    if not _claim_attempt(sdir, due):
+        return prev, None                        # someone else just tried; do not pile on
+    got = fetch(cfg, sdir)
+    if isinstance(got, str):
+        _log_fetch(sdir, got)
+        return prev, got                         # the OLD record survives a failure
+    _write_record(sdir, cfg, got, prev)
+    return got, None
+
+
+def _log_fetch(sdir, reason):
+    """One line per failed fetch. A silent instrument is the trap this plugin exists to
+    avoid, and a persistent 429 with no record looks exactly like usage that stopped
+    moving."""
+    try:
+        os.makedirs(sdir, exist_ok=True)
+        with open(os.path.join(sdir, "fetch.log"), "a", encoding="utf-8") as f:
+            f.write("%s %s%s" % (time.strftime("%Y-%m-%d %H:%M:%S"), reason, chr(10)))
+    except OSError:
+        pass
+
+
+# --------------------------------------------------------------------------- collect
+
+def _note_render(sdir, payload, five):
+    """Record that a render happened, even when nothing changed.
+
+    ⛔ Without this a repeated payload leaves no trace at all, and "which sessions are
+    rendering?" becomes unanswerable exactly when it matters - when the number has stopped
+    moving and you need to know whether the busy session is among them. One small rolling
+    file, last 200 lines.
+    """
+    try:
+        path = os.path.join(sdir, "renders.log")
+        line = "%s %s %s%s" % (time.strftime("%Y-%m-%d %H:%M:%S"),
+                               str(payload.get("session_id") or "?")[:8],
+                               five.get("used_percentage"), chr(10))
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line)
+        with open(path, encoding="utf-8") as f:
+            lines = f.readlines()
+        if len(lines) > 400:
+            with open(path, "w", encoding="utf-8") as f:
+                f.writelines(lines[-200:])
+    except OSError:
+        pass
+
+
+def _age_note(record, cfg):
+    """How stale the stored NUMBER is, or None while it is fresh enough to trust."""
+    ts = (record or {}).get("ts")
+    if not ts:
+        return None
+    age = (time.time() * 1000 - ts) / 60000.0
+    return ("%d min old" % age) if age > cfg["stale_min"] else None
+
+
+def _runnable(*args):
+    """A command a model can actually RUN, with NO VERSION NUMBER IN IT.
+
+    ⚠ A bare `usage.py --fetch-now` executes nowhere: the hook scripts are not executable and
+    have no shebang association on either platform. ⛔ And a path built from this file's own
+    location carries the plugin version, which stops being true at the next update - so it
+    names the shim in the state directory instead. See hooks/shim.py.
+    """
+    import shim
+    return shim.command(state_dir(), "usage.py", *args)
+
+
+def collect(sdir, cfg):
+    """statusLine mode: refresh the numbers if due, then print one short line.
+
+    ⭐ THE USAGE NUMBERS NO LONGER COME FROM THE PAYLOAD. They are fetched from the API by
+    ensure_fresh(), at most once per fetch_seconds however often Claude Code re-runs this.
+    The payload is still read, but only for what the API does not carry and a person wants
+    on the line anyway: the context window, the model and the effort.
+
+    ⛔ WHY THE PAYLOAD WAS DROPPED AS A SOURCE rather than kept as a fallback. A session
+    replays the `rate_limits` it last saw, so the payload can hold a value that is minutes
+    or tens of minutes behind while looking current - measured at 6% against a true 22%,
+    with a correct resets_at, so no staleness rule could have caught it. Falling back to it
+    would let that stale number overwrite a fresh one, which is the whole defect this
+    change removes. A missing number is safe; a confidently wrong low one is not.
+
+    ⚠ The old guard against corruption by hand-run stdin is no longer needed here, because
+    synthetic stdin can no longer influence a stored figure at all.
+    """
+    raw = sys.stdin.buffer.read().decode("utf-8", "replace")
+    try:
+        payload = json.loads(raw) if raw.strip() else {}
+    except ValueError:
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    # ⭐ The record comes back IN MEMORY - no second read of the file ensure_fresh just
+    # touched. See its docstring for where a file is genuinely unavoidable.
+    record, reason = ensure_fresh(sdir, cfg)
+    record = record if isinstance(record, dict) else {}
+
+    # ⚠ Surface a failure ONLY once the stored number has also gone stale. A single failed
+    # fetch over a fresh cache is routine and saying so every minute trains the reader to
+    # ignore the note that matters when the data really has stopped moving.
+    note = _age_note(record, cfg)
+    if note and reason:
+        note = "%s; %s" % (note, reason)
+    # ⛔ NO OAUTH NOTE HERE ANY MORE - the owner's instruction, 2026-08-29, first the
+    # countdown and then the expired form: "「已過期」也不顯示". The bar carries numbers and
+    # the reasons the numbers stopped; it is not where a token is reported.
+    # ⚠ ONE OAUTH SENTENCE STILL REACHES THIS LINE, and deliberately. fetch() refuses to
+    # spend a call on a token it can see is dead and returns that as its `reason`, which
+    # arrives above - but only once the stored number has ALSO gone stale, which is the
+    # moment the figures on screen are wrong. Suppressing it there would leave the display
+    # confidently showing a number that stopped moving.
+
+    _note_render(sdir, payload, record.get("five_hour") or {})
+    # ⭐ ONE print PER ROW. Claude Code renders each line of this command's output as its own
+    # row, so a second row needs nothing but a second print.
+    for _row in line_rows(record, note, cfg, payload, burn=burn_triple(sdir, cfg, record)):
+        print(_row)
+    return 0
+
+
+HISTORY_PREFIX = "token_usage_history_"
+
+# ⭐ The debug response dump's prefix - same directory, same rotation, different file.
+# ⛔ DELIBERATELY NOT the history file. History holds two percentages per row and is PARSED
+# by _projection(); this holds whole response bodies for questions nobody has asked yet. One
+# reader would choke on the other's lines, so they never share a file.
+DEBUG_RESPONSE_PREFIX = "API_response_usage_"
+
+
+def history_dir(sdir, cfg):
+    """Where usage records live. Configurable; defaults to <state dir>/logs.
+
+    ⭐ A directory of its own, because these files accumulate one per day - mixed in with
+    config.json and the state folder they would bury the two files a person actually edits.
+    Set `history_dir` in config.json to put them somewhere else entirely, such as a synced
+    folder or a drive with room.
+
+    ⚠ NO LONGER "FOREVER": `history_keep_days` removes whole files older than 30 days by
+    default, and 0 restores the old keep-everything behaviour. ⛔ If you point this at a
+    folder holding anything else, note that prune_logs() only ever deletes files carrying
+    this plugin's own two prefixes - but check that before pointing it at a shared drive.
+    """
+    d = cfg.get("history_dir") or os.path.join(sdir, "logs")
+    return os.path.abspath(os.path.expanduser(d))
+
+
+def history_path(sdir, cfg, now=None, prefix=HISTORY_PREFIX):
+    """Today's history file: token_usage_history_<YYYYMMDD-HHMMSS>.jsonl
+
+    The stamp is when the FILE was started, in the same YYYYMMDD-HHMMSS form the task
+    folders use, so one convention covers both. A new file begins at each local midnight:
+    today's file is whichever existing one carries today's date, and a fresh stamp is
+    minted when there is none.
+
+    ⚠ Local midnight, not UTC. These are a person's usage records and they get read
+    against a person's day.
+
+    ⛔ A FILE IS NEVER TRIMMED. Dropping the early part of a day to satisfy a line count
+    would quietly destroy the record it exists to keep, so a day's file is kept entire.
+    ⚠ WHOLE FILES ARE DELETED BY AGE, THOUGH - see history_keep_days and prune_logs(). The
+    two are not the same decision: trimming leaves a record that LOOKS complete and is not,
+    while removing a whole day leaves nothing to misread.
+
+    ⛔ AND THIS FUNCTION IS WHERE THAT DELETING HAPPENS, which is the one surprising thing
+    about it: minting a new day's name is the only moment that occurs at most once a day
+    per process, and it is exactly the moment every older file became a day older. Pruning
+    on every append would stat the whole directory 640 times a day to remove nothing.
+
+    ⭐ `prefix` is the ONLY thing the debug response dump (DEBUG_RESPONSE_PREFIX) changes
+    about any of this, so this file has ONE rotation rule rather than two that can drift.
+    """
+    now = now if now is not None else time.time()
+    d = history_dir(sdir, cfg)
+    today = time.strftime("%Y%m%d", time.localtime(now))
+    existing = sorted(glob.glob(os.path.join(d, prefix + today + "-*.jsonl")))
+    if existing:
+        return existing[-1]
+    prune_logs(sdir, cfg, now)
+    return os.path.join(d, prefix
+                        + time.strftime("%Y%m%d-%H%M%S", time.localtime(now)) + ".jsonl")
+
+
+def _history_stamp(path):
+    """The YYYYMMDD-HHMMSS part of a history file name, whichever prefix it carries.
+
+    ⛔ THE PREFIX IS STRIPPED BY NAME, NOT BY SPLITTING ON A SEPARATOR. The prefix carries the
+    same separator the stamp does, so `split("_", 1)` would leave "usage_history_20260828-..."
+    and sort by the word instead of by the date - an order with nothing to do with when the
+    files were written, while _projection() reads the last two.
+    """
+    name = os.path.basename(path)
+    if name.startswith(HISTORY_PREFIX):
+        return name[len(HISTORY_PREFIX):]
+    return name
+
+
+def prune_logs(sdir, cfg, now=None):
+    """Remove whole log files older than history_keep_days. Returns how many went.
+
+    ⛔ ONLY THIS PLUGIN'S OWN FILES, matched on the two prefixes it writes. `history_dir`
+    is configurable and the docs suggest pointing it at a synced folder or another drive,
+    so a blanket sweep of *.jsonl there could delete somebody else's data. The prefixes are
+    the whole safety argument for this function.
+
+    ⛔ 0 KEEPS EVERYTHING, and so does any value _days() cannot read. A retention setting
+    that guesses is a retention setting that deletes something nobody meant to lose.
+
+    ⚠ AGE IS MTIME, not the stamp in the name. The name records when the file was STARTED;
+    mtime records when it was last written, which is what a person means by "old". They
+    differ by up to a day, and mtime is the later of the two - so this errs towards keeping.
+
+    ⚠ Every failure is swallowed. A file that cannot be removed - open elsewhere, read-only,
+    on a disconnected drive - must cost nothing: this runs inside the path that is about to
+    write a usage record, and losing that record to a housekeeping error would be a bad
+    trade.
+    """
+    # ⛔ COERCED HERE TOO, not only in config(). This function DELETES, so it must not
+    # depend on somebody else having sanitised its input first: `cfg` reaches it through
+    # history_path() from two writers, one of which passes `cfg or {}`, and a project-level
+    # config or a hand-built dict can carry a raw string. Found by a check that passed
+    # "abc" straight in and got a TypeError out of `days <= 0`.
+    days = _days(cfg.get("history_keep_days"), HISTORY_KEEP_DAYS_DEFAULT)
+    if days <= 0:
+        return 0
+    cutoff = (time.time() if now is None else now) - days * 86400
+    d = history_dir(sdir, cfg)
+    removed = 0
+    # ⛔ ONLY THE TWO PREFIXES THIS PLUGIN WRITES. Never a sweep by extension: `history_dir`
+    # is configurable and the docs suggest pointing it at a synced folder, where a blanket
+    # *.jsonl delete would take somebody else's data with it.
+    for pref in (HISTORY_PREFIX, DEBUG_RESPONSE_PREFIX):
+        for path in glob.glob(os.path.join(d, pref + "*.jsonl")):
+            try:
+                if os.path.getmtime(path) < cutoff:
+                    os.remove(path)
+                    removed += 1
+            except OSError:
+                pass
+    return removed
+
+
+TIME_FMT = "%Y-%m-%d %H:%M:%S"
+
+
+def stamp(epoch):
+    """Epoch seconds -> "YYYY-MM-DD HH:MM:SS" in LOCAL time, or None.
+
+    ⭐ The history is read by people, and an epoch integer is not readable. Local time,
+    not UTC, for the same reason the files roll at local midnight: these are a person's
+    records and get read against a person's day.
+
+    ⚠ Tolerates milliseconds. claude-pacer stamps in milliseconds and this plugin in
+    seconds; a row imported from there would otherwise land in the year 58000.
+    """
+    if not isinstance(epoch, (int, float)):
+        return None
+    if epoch > 1e12:
+        epoch = epoch / 1000.0
+    try:
+        return time.strftime(TIME_FMT, time.localtime(epoch))
+    except (ValueError, OSError):
+        return None
+
+
+def unstamp(value):
+    """The inverse, tolerant of the numeric rows older files still contain."""
+    if isinstance(value, (int, float)):
+        return value / 1000.0 if value > 1e12 else value
+    if isinstance(value, str):
+        try:
+            return time.mktime(time.strptime(value, TIME_FMT))
+        except ValueError:
+            return None
+    return None
+
+
+def _append_history(sdir, cfg, five, seven, model=None, session=None, acct=None):
+    """One sample per render, into today's file.
+
+    Every time is written as a readable local timestamp rather than an epoch integer,
+    and the seven-day window's reset is kept as well as its percentage - without it a
+    row cannot be attributed to a particular weekly window when read back later.
+
+    ⛔ `acct` IS WRITTEN ON EVERY ROW, null when unknown. Measured 2026-09-02: two accounts'
+    five-hour windows reset 0.08 s apart, the reader's tolerance is one second, and a row
+    carried no account - so thirteen rows from two accounts sat in one bucket and nothing
+    afterwards could separate them (the seven-day value inside that one window took three
+    different values, which one account cannot do). _burn_rate() drops a row whose `acct` is
+    missing, null, or not the current account. A legacy row has no `acct` and is dropped;
+    that is correct, not a regression.
+    """
+    sample = {"at": stamp(time.time()),
+              "pct": five.get("used_percentage"),
+              "resets_at": stamp(five.get("resets_at")),
+              "acct": acct if isinstance(acct, str) and acct else None}
+    if isinstance(seven, dict):
+        sample["sd_pct"] = seven.get("used_percentage")
+        sample["sd_resets"] = stamp(seven.get("resets_at"))
+    # ⭐ Which model wrote this row. Every session renders its own statusline, so with
+    # several sessions open the file interleaves rows from all of them - without this
+    # there is no way to tell whose usage a row belongs to when reading it back.
+    if model:
+        sample["model"] = model
+    # ⭐ WHICH session rendered this. Several sessions each render on their own timer, so
+    # without it there is no way to tell whether the session actually burning the
+    # allowance is among them - which is the whole question when the number stops moving.
+    if session:
+        sample["session"] = session
+    try:
+        os.makedirs(history_dir(sdir, cfg), exist_ok=True)
+        with open(history_path(sdir, cfg), "a", encoding="utf-8") as f:
+            f.write(json.dumps(sample, ensure_ascii=False) + chr(10))
+    except OSError:
+        pass
+
+
+def _account_ids():
+    """(organizationUuid, accountUuid) for a debug row. Either may be None.
+
+    ⭐ POSITION 0 COMES FROM ~/.claude/.credentials.json, the file the access token itself
+    came from, so it is authoritative about which account made the call. Measured
+    2026-08-27: `organizationUuid` sits at the TOP LEVEL there, beside the `claudeAiOauth`
+    block _token_and_expiry() already reads. One dictionary lookup, no new API call.
+
+    ⛔ organizationUuid IDENTIFIES THE ORGANISATION, NOT THE SEAT. Two accounts inside one
+    team share it - measured here organizationType `claude_team`, seatTier `team_tier_1` -
+    and the owner switches BOTH between organisations AND between seats inside one, so the
+    org id alone provably cannot answer "did these two rows come from the same account?".
+    The per-seat `accountUuid` is in ~/.claude.json under `oauthAccount`.
+
+    ⚠ THE TWO FILES ARE WRITTEN AT DIFFERENT MOMENTS. .credentials.json is rewritten when
+    the token refreshes; ~/.claude.json's oauthAccount when the profile is fetched. After an
+    account switch they can disagree, and a stale profile would attach the WRONG seat id to
+    a response - worse than a missing one, because it looks valid. Both files carry
+    organizationUuid, so they are cross-checked and the seat id is DROPPED on a mismatch.
+
+    ⛔ A None in position 1 therefore means "this row cannot be tied to a seat". The row is
+    still KEPT - never lose data - but a reader computing statistics must EXCLUDE it rather
+    than average it in.
+
+    ⚠ ~/.claude.json is about 55 KB. This function reads it only while the debug switch is on;
+    since 0.57.0 _current_account() ALSO reads it - a different field
+    (`cachedUsageUtilization.accountUuid`), through _claude_json_path(), on every fetch and
+    every _burn_rate() call, for the history label. Two readers, two fields, two questions;
+    both refuse to answer under $ANTHROPIC_TOKEN for the same reason (below).
+
+    ⛔ NO emailAddress AND NO TOKEN EVER LEAVES THIS FUNCTION. oauthAccount carries an email
+    address beside the uuid; accountUuid identifies the seat without putting a personal
+    address into a log file that gets copied around.
+    """
+    # ⚠ $ANTHROPIC_TOKEN WINS IN _token_and_expiry(), and on that path the credentials file
+    # is never opened - so it is not the source of the token in hand and its organizationUuid
+    # may describe a different account entirely. That is the same "looks valid but is wrong"
+    # failure the cross-check below exists to prevent, so it gets the same answer: nothing.
+    env = os.environ.get("ANTHROPIC_TOKEN")
+    if env and env.strip():
+        return None, None
+    home = os.path.expanduser("~")
+    cred = read_json(os.path.join(home, ".claude", ".credentials.json"), {}) or {}
+    org = cred.get("organizationUuid") if isinstance(cred, dict) else None
+    org = org if isinstance(org, str) and org else None
+    prof = read_json(os.path.join(home, ".claude.json"), {}) or {}
+    acct = prof.get("oauthAccount") if isinstance(prof, dict) else None
+    acct = acct if isinstance(acct, dict) else {}
+    seat = acct.get("accountUuid")
+    seat = seat if isinstance(seat, str) and seat else None
+    # ⛔ Including the case where the credentials file carries no org id at all: with
+    # nothing to confirm the profile file against, the seat it names cannot be trusted.
+    if org is None or acct.get("organizationUuid") != org:
+        seat = None
+    return org, seat
+
+
+def _dump_response(sdir, cfg, data):
+    """debug.API_response_usage: keep the WHOLE response body, and never break a fetch.
+
+    One JSON array per line, appended to <history_dir>/API_response_usage_<YYYYMMDD-HHMMSS>.jsonl:
+
+        [organizationUuid, accountUuid, "2026-08-27T09:45:00+00:00", {...the response...}]
+
+    ⛔ POSITION 3 IS THE RAW PARSED BODY - not trimmed, not reshaped, no key dropped for
+    looking useless. The entire point is that a field nobody valued turns out to be the
+    evidence later: `resets_at: null` beside `utilization: 0.0` was measured on 2026-08-27
+    and is what says "no usage YET in this window", which is the only way to find when work
+    actually began inside one. ⚠ That is a property of a SEQUENCE of responses, which no
+    single response and nothing else this plugin stores can answer.
+
+    ⚠ POSITION 2 IS NOT OPTIONAL. The filename records when the FILE was started, not when
+    each call happened, and statistics need a per-line instant.
+
+    ⛔ EVERY FAILURE IS SWALLOWED. This file's rule is that every failure ends as "no
+    number", never as a wrong number and never as a crash - so a full disk or a permission
+    error while writing a DIAGNOSTIC must not cost the brake its reading.
+    """
+    try:
+        org, seat = _account_ids()
+        row = [org, seat,
+               datetime.datetime.now(datetime.timezone.utc).isoformat(), data]
+        os.makedirs(history_dir(sdir, cfg), exist_ok=True)
+        with open(history_path(sdir, cfg, prefix=DEBUG_RESPONSE_PREFIX), "a",
+                  encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + chr(10))
+    except Exception:
+        pass
+
+
+BAR_FULL, BAR_EMPTY = "▓", "░"      # single-width blocks; CJK would misalign
+
+# ⛔ ONE WIDTH FOR ALL THREE SEGMENTS. The 5h and 7d bars were 6 cells and CT was 4,
+# written as separate literals, which is how they drifted apart in the first place. A bar
+# exists to be compared at a glance, and two bars of different lengths cannot be: the same
+# fill ratio does not look like the same length.
+BAR_WIDTH = 9
+
+# ⚠ Colour thresholds are about ATTENTION and are deliberately NOT soft_pct/hard_pct.
+# Those decide what the gate DOES; a person wants a warning colour a little before
+# anything starts being refused. Override with colour_warn_pct / colour_alarm_pct, or set
+# colour:false - a terminal that does not understand ANSI would otherwise print the
+# escape codes as visible rubbish.
+ANSI = {"reset": "\033[0m",
+        "ok": "\033[32m",           # green   - GO
+        "caution": "\033[38;5;220m",  # yellow  - WARN, 256-colour
+        "warn": "\033[38;5;208m",   # orange  - PACE, 256-colour
+        "alarm": "\033[31m"}        # red     - STOP
+
+# ⭐ ONE PALETTE FOR THE WHOLE DISPLAY, the owner's instruction: the bars and the verdict dot
+# carry the same four colours, so a glance at either says the same thing. ⚠ The ANSI keys are
+# named for the COLOUR and the states for the MEANING, and they do not line up one-to-one -
+# state WARN is `caution`/yellow while state PACE is `warn`/orange. That is why the mapping is
+# written out here rather than left to a name collision nobody would notice going wrong.
+# ⛔ NO-DATA has no colour: it is drawn as ⚪, which needs none.
+STATE_ANSI = {"GO": "ok", "WARN": "caution", "PACE": "warn", "STOP": "alarm"}
+
+
+def _state(pct, cfg, time_pct=None):
+    """The DISPLAY state for a percentage: GO / WARN / PACE / STOP.
+
+    ⛔ DISPLAY ONLY, AND IT IS NOT verdict(). The gate reads verdict() and acts on its word;
+    `dispatch_gate.py` tests that word against literal tuples in four places (`not in ("GO",
+    "PACE")` at the stand-down, `not in ("PACE", "STOP")` at three others), so a fifth word
+    arriving from here would silently change what the brake DOES. The owner's instruction was
+    "只變色不做任何處理" - colour only, no handling - and this function is how that is kept.
+
+    ⭐ WARN IS "SPENDING FASTER THAN THE CLOCK", which is exactly what the ┃ marker already
+    draws: the bar's fill is what you have spent, the marker is how far through the window you
+    are, so fill PAST the marker is the whole condition. It costs no new input - `_bar()` is
+    handed the same `time_pct`.
+
+    ⚠ The two upper tiers keep reading colour_warn_pct / colour_alarm_pct rather than
+    soft_pct / hard_pct. Those keys are documented, configurable, and default to the same 70
+    and 85 the verdict uses, so the default display agrees with the verdict while somebody who
+    tuned them keeps what they tuned.
+    """
+    # ⚠ 85, matching DEFAULTS. It read 90 here for a partial-dict caller while DEFAULTS said
+    # 85, so the fallback and the documented default disagreed - invisible whenever cfg came
+    # from config(), which is why it survived.
+    if pct >= cfg.get("colour_alarm_pct", 85):
+        return "STOP"
+    if pct >= cfg.get("colour_warn_pct", 70):
+        return "PACE"
+    # ⛔ A DEADBAND, AND WITHOUT ONE THIS FIRES THE MOMENT A WINDOW IS TOUCHED. `time_pct` is
+    # near zero just after a reset, so ANY spending is "past the marker": measured 2026-09-01,
+    # minutes after the seven-day window reset, 1% used against 0.48% elapsed drew a yellow
+    # bar and a yellow dot. ⚠ And it does not clear quickly - a seven-day clock advances
+    # 0.0099%/min, so one percent of usage stays yellow for about a hundred minutes.
+    # ⭐ A warning that fires on the first percent of every window is a warning nobody reads.
+    # The margin is in PERCENTAGE POINTS, which is scale-free: 5 points is a quarter of an
+    # hour of a five-hour window and eight hours of a seven-day one, and in both cases it is
+    # the difference between "ahead of the clock" and "ahead of the clock enough to matter".
+    # ⚠ The two tiers above are what catch a window that is simply high; this one exists only
+    # for the early and middle stretch, where the percentage alone says nothing.
+    if isinstance(time_pct, (int, float)) and \
+            pct - time_pct > cfg.get("colour_warn_margin_pct", 5):
+        return "WARN"
+    return "GO"
+
+
+def _colour(pct, cfg, time_pct=None):
+    """⚠ `time_pct` is optional and its ABSENCE is meaningful, not a default: without it there
+    is no marker to be past, so the WARN tier cannot fire and a caller that never had a time
+    axis (the context bar) keeps exactly the three colours it always had."""
+    if not cfg.get("colour", True):
+        return "", ""
+    return ANSI[STATE_ANSI[_state(pct, cfg, time_pct)]], ANSI["reset"]
+
+
+def _state_colour(state, cfg):
+    """The palette entry for a display state, so the dot and its colour cannot disagree.
+
+    ⚠ An unknown state gets NO colour rather than a guess - NO-DATA and SLEEP both land here,
+    and both are drawn as something that already says "no number" on its own."""
+    if not cfg.get("colour", True):
+        return "", ""
+    key = STATE_ANSI.get(state)
+    return (ANSI[key], ANSI["reset"]) if key else ("", "")
+
+
+def _five_hour_time_pct(record, now=None):
+    """How far through the five-hour window the clock has travelled, 0-100, or None.
+
+    ⚠ This is the ┃ marker's position on the 5h bar and nothing else. It is computed from the
+    SAME `resets_at` and the SAME FIVE_HOUR_SECONDS that `_line_parts()` hands `_window()`, so the dot
+    and the bar cannot end up disagreeing about where the marker is.
+    """
+    five = (record or {}).get("five_hour") if isinstance(record, dict) else None
+    resets = five.get("resets_at") if isinstance(five, dict) else None
+    if not resets:
+        return None
+    now = time.time() if now is None else now
+    return 100.0 * (1.0 - (resets - now) / float(FIVE_HOUR_SECONDS))
+
+
+def display_state(v, record, cfg, now=None):
+    """The word the SCREEN shows: GO / WARN / PACE / STOP / NO-DATA.
+
+    ⛔ IT ONLY EVER ADDS WARN, AND ONLY ON TOP OF GO. A real PACE, STOP or NO-DATA is returned
+    untouched - the display must never soften a verdict the gate is acting on, and this is the
+    one direction that could. ⇒ The dot can differ from the verdict in exactly one way: green
+    becomes yellow, which changes nothing anybody does.
+
+    ⚠ WARN is decided on the FIVE-HOUR window, not on whichever bar happens to be worst. That
+    is the window verdict() gates on and the one the dot has always tracked; a dot that
+    followed the seven-day bar would be answering a different question from the word beside it.
+    """
+    word = v.get("verdict") if isinstance(v, dict) else None
+    if word != "GO":
+        return word
+    pct = v.get("pct")
+    if not isinstance(pct, (int, float)):
+        return word
+    return "WARN" if _state(pct, cfg, _five_hour_time_pct(record, now)) == "WARN" else "GO"
+
+
+# ⭐ THE FIVE-HOUR WINDOW, ONCE. It was a bare `5 * 3600` in three places, and the burn
+# gauge's colour now needs it too - clock speed is 100 / window minutes - so a fourth copy
+# was about to be written. ⚠ The three existing sites keep their behaviour exactly; naming
+# the literal is what stops the colour, the bars and the rate drifting onto different ideas
+# of how long the window is.
+FIVE_HOUR_SECONDS = 5 * 3600
+
+BAR_MARK = "┃"    # the elapsed-time marker
+
+# ⭐ THE BURN GAUGE'S LABEL, the owner's choice. ⚠ Two columns, not one - _visible_len()
+# knows, and everything that fits the row goes through it. ⛔ Named once because three places
+# ask "is this segment the gauge?" by looking at the start of the string, and a label that
+# drifts from that test is a gauge that silently stops being found.
+BURN_LABEL = "Burn"
+
+# ⛔ THE LABELS ARE TEXT AGAIN, and that was measured on the owner's screen rather than
+# decided. Icons were tried for all four (a clock, a keycap seven, a rocket, a fire) and the
+# terminal's font drew the keycap as NOTHING and the fire as a coloured dot - so two of the
+# four segments lost their label entirely while the width counter went on reserving two
+# columns for each. ⇒ A glyph a font may not have is not a saving, it is a blank.
+# ⭐ The verdict keeps its circle: those four are geometric shapes with far wider font
+# coverage than an emoji, and the screenshot shows them drawing correctly.
+FIVE_HOUR_LABEL = "5h"
+SEVEN_DAY_LABEL = "7d"
+
+# ⛔ ICONS FOR THE VERDICT, AND FOR THE DISPLAY ONLY. The gate reads verdict() and acts on the
+# WORD; a symbol reaching that side would be a value the dispatch logic does not know. This
+# map is applied where the row is assembled and nowhere else - the same rule SLEEP_WORD
+# already follows. ⚠ Anything not in the map keeps its word, so a new verdict shows up as
+# text rather than vanishing.
+# ⭐ WARN IS IN THIS MAP AND NOT IN verdict(). It is derived at render time by _state() from
+# the five-hour bar's own marker, exactly like SLEEP - see _state() for why a fifth word
+# reaching the gate would change what the brake does.
+VERDICT_ICON = {"GO": "\U0001f7e2", "WARN": "\U0001f7e1", "PACE": "\U0001f7e0",
+                "STOP": "\U0001f534", "NO-DATA": "\u26aa"}
+# Module-level because _bar is called from several places and threading a flag through
+# all of them for one boolean is noise. Set from config once, at entry.
+SHOW_MARK = [True]
+
+
+def _bar(pct, width=None, time_pct=None):
+    """A proportional bar, optionally carrying an elapsed-time marker.
+
+    ⭐ The marker is the cleverest thing in claude-pacer and is worth having: it shows how
+    far through the WINDOW you are, beside how much you have SPENT. Fill ahead of the
+    marker means burning faster than the clock; behind it means there is slack. A bare
+    percentage cannot say that.
+
+    ⚠ It is inserted BETWEEN cells, so the bar renders one column wider rather than
+    replacing a cell. Replacing one was a real bug in that project (v0.1.1): the filled
+    proportion then reads a cell short and the number beside it disagrees with the bar.
+
+    ⚠ Single-width glyphs only. A CJK block counts as two terminal columns and the bar
+    drifts out of alignment with everything beside it.
+    """
+    width = BAR_WIDTH if width is None else width
+    filled = int(round(max(0.0, min(100.0, pct)) / 100.0 * width))
+    cells = [BAR_FULL] * filled + [BAR_EMPTY] * (width - filled)
+    if isinstance(time_pct, (int, float)) and SHOW_MARK[0]:
+        at = int(round(max(0.0, min(100.0, time_pct)) / 100.0 * width))
+        cells.insert(at, BAR_MARK)
+    return "".join(cells)
+
+
+def duration(mins):
+    """Minutes as the largest two units that fit: 9m, 3h5m, 4d4h.
+
+    ⚠ Hours alone stop being readable past a day - the seven-day window routinely shows a
+    three-digit hour count, and "100h24m" is arithmetic the reader has to do.
+
+    ⛔ SHORTER THAN IT WAS, and deliberately: this used to be hyphenated and to print all
+    three units past a day (`4d-0h-16m`). The owner's watcher is back to a single row, where
+    every column decides whether the burn gauge is drawn at all - and three of these appear
+    on that row, so the old form cost about sixteen columns to say nothing extra. ⚠ The
+    MINUTES go, not the hours: four days out, a minute is noise; three hours out, it is not,
+    which is why the two-unit rule keeps them below a day.
+
+    ⭐ AND A ZERO UNIT IS NOT PRINTED AT ALL - the owner's instruction. `0h32m` was always
+    `32m`, `3h0m` is `3h`, `4d0h` is `4d`. ⚠ It is the SMALLER unit that can vanish, never
+    the larger one: dropping a leading `3h` from `3h0m` would read as three minutes.
+    ⛔ The three-unit case cannot arise - `mins < 60` already returns bare minutes - so a
+    zero can only ever be trailing, which is why one trim covers all three branches.
+    """
+    mins = max(0, int(mins))
+    if mins < 60:
+        return "%dm" % mins
+    if mins < 1440:
+        big, small, bu, su = mins // 60, mins % 60, "h", "m"
+    else:
+        big, small, bu, su = mins // 1440, (mins % 1440) // 60, "d", "h"
+    if not small:
+        return "%d%s" % (big, bu)
+    return "%d%s%d%s" % (big, bu, small, su)
+
+
+def _window(label, win, now, cfg=None, window_secs=None, stale=False):
+    """One window's bar, percentage and time remaining - or dashes.
+
+    ⛔ A STALE NUMBER IS NOT SHOWN AS A NUMBER. Measured 2026-08-26: the display read 74%
+    while the account page read 93%, because the only session rendering the statusline was
+    an idle one replaying the rate_limits it last received. A percentage on screen is read
+    as the current percentage - nobody reads it as "the last value some session happened to
+    see" - so showing it is worse than showing nothing. Under-reading is the dangerous
+    direction: it is exactly when the brake should fire that a frozen number holds it off.
+
+    ⚠ This cannot be fixed here, only reported. Nothing but Claude Code's own statusline
+    invocation delivers the numbers, and it delivers whatever that session last saw.
+
+    Set stale_hides_numbers:false to show the old value anyway; the age is always printed.
+    """
+    cfg = cfg or {}
+    have = isinstance(win, dict) and isinstance(win.get("used_percentage"), (int, float))
+    resets = win.get("resets_at") if isinstance(win, dict) else None
+
+    # ⛔ A WINDOW THAT HAS ALREADY TURNED OVER makes its stored percentage meaningless,
+    # and meaningless in the worst direction: it reads HIGH. Measured 2026-08-26 - the
+    # window reset at 14:00, the account page went to 0%, and the display still showed
+    # 97% because nothing had rendered since. The verdict already knew (it returns GO past
+    # a reset); the display did not, so the two disagreed with each other.
+    # ⇒ Past the reset, show dashes until a render brings a real number for the new window.
+    reset_passed = bool(resets) and now >= resets
+    if not have or reset_passed or (stale and cfg.get("stale_hides_numbers", True)):
+        # ⚠ One cell wider than BAR_WIDTH, to stand where the time marker would: a bar that
+        # changed length when it lost its number would make the line jump.
+        return "%s %s %s" % (label, BAR_EMPTY * (BAR_WIDTH + 1), "--")
+
+    pct = win["used_percentage"]
+    time_pct = None
+    if resets and window_secs:
+        time_pct = 100.0 * (1.0 - (resets - now) / float(window_secs))
+    # ⭐ THE SAME time_pct FEEDS THE MARKER AND THE COLOUR, which is the whole point: the bar
+    # turns yellow exactly when its fill passes its own ┃, so the colour never disagrees with
+    # the picture beside it. ⚠ It is None for a window with no reset, and then _state() simply
+    # cannot reach WARN - see there.
+    on, off = _colour(pct, cfg, time_pct)
+    out = "%s %s%s %d%%%s" % (label, on, _bar(pct, BAR_WIDTH, time_pct), round(pct), off)
+    if resets:
+        out += " " + duration((resets - now) / 60) + _reset_clock(resets, now)
+    return out
+
+
+def _reset_clock(resets, now):
+    """`(13:00)` or `(Tue 13:00)` - the wall-clock time a window resets, in brackets.
+
+    ⭐ THE REMAINING TIME ALONE IS NOT ENOUGH, and the owner asked for both: `1h12m` says how
+    long you have, `(13:00)` says when to come back. A reader who looks away and returns can
+    act on the second without doing arithmetic on the first.
+
+    ⚠ THE WEEKDAY APPEARS ONLY WHEN THE RESET IS NOT TODAY. `Tue` beside a time later the
+    same afternoon reads as next Tuesday to anybody who does not already know today's name,
+    and it costs four columns on a row that drops parts from the right. The five-hour window
+    never reaches tomorrow, so it never carries one; the seven-day window usually does.
+
+    ⚠ %a is the C locale here - Python does not call setlocale at startup - so it reads
+    `Tue`, not a localised weekday. Measured, not assumed.
+    """
+    if not isinstance(resets, (int, float)) or resets <= 0:
+        return ""
+    when = time.localtime(resets)
+    same_day = time.localtime(now)[:3] == when[:3]
+    return time.strftime("(%H:%M)" if same_day else "(%a %H:%M)", when)
+
+
+# ⭐ THE WORD THAT REPLACES THE VERDICT WHILE NOTHING IS HAPPENING. Display only - see
+# _watch_line() for why it must never reach verdict(). Upper case like GO, PACE and STOP:
+# it stands in the same column and means the same kind of thing.
+# 💤 REPLACES THE WORD `SLEEP`, owner-asked and OWNER-TESTED, 2026-09-01.
+# ⭐ IT REMOVES A SPECIAL CASE RATHER THAN ADDING ONE: a word needed a space on each side to
+# stay readable, a two-cell glyph sits exactly where every verdict icon sits.
+# ⚠ THE FONT WORRY WAS REAL AND IS SETTLED BY MEASUREMENT, not by argument. This repository
+# had recorded that an emoji can simply fail to draw - `7️⃣` rendered as nothing on the owner's
+# terminal and `🔥` as a coloured blob - which is why the verdict states are geometric dots
+# (🟢 is in Geometric Shapes Extended; this one is in the same emoji block 🔥 came from).
+# ⇒ The owner printed 🟢 ⚪ ⚫ 💤 🌙 side by side in the terminal that has to draw them and all
+# five rendered. That is the only test that settles font coverage, and it beats the
+# inference. ⚫ remains the geometric fallback if a different terminal disagrees.
+# ⚠ IT IS STILL DISPLAY-ONLY and still must never reach verdict() - see below.
+SLEEP_WORD = "💤"
+
+
+def _watch_open(scroll):
+    """The bytes to emit once, before the first draw. Empty when scrolling.
+
+    ⛔ THE RESIDUE THIS REMOVES IS NOT THIS PROCESS'S. A rewriting watcher overwrites its own
+    row for ever, so the row it starts on is the only one it can reach - and the line left
+    behind by the PREVIOUS run sits above that, out of reach, for the life of the terminal.
+    Seen in a screenshot: a one-row draw from the old version stranded above a two-row draw
+    from the new one, which reads as the two-row layout being broken when it is not.
+
+    ⭐ CLEARING IS SAFE HERE PRECISELY BECAUSE IT REWRITES. A surface that rewrites one row
+    has no scrollback worth keeping; anybody who wants the history passes `--scroll`, and
+    that path emits nothing from here. ⚠ It also takes the task's "Executing task" header
+    with it, which is the cost, and the reason this is tied to rewriting rather than done
+    unconditionally.
+    """
+    # ⛔ AND AUTO-WRAP OFF (DECAWM, `?7l`), which is the fix for the residue that survived
+    # both the clear and the fixed row count. A row as wide as the panel - or wider - is
+    # wrapped by the TERMINAL onto a second visual row, and `\033[1A` then climbs one VISUAL
+    # row rather than one logical one: it lands mid-line, `\r` returns to the start of the
+    # wrong row, and the top half is left on screen for ever. ⚠ Fitting cannot rule this out,
+    # because the width may be wrong (a resize between measuring and writing) or unknowable
+    # (COLUMNS unset and no tty size). With wrapping off the terminal truncates at the margin
+    # instead and the cursor stays on the row it was on, so the climb cannot be wrong.
+    return "" if scroll else "\033[2J\033[H\033[?7l"
+
+
+def _watch_close(scroll):
+    """The bytes that hand the terminal back. Empty when scrolling.
+
+    ⛔ AUTO-WRAP IS THE TERMINAL'S MODE, NOT THIS PROCESS'S. Left off it stays off for
+    whatever runs next there - a shell whose own commands then vanish at the right margin.
+    Restoring it is giving back something borrowed, not tidiness.
+    """
+    return "" if scroll else "\033[?7h"
+
+
+def _redraw(lines, erase="\033[K"):
+    """The bytes that rewrite the watcher's line in place. ONE row, and no vertical move.
+
+    ⛔ THIS TERMINAL HONOURS `\r` AND NOTHING ELSE, and that was established by elimination
+    rather than by reading a specification. Four attempts each fixed a real defect and none
+    fixed the owner's screen: a startup clear, a fixed row count, auto-wrap off, and an
+    absolute home. The byte stream was then CAPTURED - `\033[2J\033[H\033[?7l` once, then
+    `\033[H\r<row>\033[K\n\r<row>\033[K\033[J` per draw, no stray output, no relative move -
+    and a VS Code panel stacked three complete draws anyway. ⇒ `\033[2J`, `\033[H` and
+    `\033[1A` are all ignored there; `\r` plus `\033[K` had been working since the day this
+    was written, on a single row.
+    ⇒ The two-row layout is not achievable in that panel, so the owner chose one row back.
+
+    ⚠ `lines` is still a list, and only the FIRST is drawn. _watch_line() asks _rows() for a
+    single row, so a second can only arrive from a caller that has changed its mind - and
+    silently drawing half of what it was handed is how that would go unnoticed.
+    """
+    assert len(lines) == 1, "the watcher draws ONE row: %r" % (lines,)
+    return "\r" + lines[0] + erase
+
+
+def _watch_line(stamp, data, v, note, cfg, idle=False, burn=None, hook_silent=None):
+    """The row(s) `--watch` prints, fitted to the terminal ONCE. A list; pure, no I/O.
+
+    ⛔ THE BUG THIS FUNCTION EXISTS FOR. `_line()` fits ITSELF to the terminal width - and
+    the watcher then prepended a timestamp and appended the verdict word, sixteen columns
+    nobody had subtracted. MEASURED at width 150: `_line` returned 149 characters and the
+    line that reached the terminal was 165. ⇒ It wrapped; `\r` returns to the start of the
+    LAST VISUAL ROW and `\033[K` clears only that row, so every render stranded its first
+    row on screen for ever. That is the residue in the owner's screenshot, and it is why the
+    whole thing is assembled in one place that owns the width.
+
+    ⭐ AND WHY IT RETURNS A LIST. When everything will not fit on one row, the answer used to
+    be to DROP the least valuable parts. A terminal has more rows, so the second one is spent
+    instead: the usage bars and the verdict stay together on the first, the context bar, the
+    model and the note move to the second. ⚠ Each row is fitted separately - two rows that
+    can each wrap is the original defect twice over.
+
+    ⭐ IDLE KEEPS THE FIGURES AND DROPS THE COLOUR. A frozen percentage is dangerous when a
+    FETCH is failing; while nobody is working nobody is spending, so it cannot drift. The
+    exposure is the moment work resumes, and should_fetch() starts fetching at that same
+    moment. `SLEEP` is what says the row is not live. ⚠ watch() also stops redrawing while
+    idle - see there - so this is called ONCE per quiet spell.
+
+    ⛔ AND `SLEEP` NEVER REACHES verdict(). The gate reads verdict() for GO/PACE/STOP; a
+    fourth word arriving from the display side would be a word the dispatch logic does not
+    know. This substitution is local to the watcher's screen.
+    """
+    # ⚠ THE ICON IS CHOSEN HERE, where the row is assembled, and nowhere else: the gate
+    # acts on the WORD, and a symbol reaching that side is a value it does not know.
+    # ⭐ WARN JOINS THE LADDER HERE TOO, via display_state() - see there for why it can only
+    # ever turn a GO yellow and never touch a PACE or a STOP.
+    state = SLEEP_WORD if idle else display_state(v, data, cfg)
+    word = SLEEP_WORD if idle else VERDICT_ICON.get(state, state)
+    lcfg = dict(cfg)
+    if idle:
+        # ⭐ ONE key carries the whole idle appearance: _colour() already honours it, so "no
+        # colour anywhere" costs a setting rather than a second code path.
+        lcfg["colour"] = False
+    # ⛔ COLOURED BY THE STATE, NOT BY THE PERCENTAGE. They used to be computed separately and
+    # could therefore disagree - a yellow dot on a green ladder is a contradiction the reader
+    # has to resolve, and there is nothing to resolve it with.
+    von, voff = _state_colour(state, lcfg)
+    # ⛔ THE DIAGNOSIS GOES IN `head`, NOT BESIDE THE VERDICT, and that was measured rather
+    # than chosen. _cut() trims the row from the RIGHT, and the verdict icon is the rightmost
+    # thing on the line: at 25 and 30 columns it is DROPPED and the row comes back shorter
+    # than the terminal, with nothing saying anything was suppressed. Anything in `head`
+    # survives every width the row is drawn at.
+    # ⚠ Five columns, and only when there IS a disagreement - see hook_silent_min(), whose
+    # None means "nothing to report", never "healthy".
+    mark = ""
+    if hook_silent is not None and hook_silent > (cfg.get("idle_after_min", 15) or 15):
+        hon, hoff = ("", "") if not lcfg.get("colour", True) else (ANSI["alarm"], ANSI["reset"])
+        mark = "%sHOOK?%s " % (hon, hoff)
+    # ⭐ THE ICON SITS BETWEEN THE TIMESTAMP AND THE FIRST WINDOW, IN PLACE OF THE TWO SPACES
+    # THAT USED TO SEPARATE THEM. The owner's instruction, 2026-09-01, and it costs nothing:
+    # the pair was a separator, and one glyph separates just as well while saying something.
+    # ⚠ IT USED TO LIVE AT THE END, beside the weekly reset. Both moved: the reset now sits
+    # inside its own window's segment, where the number it belongs to is - see _reset_clock().
+    # ⚠ THE ICON IS FLUSH, THE WORD IS NOT. While idle this carries the text `SLEEP` rather
+    # than a single glyph (see SLEEP_WORD), and `07:26:12SLEEP5h` is unreadable - a word needs
+    # the spaces a glyph does not. ⇒ One space either side when it is a word.
+    # ⛔ ONE SPACE AFTER THE ICON, ALWAYS - the timestamp side stays flush. Seen on the
+    # owner's terminal 2026-09-01: an emoji occupies TWO cells and the terminal draws it
+    # into the second one, so `16:31:41🟢5h` put the glyph over the `5`. ⚠ A space before it
+    # would undo what the flush icon was for; a space after it costs one column and fixes
+    # the collision. ⭐ The second row follows automatically - _second_row_indent() measures
+    # the head it is actually given, so widening it here needs no other change.
+    # ⭐ NO SPECIAL CASE FOR IDLE ANY MORE. It used to carry the WORD `SLEEP`, which
+    # needed a space on each side; since 2026-09-01 it carries ⚫, a two-cell glyph that
+    # sits exactly where every verdict icon sits.
+    head = "%s%s%s%s%s " % (mark, stamp, von, word, voff)
+    # ⭐ THE TAIL IS NOW ONLY THE TRAILING PAIR. ⛔ IT IS NOT PADDING - do not "tidy" it away.
+    # The terminal parks its cursor on the last column and draws a block there; over anything
+    # worth reading that block is unreadable, so two columns keep it clear. The check asserts
+    # the BYTES, because a trailing-whitespace cleanup would break the display silently.
+    tail = "  "
+    windows, extras = _line_parts(data, note, lcfg, None,
+                                  stale=False if idle else None, burn=burn)
+    # ⭐ THE WATCHER BREAKS AFTER THE LAST USAGE WINDOW, and Burn opens the second row.
+    # The owner's instruction, and it fixes the defect measured in 0.40.7: on a panel under
+    # 141 columns the gauge was silently dropped, so "no Burn" meant either "no data" or
+    # "too narrow" and the screen could not tell you which. Given a row of its own it is
+    # always there.
+    # ⛔ ONE ROW, ALWAYS - `two_rows=False`, and it is not a preference. A second row can only
+    # be drawn over again by moving the cursor UP, and the terminal this exists for ignores
+    # every vertical move: measured by elimination, then confirmed by capturing the byte
+    # stream, a VS Code panel stacked three complete two-row draws that carried a `\033[2J`
+    # each. ⇒ Whatever will not fit is dropped from the right, as it was before.
+    # ⭐ The gauge is still drawn as dashes when there is no rate yet, so its absence means
+    # exactly one thing - the row was too narrow - and never "no data".
+    if not (windows and windows[-1].startswith(BURN_LABEL)):
+        windows.append(_burn_part(None, None, None, lcfg))
+    return _rows(windows, extras, terminal_width(cfg), head, tail, two_rows=False)
+
+
+# The payload key that carries context usage. ⭐ Named once because Part B turns its
+# PRESENCE into the difference between "zero" and "unknown".
+CONTEXT_KEY = "context_window"
+
+
+def _context_pct(payload):
+    """Context-window usage as a percentage, or None when it cannot be read.
+
+    ⛔ ZERO AND UNKNOWN ARE DIFFERENT ANSWERS, and the difference is decided by whether the
+    KEY IS THERE - never by whether the value is falsy. Rendering "I cannot read this" as 0%
+    is a confident wrong answer, and it errs LOW, the same direction _api_window() refuses a
+    reading whose scale it cannot establish.
+
+    ⭐ MEASURED, NOT ASSUMED (Claude Code 2.1.246, read out of the shipped binary). The
+    statusline payload is built as `context_window: a6e(w, I)`, an UNCONDITIONAL field -
+    unlike `rate_limits`, which is spread in only when a window exists. And a6e() always
+    emits `used_percentage`, with `current_usage: null` and `total_input_tokens: 0` when
+    there are no messages yet. The binary's own documentation of the field says
+    `Context: $used% used`, so the scale is whole percent, not a fraction. ⇒ So:
+
+      key absent            -> not a statusline payload at all, or the field was renamed.
+                               Unknown. Draw dashes.
+      key present, no work  -> `current_usage` is null. A real zero. Draw an empty bar.
+      key present, a value  -> draw it.
+      key present, garbage  -> unknown again. The shape changed under us, and guessing zero
+                               would hide that behind a plausible-looking bar.
+    """
+    if not isinstance(payload, dict) or CONTEXT_KEY not in payload:
+        return None
+    cw = payload.get(CONTEXT_KEY)
+    if not isinstance(cw, dict):
+        return None
+    pct = cw.get("used_percentage")
+    if isinstance(pct, (int, float)) and not isinstance(pct, bool):
+        return float(pct)
+    # ⚠ The fallback matters: all three token counts have to be added, or the number reads
+    # far too low. It is kept for payloads that carry the counts but not the percentage.
+    u, size = cw.get("current_usage"), cw.get("context_window_size")
+    if isinstance(u, dict) and isinstance(size, (int, float)) and size:
+        used = (u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0) \
+               + (u.get("cache_creation_input_tokens") or 0)
+        return 100.0 * used / size
+    if u is None:
+        return 0.0        # ⭐ "no messages yet" - a known answer, and its value is zero
+    return None
+
+
+def _model_part(payload):
+    m = payload.get("model") or {}
+    name = m.get("display_name") or m.get("id")
+    if not name:
+        return None
+    eff = (payload.get("effort") or {}).get("level")
+    return "%s%s" % (name, "·" + eff if eff else "")
+
+
+# ⛔ ONE definition. A second copy of this pattern is a second chance to get it wrong, and
+# getting it wrong means truncating INSIDE an escape sequence - which garbles a terminal
+# rather than tidying it.
+_STRIP_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _visible_len(text):
+    """Columns as the terminal draws them: ANSI codes occupy none, an emoji occupies two.
+
+    ⛔ COUNTING CODEPOINTS WAS ENOUGH ONLY WHILE EVERYTHING WAS NARROW, and the comment on
+    BAR_FULL says as much - the block glyphs were chosen single-width because "CJK would
+    misalign". The moment a wide character joins the row that assumption is a silent
+    off-by-one per glyph, and one column of overflow is precisely what makes a line wrap -
+    the single failure a carriage return can never repair, and the one this watcher spent
+    four releases chasing.
+
+    ⚠ `east_asian_width` answers W (wide) and F (fullwidth) for exactly the characters a
+    terminal draws in two cells, which covers CJK as well as the emoji that prompted this.
+    """
+    plain = _STRIP_ANSI.sub("", text)
+    return sum(_cols(ch) for ch in plain)
+
+
+KEYCAP = "\u20e3"                    # combining enclosing keycap: `7` + VS16 + this = `7\u20e3`
+
+
+def _cols(ch):
+    """Columns one character occupies. ⚠ Three cases, and every one of them is on the row.
+
+    ⭐ W/F is the ordinary answer for an emoji or a CJK glyph: two cells.
+    ⛔ A VARIATION SELECTOR IS NOT A CHARACTER. `\ufe0f` asks the previous glyph to be drawn
+    in colour and occupies nothing; counting it as a column makes every keycap one too wide,
+    and one column too wide is what wraps a row.
+    ⭐ THE KEYCAP MARK IS COUNTED AS ONE because it does not add a cell of its own - it turns
+    the digit before it into a two-cell box. Digit (1) + selector (0) + keycap (1) = 2, which
+    is what the terminal draws.
+    ⚠ Every other combining mark is zero: it is drawn on top of the character before it.
+    """
+    if ch == KEYCAP:
+        return 1
+    if unicodedata.combining(ch) or unicodedata.category(ch) in ("Mn", "Me", "Cf"):
+        return 0
+    return 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+
+
+def terminal_width(cfg):
+    """Columns available, or None if unknowable.
+
+    ⚠ Claude Code sets $COLUMNS for the statusline; a plain terminal may not. An unknown
+    width must never shrink the line - guessing narrow and dropping information would be
+    worse than a wrap, so None means render everything.
+    """
+    w = cfg.get("width")
+    if isinstance(w, int) and w > 10:
+        return w
+    for src in (os.environ.get("COLUMNS"),):
+        try:
+            n = int(src)
+            if n > 10:
+                return n
+        except (TypeError, ValueError):
+            pass
+    try:
+        n = shutil.get_terminal_size(fallback=(0, 0)).columns
+        return n if n > 10 else None
+    except Exception:
+        return None
+
+
+def _rows(windows, extras, width, head="", tail="", two_rows=True, always_split=False):
+    """The row(s) to draw: one when everything fits, two when it does not and `two_rows`.
+
+    ⭐ ONE SPLITTER FOR BOTH SURFACES. The watcher and the statusline had different ideas
+    about what to do with a line that will not fit - the watcher spent a second row, the
+    statusline threw the least valuable parts away - and two answers to one question drift.
+    `head` and `tail` are what the caller wraps around the middle (a timestamp and a verdict
+    word, for the watcher; nothing, for the statusline).
+
+    ⛔ THE BUDGETS ARE PER ROW, and each subtracts what surrounds it. Fitting the middle and
+    then adding the wrapper around it is the measured defect this whole area came from: at
+    width 150 the middle came back 149 characters and the line was 165.
+
+    ⚠ `two_rows` false keeps the old behaviour exactly - one row, packed, and whatever does
+    not fit is dropped from the right. A second row costs a row of the terminal, and on a
+    narrow one that is a row of conversation; the owner decides.
+
+    ⭐ `always_split` spends the second row even when everything WOULD fit. The watcher asks
+    for it so the burn gauge has a fixed home instead of appearing and vanishing with the
+    terminal width - a segment that moves is a segment nobody trusts. ⚠ The statusline does
+    NOT ask for it, and the reason is the owner's instruction rather than a platform limit:
+    a statusline CAN be two rows - see line_rows(), where that was measured out of the
+    shipped binary - it simply is not made to spend one it does not need.
+    """
+    if not width:
+        # ⚠ A forced split has to survive here too, or the second row would appear only on
+        # terminals whose width could be detected - which is the machines, not the intent.
+        if always_split and two_rows and extras:
+            return [head + _fit(windows, None) + tail,
+                    " " * _second_row_indent(head, windows, extras) + _fit(extras, None)]
+        return [head + _fit(windows + extras, None) + tail]
+    one = head + _fit(windows + extras, None) + tail
+    if not always_split and _visible_len(one) <= width:
+        return [one]
+    # ⚠ With nothing to move to a second row there is nothing to split, so the single row is
+    # cut instead. Dropping the only content would leave an empty display.
+    if not two_rows or not extras:
+        return [_cut(head + _fit(windows + extras, width - _visible_len(head)
+                                 - _visible_len(tail)) + tail, width)]
+    room = width - _visible_len(head) - _visible_len(tail)
+    first = _cut(head + _fit(windows, room) + tail, width)
+    pad = " " * _second_row_indent(head, windows, extras)
+    second = _cut(pad + _fit(extras, width - len(pad)), width)
+    return [first, second] if second.strip() else [first]
+
+
+def _bar_col(part):
+    """Which column a segment's bar starts in, or None if it has no bar.
+
+    ⚠ ANSI first. A coloured segment carries escape bytes before the bar, and counting those
+    as columns puts the answer several places to the right of where the eye sees it.
+    """
+    plain = _STRIP_ANSI.sub("", part or "")
+    # ⛔ COLUMNS, NOT CHARACTERS, and the two are not the same the moment an emoji is
+    # in front of the bar. `enumerate()` counted codepoints, so a head carrying the
+    # verdict icon reported a column one to the left of where the eye sees the bar -
+    # and _second_row_indent() compares this against _visible_len(), which DOES count
+    # columns. The two disagreed by exactly the icon's extra cell, so the alignment
+    # check said "not aligned" about a row that was. Measured 2026-09-01.
+    col = 0
+    for ch in plain:
+        if ch in (BAR_FULL, BAR_EMPTY, BAR_MARK, "─"):
+            return col
+        col += _cols(ch)
+    return None
+
+
+def _second_row_indent(head, windows, extras):
+    """Columns of padding that put the second row's bar under the first row's bar.
+
+    ⛔ THE OLD RULE WAS "indent by the head", and it does not align anything: the labels are
+    different lengths (`5h` against `Burn`), so the bars landed two columns apart and the
+    two rows read as two unrelated lines. ⭐ Measured from the STRINGS rather than from a
+    table of label widths, so a new label needs nothing added here.
+
+    ⛔ ONLY THE SECOND ROW IS EVER PADDED, AND THE FIRST ROW CANNOT BE - which is a platform
+    fact, not a preference. Padding can only push RIGHT, so aligning a second-row bar that
+    starts further right than the first row's would need the FIRST row indented; 0.51.2
+    shipped exactly that and it was MEASURED not to reach the screen. The plugin emitted the
+    space (`lead=1` in the installed copy's own output) and Claude Code trimmed it off the
+    row before drawing. No character can stand in either: every Unicode space is category Zs
+    and a JavaScript `trim()` removes all of them, while a zero-width character occupies no
+    column. ⇒ A segment that wants to line up under the first row must be NARROW ENOUGH to -
+    which is why the context segment's label is `CT` and not `Ctx`. Do not reintroduce a
+    first-row pad; it is silently discarded.
+
+    ⚠ Never negative, and never less than nothing: a second row pulled left of column zero
+    would collide with the timestamp above it rather than line up with it.
+    """
+    base = _visible_len(head)
+    top, bottom = _bar_col(windows[0] if windows else None), _bar_col(extras[0] if extras
+                                                                     else None)
+    if top is None or bottom is None:
+        return base
+    return max(0, base + top - bottom)
+
+
+def _cut(text, width):
+    """`text` shortened to `width` COLUMNS, never mid-escape-sequence.
+
+    ⛔ THE LAST GUARD, AND IT IS NOT REDUNDANT WITH _fit(). That function drops whole parts
+    and never drops the last one, so a single part wider than the terminal - a long note on
+    a narrow window - survives and overflows. One column too many wraps the row, and a
+    wrapped row is what `\r` can never repair.
+
+    ⚠ IT CUTS THE PLAIN TEXT AND RE-CLOSES THE COLOUR. Slicing a string full of `\033[32m`
+    by length would eventually land INSIDE an escape sequence, and a half-written escape
+    garbles a terminal rather than tidying it.
+    """
+    if not width or _visible_len(text) <= width:
+        return text
+    # ⛔ CUT BY COLUMNS, NOT BY CHARACTERS. Slicing `[:width]` counts codepoints, and an emoji
+    # occupies two cells - so a 25-column budget produced a 26-column row, which wraps.
+    # Measured the moment the labels became icons. ⚠ A glyph that would straddle the last
+    # column is dropped rather than half-drawn: half of a two-cell character is not a
+    # narrower character, it is a broken one.
+    plain, kept, used = _STRIP_ANSI.sub("", text), [], 0
+    for ch in plain:
+        w = _cols(ch)
+        if used + w > width:
+            break
+        kept.append(ch)
+        used += w
+    return "".join(kept) + (ANSI["reset"] if _STRIP_ANSI.search(text) else "")
+
+
+def _burn_band(rate, cfg, filled):
+    """Which ANSI key the burn bar wears: it answers HOW FAST, not whether the budget lasts.
+
+    ⭐ THE WHOLE POINT OF THIS FUNCTION IS THAT IT DOES NOT LOOK AT `ratio`. The cells already
+    draw `ratio` - "will the budget outlast this reset?" - and the colour used to draw it too,
+    so two visual channels carried one number and one of them was wasted. The colour now
+    answers the other question: am I going fast? ⇒ The two can DISAGREE, and that is the
+    feature. A full bar in red means "burning hard, but the window opened recently and there
+    is room"; a short bar in green means "already crawling, and it still will not last".
+    The owner accepted that trade explicitly: both channels must now be read.
+
+    ⚠ MEASURED AGAINST CLOCK SPEED, `100 / window minutes` - 0.333 %/min for a five-hour
+    window - which means "at this pace you finish the window exactly as it resets". Fixed,
+    external, and derived from the window itself. ⛔ Deliberately NOT the account's own recent
+    median, which was the obvious alternative and which DRIFTS: measured on real history the
+    median was 1.20x clock, so a median anchor would have let a heavy session define "normal"
+    and read the identical burn as green the next day.
+
+    ⛔ ZERO CELLS IS FORCED TO `alarm`, WHATEVER THE RATE SAYS, and this is not the colour
+    sliding back into repeating the bar. Zero cells is `ratio < 0.05`: the budget is gone in
+    under 5% of the time that remains. MEASURED at remain=119 min, that covers burnout_min 0
+    through 5, and returning to a full bar from there needs a slowdown of 24x to 119x - or is
+    impossible at burnout 0. ⇒ No achievable change of pace alters the outcome, so "should I
+    slow down?" has no answer that helps, and an empty bar wearing green would say the
+    opposite of the truth in a column where empty already means DANGER.
+
+    ⛔ AND IT DOES NOT USE _colour(), WHICH IS STILL RIGHT BUT FOR A NEW REASON. It used to be
+    that the direction was inverted here. It is not any more - high is bad on both. The reason
+    now is that _colour() bands a USAGE PERCENTAGE against colour_warn_pct / colour_alarm_pct,
+    and this is a RATE banded against clock speed: different quantity, different thresholds.
+    """
+    if not filled:
+        return "alarm"
+    clock = 100.0 / (FIVE_HOUR_SECONDS / 60.0)
+    x = (rate or 0) / clock
+    # ⚠ Read in falling order, and the defaults are read through cfg.get so a caller passing a
+    # partial dict gets the shipped calibration rather than a KeyError.
+    if x >= cfg.get("burn_x_red", DEFAULTS["burn_x_red"]):
+        return "alarm"
+    if x >= cfg.get("burn_x_orange", DEFAULTS["burn_x_orange"]):
+        return "warn"
+    if x >= cfg.get("burn_x_yellow", DEFAULTS["burn_x_yellow"]):
+        return "caution"
+    return "ok"
+
+
+def _burn_part(burn, remain, rate, cfg, stale=False):
+    """`Burn ▓▓▓▓░░░░░░ 1.20%/m · 44m left` - how long the budget lasts, and how fast.
+
+    ⭐ IT ANSWERS ONE FORWARD-LOOKING QUESTION: can I keep spending? The bar is the budget's
+    life measured against the TIME LEFT IN THE WINDOW, so a full bar means "this window
+    resets before you run dry" and half a bar means "you get halfway". ⚠ It is a RATIO, not
+    a stock - unlike a health bar it goes back UP when the burn slows, because the thing it
+    measures is whether the two clocks cross, not how much is left in a tank.
+    ⛔ Deliberately NOT the historical rate profile, which was the first design. A sparkline
+    of past samples answers "how fast was I going", and the question is "how long have I
+    got" - and worse, history rows are written only when a number MOVES, so a quiet hour
+    does not draw a low bar, it draws nothing at all. The axis looked like time and was not.
+
+    ⛔ UNKNOWABLE IS NEVER DRAWN AS ZERO OR AS EMPTY. No history, one sample, under five
+    minutes of span, a flat or falling rate - all of them mean the rate cannot be computed,
+    and an empty bar in a column where empty means DANGER would read as the opposite. It
+    gets its own glyph and its own words.
+
+    ⭐ THE BAR AND THE COLOUR ARE TWO INDEPENDENT SIGNALS, and that is the point. The CELLS
+    answer "will the budget outlast this reset?"; the COLOUR answers "how fast am I burning?"
+    - see _burn_band(). ⚠ They can therefore disagree, and both must be read: a full bar in
+    red is "burning hard, but there is room", a short bar in green is "already crawling and
+    it still will not last".
+
+    ⛔ THIS DOCSTRING USED TO SAY "COLOUR IS INVERTED HERE ... a high ratio is good". That is
+    no longer true and would now be actively misleading: the colour reads a RATE, where high
+    is bad, the same direction as everywhere else. _colour() is still not used, but the reason
+    changed - see _burn_band().
+    """
+    if not cfg.get("colour", True):
+        on = off = ""
+    else:
+        on = off = None                        # decided below, once the state is known
+    if stale or burn is None or not remain:
+        # ⚠ `--` matches every other segment's "no usable number", and the dashes are a
+        # different glyph from an empty bar on purpose.
+        return "%s %s %s" % (BURN_LABEL, "─" * (BAR_WIDTH + 1), "--")
+    ratio = burn / float(remain)
+    # ⚠ BAR_WIDTH + 1, exactly like the CT segment. The three usage bars carry the elapsed
+    # marker, which sits BETWEEN cells and so costs them one extra column; a bar without one
+    # is a column narrower and will not line up under them. Widening here is what lets the
+    # watcher's second row sit squarely beneath the first.
+    width = BAR_WIDTH + 1
+    filled = min(width, int(round(min(ratio, 1.0) * width)))
+    bar = BAR_FULL * filled + BAR_EMPTY * (width - filled)
+    if on is None:
+        on, off = ANSI[_burn_band(rate, cfg, filled)], ANSI["reset"]
+    # ⛔ ALWAYS A TIME, NEVER WORDS. The owner's instruction: "outlasts reset" cost
+    # fourteen columns to say something the BAR already says - a full bar IS "the reset
+    # arrives first" - and it made the reader translate a phrase into a number anyway.
+    # ⚠ So this can now print a time LONGER than the window has left, and that is the
+    # honest reading: it is when the burn-out lands, not a promise you will get there.
+    #
+    # ⭐ AND STRIPPED TO `.36%m 3h17m`, the owner's second pass over it. Every piece removed
+    # was one the reader already had: the leading `0` of a rate that is always below one, the
+    # `/` in `%/m`, the `·`, and the word `left` after a duration that can only be a time
+    # remaining. ⚠ The leading zero goes ONLY when it is a zero - a rate of 1.20%/m still
+    # prints `1.20%m`, because dropping a digit that carries magnitude is a different thing
+    # from dropping one that never varies.
+    rate_s = ""
+    # ⚠ `is not None`, NOT truthiness: a measured zero must print `.00%` - "you are not
+    # burning" is the useful half of a quiet stretch, and dropping it leaves the row
+    # looking as though the rate were missing again.
+    if rate is not None:
+        rate_s = "%.2f" % rate
+        if rate_s.startswith("0."):
+            rate_s = rate_s[1:]
+        # ⭐ NO UNIT ON THE RATE - `.30%`, not `.30%/m`. The owner's instruction, 2026-09-01:
+        # the unit never changes, so a reader learns it once and then pays two columns a
+        # render for ever. ⚠ IT IS PER MINUTE, and that is now recorded ONLY here and in the
+        # documentation - which is the trade this makes. `2%` on this row means two percent
+        # of the window per minute, not two percent of the window.
+        rate_s += "% "
+    return "%s %s%s%s %s%s" % (BURN_LABEL, on, bar, off, rate_s, duration(burn))
+
+
+SEP = " "                           # between segments; see _fit()
+
+
+def _fit(parts, width, keep=1):
+    """Join `parts` with `SEP`, dropping from the RIGHT until it fits `width`.
+
+    ⭐ The rightmost parts are the least load-bearing, and `keep` is how many may never be
+    dropped - one, normally, because the five-hour window is what the brake acts on and a
+    line without it says nothing.
+
+    ⚠ SEP WAS TWO SPACES, and the owner shortened it to one. That is a real trade and worth
+    knowing rather than rediscovering: the segments contain single spaces of their own
+    (`5h <bar> 29% 2h21m`), so a one-space separator is no longer distinguishable from the
+    spaces inside a segment and the row reads as one stream rather than four items. It buys
+    six columns, which on a single row is six columns of burn gauge.
+    """
+    parts = [p for p in parts if p]
+    if not width:
+        return SEP.join(parts)
+    while len(parts) > keep and _visible_len(SEP.join(parts)) > width:
+        parts.pop()
+    return SEP.join(parts)
+
+
+def _line_parts(record, stale_note=None, cfg=None, payload=None, stale=None, burn=None):
+    """(windows, extras) - every segment of the line, in falling order of worth.
+
+    ⭐ SPLIT OUT SO A CALLER CAN PUT THEM ON TWO ROWS. `_line()` joins them into one and
+    drops what does not fit, which is right for a statusline that owns a single row; the
+    watcher owns a terminal and can spend a second one rather than throw information away.
+    ⇒ `windows` are the usage bars and must stay together; `extras` are the context bar, the
+    model and the note, which are the ones worth moving.
+    """
+    rec = record or {}
+    cfg = cfg or {}
+    now = time.time()
+    # ⛔ One decision, applied to both windows: is the stored value old enough that showing
+    # it as a percentage would mislead? By default that is "there is a note", which the
+    # caller sets from the file's age; a caller that knows better says so explicitly.
+    stale = bool(stale_note) if stale is None else bool(stale)
+    parts = [_window(FIVE_HOUR_LABEL, rec.get("five_hour"), now, cfg,
+                     FIVE_HOUR_SECONDS, stale)]
+    if isinstance(rec.get("seven_day"), dict):
+        parts.append(_window(SEVEN_DAY_LABEL, rec["seven_day"], now, cfg, 7 * 86400, stale))
+    # ⭐ THE MODEL-SCOPED WINDOW, when the account has one running. It goes THROUGH _window()
+    # like the other two, so staleness, the idle rule and the past-a-reset rule all apply to
+    # it identically - a bar that degraded differently would be the one bar that lies.
+    # ⚠ Its window length is the WEEKLY one: measured, the scoped reset lands one second
+    # before the same account's weekly_all reset, so it rides that boundary rather than
+    # running a clock of its own.
+    sc = rec.get("scoped")
+    if isinstance(sc, dict) and isinstance(sc.get("label"), str):
+        parts.append(_window(sc["label"], sc, now, cfg, 7 * 86400, stale))
+    # ⭐ ON THE FIRST ROW, after the windows: it is a decision input like they are, not
+    # context like the model name. ⚠ Last of the four, so a narrow terminal drops it before
+    # any usage bar - the five-hour window is what the brake acts on.
+    if burn is not None and cfg.get("show_burn", True):
+        parts.append(_burn_part(burn[0], burn[1], burn[2], cfg, stale))
+    extras = []
+    if payload and cfg.get("show_context", True):
+        # ⛔ ALWAYS DRAWN, from the first moment of a session. It used to appear only once
+        # work had begun, so the line changed width partway through and the reader could
+        # not tell "this interface has no such thing" from "this session has not started".
+        # A bar growing from zero says the second; a missing segment says neither.
+        # ⚠ The trailing space is deliberate: 5h and 7d carry the time marker, which sits
+        # BETWEEN cells and so costs them one extra column. Padding here keeps all three
+        # bars occupying the same columns, which is the entire point of giving them one
+        # width. The marker is NOT given a cell to even this up - see _bar().
+        # ⚠ ONE space before the number, exactly like 5h and 7d. Two used to sit there as a
+        # pad, to make up the column the time marker costs the other two segments - but two
+        # spaces is the separator BETWEEN segments in this line, so using it inside one made
+        # `CT` read as two items. The bar carries the extra cell instead: BAR_WIDTH + 1 is
+        # the same width the marker'd bars occupy, so the columns still line up.
+        # ⛔ THE LABEL IS TWO LETTERS, AND THAT IS WHAT MAKES THE BARS LINE UP. `CT ` is
+        # three columns before its bar, exactly like `5h ` and `7d `, so this segment sits
+        # in column 3 whether it leads a second row or sits mid-line - with no arithmetic
+        # and no dependence on the row count.
+        # ⚠ IT WAS `Ctx`, AND FOUR COLUMNS CANNOT BE ALIGNED TO THREE. Two attempts are
+        # recorded in CHANGELOG.md 0.51.2-0.51.4: padding the first row (silently trimmed
+        # by the harness) and dropping this space on a second row only (which left the
+        # label touching its bar on one row). The owner settled it by shortening the label.
+        cpct = _context_pct(payload)
+        if cpct is None:
+            extras.append("CT %s %s" % (BAR_EMPTY * (BAR_WIDTH + 1), "--"))
+        else:
+            on, off = _colour(cpct, cfg)
+            extras.append("CT %s%s %d%%%s"
+                          % (on, _bar(cpct, BAR_WIDTH + 1), round(cpct), off))
+    # ⛔ THE NOTE OUTRANKS THE MODEL NAME, and it used to be the other way round. Parts are
+    # dropped from the RIGHT when they do not fit, so with the model last a narrow display
+    # kept the label "Opus 5" and threw away "OAuth token EXPIRED" - that particular note is
+    # gone now, but "12 min old" and a fetch failure still arrive here. ⇒ A warning beats a
+    # caption: the note says something is wrong, the model name says what was already known.
+    if stale_note:
+        extras.append("(%s)" % stale_note)
+    if payload and cfg.get("show_model", True):
+        mp = _model_part(payload)
+        if mp:
+            extras.append(mp)
+    return parts, extras
+
+
+def line_rows(record, stale_note=None, cfg=None, payload=None, stale=None, burn=None):
+    """The statusline's row(s). ⭐ Claude Code prints one row per line of output.
+
+    ⛔ MEASURED, not assumed, because this used to be capped at one row on a belief. The
+    documentation says "each `echo` or `print` statement displays as a separate row", and the
+    shipped binary splits the command's output on newlines and counts them
+    (`line_count: ge.length`). ⇒ A statusline may be two rows, and throwing information away
+    to fit one was this plugin's limitation rather than the platform's.
+
+    ⚠ `two_rows: false` returns to one packed row. A second row costs a row of the terminal
+    above the input box, which on a narrow one is a row of conversation.
+    """
+    windows, extras = _line_parts(record, stale_note, cfg, payload, stale, burn)
+    cfg = cfg or {}
+    return _rows(windows, extras, terminal_width(cfg),
+                 two_rows=cfg.get("two_rows", True))
+
+
+def _line(record, stale_note=None, cfg=None, payload=None, stale=None, burn=None):
+    """One rendered line, trimmed from the right until it fits.
+
+    ⛔ WRAPPING IS WHY THIS EXISTS. A status line that spills onto a second row does not
+    merely look untidy - it pushes the prompt around and reads as a bug. claude-pacer solved
+    it with three responsive layouts and width probing; that is the large half of that
+    project. This does the small version: parts are ordered by how much they are worth, and
+    the least valuable are dropped until the line fits.
+
+    ⭐ `stale` SEPARATES THE NOTE FROM THE JUDGEMENT, for one caller. A note used to MEAN
+    stale - and while the watcher is idle there is a note to show with nothing stale about
+    it: nobody is spending, so the number cannot drift. ⛔ Left coupled, the idle line threw
+    its percentages away and printed `--`, which is how the owner found it.
+    """
+    windows, extras = _line_parts(record, stale_note, cfg, payload, stale, burn)
+    return _fit(windows + extras, terminal_width(cfg))
+
+
+# --------------------------------------------------------------------------- verdict
+
+def level(sdir, cfg, now=None):
+    """The verdict WORD only - GO / PACE / STOP / NO-DATA - and cheaply.
+
+    ⭐ FOR A CALLER ON A PER-TOOL-CALL PATH, where verdict()'s cost is not affordable.
+    Measured across three reviewers on two machines: `verdict()` runs `_burn_rate` TWICE
+    (once through `_projection`, once through `burnout_min`), costs tens of milliseconds, and
+    grows with the number of history rows. The word does not depend on any of it.
+
+    ⛔ IT IS A PARAMETER, NOT A SECOND IMPLEMENTATION, and that is the whole point. The
+    thresholds, the reset arithmetic and the seven-day rule are subtle enough that two copies
+    would be two chances to disagree - and a display that disagreed with the brake is the
+    defect this module has already been bitten by. ⇒ Same function, projection skipped.
+
+    ⚠ The check asserts these two agree over a grid; if they ever diverge, the divergence is
+    the bug, not the assertion.
+    """
+    return verdict(sdir, cfg, now=now, cheap=True)["verdict"]
+
+
+def verdict(sdir, cfg, now=None, data=None, cheap=False):
+    """GO / PACE / STOP / NO-DATA, with the reasoning that makes each one correct.
+
+    ⛔ This is the ONLY sanctioned way to interpret the numbers. Three things are got
+    wrong when an agent reads token_usage.json directly, and all three are handled here:
+    reset arithmetic, seven-day false alarms, and burn projection.
+
+    ⚠ `cheap` skips the burn projection and returns the same WORD - see level(), which is
+    the only caller that should pass it. The `text` it produces then carries no burn note,
+    so a caller that shows text to a human must not use it.
+    """
+    now = now if now is not None else time.time()
+    # ⚠ `data` is an INTERNAL shortcut for a caller in this file that has just read or
+    # written the record - it saves re-reading a file whose contents it already holds. An
+    # outside caller must omit it: the point of this function is that it reads the stored
+    # record itself, and letting a stranger supply one would let a stranger supply a wrong
+    # one. dispatch_gate.py deliberately does not pass it.
+    # ⚠ An EMPTY dict falls through to the file, not to NO-DATA. `{}` is a dict, so an
+    # isinstance test alone would accept it as "the caller supplied a record" and answer
+    # NO-DATA while a perfectly good token_usage.json sat on disk - a brake reading unknown
+    # because of a bookkeeping slip. A caller with nothing to offer must be indistinguish-
+    # able from one that offered nothing.
+    data = data if (isinstance(data, dict) and data) else read_json(cfg["token_usage_file"])
+    if not data or not isinstance(data.get("five_hour"), dict):
+        return {"verdict": "NO-DATA", "exit": 3,
+                "text": "NO-DATA: no five_hour block. Nothing has fetched YET - the "
+                        "dispatch gate starts a background refresh when it sees this, so "
+                        "it normally clears by itself within seconds. If it never clears, "
+                        "the fetch is failing rather than pending: run `%s` "
+                        "for the reason in one line, and check fetch.log in "
+                        "the state directory. Report usage as UNKNOWN - never a number."
+                        % _runnable("--fetch-now")}
+
+    five = data["five_hour"]
+    pct, resets = five.get("used_percentage"), five.get("resets_at")
+    if not isinstance(pct, (int, float)) or not resets:
+        return {"verdict": "NO-DATA", "exit": 3,
+                "text": "NO-DATA: five_hour present but incomplete. Report usage as UNKNOWN."}
+
+    age_min = (now * 1000 - data.get("ts", 0)) / 60000.0
+
+    seven = data.get("seven_day") if isinstance(data.get("seven_day"), dict) else None
+    pct7 = (seven or {}).get("used_percentage")
+    resets7 = (seven or {}).get("resets_at")
+
+    # ⚠ A window that has already turned over makes its stored percentage meaningless, and
+    # meaningless in the dangerous direction: it reads stale-HIGH. ⛔ But it used to return
+    # GO on the spot, which threw the SEVEN-DAY window away with it - an account whose week
+    # was spent got told GO the moment its five-hour window rolled over.
+    five_over = now >= resets
+    remain_min = 0 if five_over else int((resets - now) / 60)
+    clock = time.strftime("%H:%M", time.localtime(resets))
+    sd = _seven_day_note(seven, now, cfg)
+
+    # --------------------------------------------------------------- the five-hour window
+    proj = burn = None
+    early = False
+    five_level = None
+    if not five_over:
+        # ⛔ ONLY THE TWO EXPENSIVE CALLS ARE SKIPPED, never the level computation
+        # below them. Gating the whole block was the first attempt and it made `cheap`
+        # return GO for every input - the thresholds live in here too.
+        # ⚠ BOTH ARE SKIPPED TOGETHER, because both re-parse the history through
+        # `_burn_rate`: dropping one would halve a cost that has to fall by an order of
+        # magnitude. ⭐ WHEN, not only WHETHER - "projected 140% by reset" says the
+        # window will be exhausted and leaves the reader to work out whether there is
+        # room for one more wave. ⚠ None means unknowable, never safe.
+        if not cheap:
+            proj = _projection(sdir, cfg, pct, resets, now)
+            burn = burnout_min(sdir, cfg, pct, resets, now)
+            early = burn is not None and burn < remain_min
+        five_level = _window_level(pct, cfg["soft_pct_5h"], cfg["hard_pct_5h"])
+        # ⛔ THE PROJECTION IS DISPLAY-ONLY FOR NOW. Switched off deliberately, kept here so
+        # turning it back on is uncommenting one line rather than reconstructing an argument.
+        #
+        # ⚠ WHY, MEASURED on a second machine's real history (12 rows, 2026-08-28): the
+        # verdict flipped GO→PACE→GO→PACE→GO in twelve minutes while the PERCENTAGE climbed
+        # smoothly from 40% to 52% - never within twenty points of soft_pct_5h. The boundary
+        # is `(100 - pct) / minutes_left`, so at 47% with 114 minutes left a swing of ONE
+        # HUNDREDTH of a percent per minute crosses it. Under bursty dispatch the rate swings
+        # far more than that between two samples.
+        #
+        # ⛔ AND SINCE 0.35.0 A PACE COSTS SOMETHING: it makes a current HANDOFF.md a
+        # precondition of dispatching. So a PACE that flickers for one sample blocks a
+        # dispatch that should have gone through, and the plugin's own rule - act on the
+        # WORD, never on raw percentages - is undermined by a word that is itself twitching.
+        #
+        # ⇒ WHAT TO ADD BEFORE RE-ENABLING, not just this line back:
+        #    1. HYSTERESIS. Enter PACE at proj >= 100, leave it only below 90. A single
+        #       threshold on a noisy input can only chatter.
+        #    2. A MINIMUM HISTORY. The rate is computed from whatever rows exist in this
+        #       window, and logging does not start when the window does - on that machine the
+        #       window opened at 14:10 and the first row is 16:49 at 35% already used. The
+        #       unlogged head can only ever be an average, and ignoring it made the logged
+        #       (busier) stretch stand for the whole window: 0.48 %/min against a
+        #       whole-window average of 0.22.
+        #
+        # if five_level is None and proj is not None and proj >= 100:
+        #     five_level = "PACE"
+        five_level = _soften_near_reset(five_level, remain_min, cfg)
+    burn_note = ("" if not early else
+                 " ⛔ At the current rate the 5h window is SPENT in ~%d min - %d min BEFORE "
+                 "it resets. Plan for the gap, not for the reset."
+                 % (burn, remain_min - burn))
+
+    # --------------------------------------------------------------- the seven-day window
+    # ⛔ THE BRAKE USED TO IGNORE THIS ENTIRELY. The 7d figure produced a NOTE and nothing
+    # else, so 7d 99% beside 5h 0% read as GO - both numbers true, the answer wrong, and the
+    # only thing that stopped the work was the server refusing.
+    seven_level = None
+    remain7 = None
+    if _seven_day_binds(seven, now):
+        remain7 = int((resets7 - now) / 60)
+        seven_level = _window_level(pct7, cfg["soft_pct_7d"], cfg["hard_pct_7d"])
+        seven_level = _soften_near_reset(seven_level, remain7, cfg)
+
+    # ⭐ THE STRICTER OF THE TWO WINS, and ties go to the five-hour window because it is the
+    # nearer and more actionable one to name.
+    if _STRICTNESS[seven_level] > _STRICTNESS[five_level]:
+        level, driver = seven_level, "7d"
+    else:
+        level, driver = five_level, "5h"
+
+    stale = " [data %d min old - may understate]" % age_min if age_min > cfg["stale_min"] else ""
+
+    if level == "STOP" and driver == "7d":
+        text = ("STOP - 7d at %d%% >= hard_pct_7d %d%%. ⛔ The 5h window is NOT the "
+                "constraint here (5h %d%%): the WEEK is nearly spent, and it does not reset "
+                "for %s. Wrap up: finish the current step, commit or save state, start "
+                "nothing new. A resume must be scheduled after the SEVEN-DAY reset, not "
+                "after the five-hour one."
+                % (round(pct7), cfg["hard_pct_7d"], round(pct), duration(remain7)))
+    elif level == "STOP":
+        text = ("STOP - 5h at %d%% >= hard_pct_5h %d%%. Wrap up: finish the current step, "
+                "commit or save state, start nothing new. Schedule a ONE-SHOT resume a few "
+                "minutes after %s, then end the turn."
+                % (round(pct), cfg["hard_pct_5h"], clock))
+    elif level == "PACE" and driver == "7d":
+        text = ("PACE - 7d at %d%%, and it does not reset for %s. ⚠ The 5h window has room "
+                "(5h %d%%) - that is not the one to watch. Finish what is in flight; do not "
+                "start new heavy work or another dispatch wave."
+                % (round(pct7), duration(remain7), round(pct)))
+    elif level == "PACE":
+        # ⚠ `proj` can no longer be the REASON for a PACE - see the block above - so the
+        # wording is the percentage's. The projection is still reported, as a figure to read
+        # rather than a verdict to obey.
+        why = "5h at %d%%" % round(pct)
+        text = ("PACE - %s, %d min left (resets %s). Finish what is in flight; do not start "
+                "new heavy work or another dispatch wave." % (why, remain_min, clock))
+    elif five_over:
+        text = ("GO - the 5h window already reset; treat usage as fresh. Do not spend tokens "
+                "re-verifying: the stored number stays stale-high until the next statusline "
+                "render.")
+    else:
+        text = ("GO - 5h at %d%%, %d min left (resets %s). Headroom available."
+                % (round(pct), remain_min, clock))
+
+    return {"verdict": level or "GO", "exit": {"STOP": 2, "PACE": 1}.get(level, 0),
+            "pct": pct, "pct_7d": pct7, "driver": driver if level else None,
+            "remain_min": remain_min, "resets_clock": clock,
+            "age_min": age_min, "projected_pct": proj, "seven_day": sd,
+            "burnout_min": burn, "burns_out_early": early,
+            "text": text + burn_note + stale + (" [%s]" % sd if sd else "")}
+
+
+_STRICTNESS = {None: 0, "PACE": 1, "STOP": 2}
+
+
+def _window_level(pct, soft, hard):
+    """None / PACE / STOP for one window, from its own pair of thresholds."""
+    if not isinstance(pct, (int, float)):
+        return None
+    if pct >= hard:
+        return "STOP"
+    if pct >= soft:
+        return "PACE"
+    return None
+
+
+def _soften_near_reset(level, remain_min, cfg):
+    """⭐ Near a reset the stakes shrink: hitting the cap costs a pause of a few minutes,
+    not lost work. Softening by one level is deliberate, and it is why a caller must act on
+    the VERDICT and never on the percentage.
+
+    ⚠ It is applied PER WINDOW. A 5h STOP twelve minutes from its reset is worth softening; a
+    7d STOP three days from its reset is not, and one shared test would have softened both.
+    """
+    if not level or remain_min > cfg["near_reset_min"]:
+        return level
+    return "PACE" if level == "STOP" else None
+
+
+def _seven_day_binds(seven, now):
+    """Is the 7-day window a live constraint at all?
+
+    ⛔ IT USED TO ALSO REQUIRE `resets > five_resets` - "if the 7d resets before the 5h window
+    ends, it is about to become zero, so it cannot stop you" - AND THAT WAS WRONG. It asks
+    whether the window will still be there, and the question is whether its HEADROOM will
+    last. Measured 2026-09-01 on the owner's own account: 7d at **89%** with 11% left and
+    **71 minutes** to its reset, burning 0.30%/min - so the headroom was gone in **37**
+    minutes, and the plugin was printing "IGNORE, not a constraint" about the only window
+    that could stop the work.
+
+    ⛔ AND THE OLD TEST WAS A SECOND, CRUDER COPY OF SOMETHING THAT ALREADY EXISTS.
+    "This number is about to be wiped, so forgive it" is exactly _soften_near_reset(), which
+    weighs the same idea per window and by how close the reset really is. Two implementations
+    of one rule, and the crude one ignored both magnitude and rate. ⇒ Deleted, not repaired:
+    the window binds whenever it has not already turned over, `_window_level()` decides
+    whether it is high enough to matter, and `_soften_near_reset()` decides whether an
+    imminent reset makes it forgivable.
+
+    ⚠ THE RESIDUAL EDGE, stated rather than hidden: softening is a threshold on TIME
+    (`near_reset_min`, 20) and not on arithmetic, so a window inside that window which would
+    still be exhausted first is softened by one level. That errs by one level, where the old
+    test erred by ignoring the window entirely.
+
+    ⚠ It is not "is it high": how high is the threshold's business.
+
+    ⭐ AND THE TWO WINDOWS DO NOT SHARE A CLOCK - a reset of one leaves the other's
+    percentage and its `resets_at` untouched, measured six ways in
+    `Memory/notes/MEASURED-5h-and-7d-are-independent.md`. That is why this function
+    answers only "is the 7d a constraint", and never adjusts anything about the 5h.
+    """
+    if not isinstance(seven, dict):
+        return False
+    pct, resets = seven.get("used_percentage"), seven.get("resets_at")
+    if not isinstance(pct, (int, float)) or not resets:
+        return False
+    # Already reset: the stored number reads stale-HIGH, which is the dangerous direction.
+    return now < resets
+
+
+def _seven_day_note(seven, now, cfg):
+    """⛔ A high 7-day percentage is usually NOT a constraint. Say which it is.
+
+    ⛔ THE LINE THAT USED TO SAY "it resets before this 5h window ends - IGNORE, not a
+    constraint" IS GONE, and it was the most confidently wrong sentence this plugin printed.
+    See _seven_day_binds() for the measurement that removed it: the window it told the owner
+    to ignore was the one about to stop the work.
+    """
+    if not isinstance(seven, dict):
+        return None
+    pct, resets = seven.get("used_percentage"), seven.get("resets_at")
+    if not isinstance(pct, (int, float)) or not resets:
+        return None
+    if now >= resets:
+        return "7d already reset - ignore"
+    if pct >= cfg["soft_pct_7d"]:
+        # ⭐ WHEN it resets, on the line that says it binds. "7d 89% - BINDING" leaves the
+        # reader to guess whether that is for the next ten minutes or the next three days.
+        return ("7d %d%% - BINDING, near cap, and it does not reset for %s"
+                % (round(pct), duration((resets - now) / 60)))
+    return "7d %d%% - not near cap, ignore" % round(pct)
+
+
+def burn_triple(sdir, cfg, record, now=None):
+    """(minutes to 100%, minutes to reset, percent per minute), or None when unknowable.
+
+    ⭐ ONE call site for the display, so the bar and the verdict cannot disagree - they read
+    the same history through the same functions.
+    ⚠ MEASURED 2.47 ms on real history when written; ⚠ STALE - re-measured 2026-09-02 by the
+    review of 0.57.0 on a synthetic 640-row day (a full day at one row per minute): ~66 ms per
+    _burn_rate() call, ~130 ms per burn_triple(), of which the account read added ~1 ms per
+    call. Rows carry readable timestamps now and unstamp() parses each one; that is where the
+    time goes. Against a statusline that renders once per refresh_seconds (60 s by default) it
+    is still small; a `--watch` at `--every 2` pays it every two seconds. It reads at most the
+    last two history files, which history_keep_days bounds.
+    """
+    now = time.time() if now is None else now
+    five = (record or {}).get("five_hour") or {}
+    pct, resets = five.get("used_percentage"), five.get("resets_at")
+    if not isinstance(pct, (int, float)) or not resets or now >= resets:
+        return None
+    burn = burnout_min(sdir, cfg, pct, resets, now)
+    rate = _burn_rate(sdir, cfg, pct, resets, now)
+    # ⛔ `if rate else 0` COLLAPSED 0.0 AND None BACK TOGETHER one function above the place
+    # that just separated them. A flat stretch is a rate of zero; an unknowable one is
+    # None, and the display draws them differently.
+    return burn, int((resets - now) / 60), (rate * 60 if rate is not None else None)
+
+
+BURN_WINDOW_FLOOR_MIN = 5           # under this, a 1% reading cannot resolve a rate
+
+
+
+def _burn_rate(sdir, cfg, pct, resets, now, window_secs=FIVE_HOUR_SECONDS):
+    """Percent per SECOND over the last `burn_window_min` minutes, or None if unknowable.
+
+    ⭐ Split out so the projection and the burn-out time are computed from ONE sampling of
+    one history. Two samplings would disagree at the edges and put a contradiction on one
+    line - "projected 140% by reset" beside "runs out after the reset".
+
+    ⛔ Returns None when the token-usage history is off. ⚠ It is ON by default now - it used
+    to be off, and this docstring used to say so. That is a real reduction in what PACE can
+    catch, not a technicality - say so rather than letting a silently absent projection read
+    as "nothing projected".
+    """
+    # Read the last two files: a 5h window can straddle midnight, and therefore two.
+    # ⛔ ONE PREFIX, AND NO PATH FOR THE NAMES THIS FILE USED TO HAVE. A projection quietly
+    # assembled from files two renames old is worth less than one that says it has no data
+    # yet, and there is now exactly one name to look for.
+    rows = []
+    hdir = history_dir(sdir, cfg)
+    paths = glob.glob(os.path.join(hdir, HISTORY_PREFIX + "*.jsonl"))
+    for path in sorted(paths, key=_history_stamp)[-2:]:
+        try:
+            with open(path, encoding="utf-8") as f:
+                rows += [json.loads(l) for l in f if l.strip()]
+        except Exception:
+            continue
+    if not rows:
+        return None
+    # ⛔ THE resets_at FILTER IS NOT WHAT KEEPS TWO ACCOUNTS APART, and this comment used to
+    # say it was ("two accounts' windows do not share an instant"). Measured 2026-09-02: two
+    # accounts' five-hour windows reset 0.081830 s apart, the tolerance below is one second,
+    # and stamp() rounds to the second anyway - so both accounts landed in ONE bucket and the
+    # live history was already mixed (thirteen rows, the seven-day value taking three
+    # different values inside one five-hour window, which one account cannot do). That day
+    # the new account happened to be HIGHER, so the rate stayed plausible (0.600 %/min shown,
+    # 0.653 from the post-switch rows alone); lower would have gone negative and blanked the
+    # gauge silently; much higher would have shown a large false rate with nothing saying so.
+    # ⇒ Every row carries `acct` (_append_history), and a row is kept only when its `acct` is
+    # KNOWN, the current account is KNOWN, and they are EQUAL. Unknown on either side drops the
+    # row - the honest answer is `--` for up to burn_window_min after a switch, and it is
+    # better than a wrong number. ⛔ Do not soften this by falling back to unlabelled rows;
+    # that fallback IS the defect. Legacy rows have no `acct` and are dropped on purpose.
+    # ⚠ The resets_at filter stays: it is what keeps LAST window's rows out of THIS one.
+    # Rows carry readable timestamps now and epochs in older files; unstamp() reads both.
+    cur_acct = _current_account()
+    norm = []
+    for r in rows:
+        if not isinstance(r.get("pct"), (int, float)):
+            continue
+        at, ra = unstamp(r.get("at", r.get("ts"))), unstamp(r.get("resets_at"))
+        if at is None or ra is None or abs(ra - resets) > 1:
+            continue
+        if cur_acct is None or r.get("acct") != cur_acct:
+            continue
+        norm.append({"ts": at, "pct": r["pct"]})
+    rows = norm
+    rows.sort(key=lambda r: r["ts"])
+    if not isinstance(pct, (int, float)):
+        return None
+    opened = resets - window_secs
+
+    # ⭐ THE END POINT IS `now` AND THE LIVE `pct`, NOT THE LAST LOGGED ROW. History rows are
+    # written only when a number MOVES (see the `moved` gate before _append_history), so an
+    # idle stretch writes nothing at all - and reading the last row as "now" froze BOTH ends
+    # of the measurement. ⛔ MEASURED on a real idle window: after 84 quiet minutes the rate
+    # read 39% HIGH and the burn-out time 78 minutes too soon, and it was not being recomputed
+    # at all - the same number was redrawn. ⚠ `now` was in this signature and unread; that is
+    # what the bug looked like from outside.
+    #
+    # ⭐ THE START POINT IS WHAT WAS SPENT `burn_window_min` MINUTES AGO. The gauge answers
+    # "how fast am I burning NOW", so it must not average in an hour that is over.
+    # ⚠ A ROW'S VALUE STANDS UNTIL THE NEXT ROW, which is exactly why the newest row at or
+    # before the cut can be read AS the value at the cut: nothing changed in between, or a
+    # row would have been written. So the baseline is a true `burn_window_min` minutes, not
+    # "however long ago the last row happens to sit".
+    #
+    # ⛔ AND THAT HOLDS ONLY WHILE THE RECORDER WAS RUNNING. A gap in the history has two
+    # causes and the timestamps cannot tell them apart: nothing was spent (the reading is
+    # right), or nothing was WATCHING - Claude Code closed, the machine off, the watcher never
+    # started - and the quota is account-wide, so another seat may have spent through the gap.
+    # ⇒ In the second case this under-states the rate, which is the dangerous direction.
+    # ⚠ A "went to sleep" marker does not fix it: the shutdown that matters is the one that
+    # does not get to write anything. What fixes it is a HEARTBEAT row - write one when the
+    # value moves OR when the newest row is older than some age - because then the absence of
+    # a heartbeat is itself the evidence, recorded by the passage of time rather than by an
+    # event somebody had to catch. Not built; see Memory/notes/SHELVED-burn-meter.md.
+    #
+    # ⭐ AND THE WINDOW'S OWN START IS STILL A DATA POINT, AND STILL FREE. Inside the first
+    # `burn_window_min` minutes the cut reaches back past the open, and a window opens at zero
+    # by definition - so `(opened, 0)` is a reading nobody had to record. ⛔ WITHOUT IT THE
+    # BUSY TAIL STOOD FOR THE WHOLE WINDOW: measured on a second machine, a window that opened
+    # at 14:10 whose first row is 16:49 with 35% ALREADY SPENT read 0.48 %/min against a true
+    # average of 0.22. That is why the anchor survives here rather than being replaced.
+    #
+    # ⛔ WHAT THIS COSTS, AND IT IS NOT SMALL. `used_percentage` is reported in WHOLE percent,
+    # so over a 30-minute baseline one step is 0.033 %/min - the gauge cannot resolve finer,
+    # and on a quiet window that quantum is most of the signal. MEASURED on real history, a
+    # 25-minute baseline swung 0.407 -> 0.040 %/min across half an hour in which the
+    # whole-window figure moved 0.150 -> 0.137. ⇒ THE NUMBER IS DELIBERATELY TWITCHY, because
+    # what was asked of it is "react", and it is safe to be twitchy for exactly one reason:
+    # NO BURN FIGURE REACHES GO/PACE/STOP. That is pinned by a check that forces both figures
+    # to their worst and asserts the word does not move. Set burn_window_min to 0 for the
+    # steady whole-window figure instead.
+    span_want = cfg.get("burn_window_min") or 0
+    cut = now - span_want * 60 if span_want else opened
+    if cut <= opened:
+        start_ts, start_pct = opened, 0.0
+    else:
+        older = [r for r in rows if r["ts"] <= cut]
+        if older:
+            start_ts, start_pct = cut, older[-1]["pct"]
+        elif rows:
+            # ⚠ Nothing that old exists: the baseline is SHORTER than asked, and saying so
+            # with a number is better than saying nothing. The span guard below still applies.
+            start_ts, start_pct = rows[0]["ts"], rows[0]["pct"]
+        else:
+            return None
+    span = now - start_ts
+    if span < 300:                                   # under 5 minutes proves nothing
+        return None
+    rate = (pct - start_pct) / span                  # percent per second
+    if rate < 0:
+        # ⛔ NEGATIVE IS THE ONLY GENUINELY UNKNOWABLE CASE LEFT, and it is a real one: the
+        # stored percentage FELL, which happens when a window turned over inside the baseline
+        # or a stale reading is being compared against a live one. There is no rate to draw.
+        return None
+    # ⛔ ZERO IS A MEASUREMENT, NOT AN ABSENCE - and this line used to read `rate <= 0`, which
+    # threw the two together. Measured 2026-09-01, from the owner asking why the gauge went
+    # blank: at 12:48 the baseline row (12:37, 32%) and the live value (32%) agreed, the delta
+    # was 0, the rate came back "unknowable", and the bar drew dashes.
+    # ⚠ IT WENT BLIND AT THE MOMENT IT HAD SOMETHING USEFUL TO SAY - that the burn had
+    # STOPPED. "I do not know" was the one answer that was false, and it is the answer that
+    # hides a quiet stretch instead of showing it.
+    return rate
+
+
+def _projection(sdir, cfg, pct, resets, now):
+    """Where usage lands by reset at the recent burn rate, or None if unknowable.
+
+    ⚠ A LOWER BOUND. Under bursty multi-agent dispatch the real burn runs ahead of it, so
+    the hard stop still rules regardless of what this says.
+    """
+    rate = _burn_rate(sdir, cfg, pct, resets, now)
+    if rate is None:
+        return None
+    return int(min(999, pct + rate * (resets - now)))
+
+
+def burnout_min(sdir, cfg, pct, resets, now):
+    """Minutes until this window reaches 100% at the recent burn rate, or None.
+
+    ⭐ THE INVERSE OF _projection(), AND THE OWNER ASKED FOR IT BECAUSE THE TWO ANSWER
+    DIFFERENT QUESTIONS. "Projected 140% by reset" says the window will be exhausted; it
+    does not say WHEN, and when is what decides whether there is time for one more wave.
+
+    ⛔ IT SHARES _burn_rate() WITH THE PROJECTION ON PURPOSE. Two samplings of the same
+    history would disagree at the edges, and then the line would say "projected 140%" beside
+    "runs out after the reset" - a contradiction on one screen, which is worse than either
+    number alone.
+
+    ⚠ None means "cannot be known", never "safe". No history (debug.token_usage off), under
+    five minutes of baseline, or nothing spent within it all return None, and every caller
+    must print something that says so rather than nothing. ⭐ Inside the first
+    `burn_window_min` minutes of a window no logged row is needed at all, because the
+    window's own start is the second point.
+    """
+    rate = _burn_rate(sdir, cfg, pct, resets, now)
+    if rate is None or not isinstance(pct, (int, float)):
+        return None
+    if pct >= 100:
+        return 0
+    # ⛔ A ZERO RATE NEVER REACHES 100%, and dividing by it raises. Since 2026-09-01 a flat
+    # stretch is a real measurement rather than None (see _burn_rate), so this case is now
+    # reachable and has to mean something. ⇒ The honest answer is "not inside this window",
+    # and the caller draws that as a FULL bar - which is what a full bar already means: the
+    # window resets before you run dry. ⚠ Returning None here instead would put the dashes
+    # straight back and undo the fix one function away from it.
+    if rate <= 0:
+        return int((resets - now) / 60) + 1
+    return int((100.0 - pct) / rate / 60.0)
+
+
+# --------------------------------------------------------------------------- main
+
+# ⭐ THE SECOND HEARTBEAT SOURCE, AND IT IS NOT THIS PLUGIN'S FILE. Claude Code writes
+# ~/.claude.json while a person works, whether or not any hook of ours is wired - which is
+# exactly the independence that makes it useful here, because the failure it covers is our
+# own hooks not firing at all.
+# ⛔ READ THROUGH THE ENVIRONMENT, and that is not a preference. test_usage_watch.py launches
+# the watcher through subprocess.Popen, so a monkeypatched module constant does not cross the
+# process boundary - and without a seam a fixture cannot express "an idle machine" at all,
+# because last_heartbeat_min() would stop being a function of `sdir`. MEASURED: against an
+# empty temp state directory it returned 0.68 minutes, the age of the REAL file, and four
+# tests became unwritable. ⚠ $CLAUDE_CONFIG_DIR support falls out of the same seam.
+CLAUDE_JSON_ENV = "CLAUDE_USER_CONFIG"
+
+
+def _claude_json_path():
+    """Where Claude Code's own config lives. $CLAUDE_USER_CONFIG wins, then
+    $CLAUDE_CONFIG_DIR/.claude.json, then ~/.claude.json."""
+    env = os.environ.get(CLAUDE_JSON_ENV)
+    if env:
+        return env
+    cfg_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    if cfg_dir:
+        return os.path.join(cfg_dir, ".claude.json")
+    return os.path.join(os.path.expanduser("~"), ".claude.json")
+
+
+def _current_account():
+    """The accountUuid Claude Code tagged its own cached usage with, or None.
+
+    ⭐ `cachedUsageUtilization.accountUuid` in Claude Code's config file, read through
+    _claude_json_path() so a fixture can say which account is signed in. The id sits BESIDE
+    the numbers Claude Code cached, so nothing has to ask "who is signed in"; measured on
+    three captures 2026-09-02 it equals that file's own `oauthAccount.accountUuid`.
+
+    ⚠ A LABEL ONLY, NEVER THE NUMBERS. Measured the same day: `fetchedAtMs` in that block was
+    twenty-one minutes stale while this plugin's own record was under a minute old.
+    ⛔ EVERY FAILURE IS None. No field name in that file is guaranteed - `organizationUuid`
+    left `.credentials.json` within a week of being measured there - and a missing value means
+    "unknown", never a guess. ⛔ No email address and no token leaves this function.
+
+    ⛔ $ANTHROPIC_TOKEN WINS IN _token_and_expiry(), and on that path the numbers belong to
+    whoever owns that token - which the profile file knows nothing about. _account_ids() made
+    the same call for the debug dump, with the same reason: a label that names a different
+    account from the one that produced the numbers is worse than no label, because the filter
+    then KEEPS those rows. Found by the review of 0.57.0; the answer is "unknown".
+
+    ⚠ TWO READERS OF CLAUDE CODE'S CONFIG, ON PURPOSE. _account_ids() reads `oauthAccount`
+    from the home path and cross-checks it against the credentials file for the debug dump;
+    this reads `cachedUsageUtilization` through _claude_json_path() for the history label.
+    Different questions, different fields; see the other docstring before unifying them.
+    """
+    env = os.environ.get("ANTHROPIC_TOKEN")
+    if env and env.strip():
+        return None
+    try:
+        prof = read_json(_claude_json_path(), {}) or {}
+        cached = prof.get("cachedUsageUtilization") if isinstance(prof, dict) else None
+        acct = cached.get("accountUuid") if isinstance(cached, dict) else None
+        return acct if isinstance(acct, str) and acct else None
+    except Exception:
+        return None
+
+
+def _gate_heartbeat_min(sdir, now=None):
+    """Minutes since any session last fired one of OUR hooks, or None if none ever has.
+
+    ⭐ The gate writes `state/<session-id>.alive` on EVERY hook event, so the newest of
+    those files is the answer to "did a hook run?" - no new bookkeeping, no new file, and it
+    already survives pruning: prune_state() keeps the .alive files by COUNT, newest first, so
+    a live session's own file can never be the one dropped.
+
+    ⚠ THIS IS NO LONGER THE ANSWER TO "is anybody working?" - see last_heartbeat_min(). It
+    answers the narrower question it always really answered, and the rename is the point: a
+    silent hook made the two look like one question for as long as the hooks worked.
+    """
+    now = time.time() if now is None else now
+    newest = None
+    for path in glob.glob(os.path.join(sdir, "state", "*.alive")):
+        try:
+            m = os.path.getmtime(path)
+        except OSError:
+            continue
+        if newest is None or m > newest:
+            newest = m
+    return None if newest is None else max(0.0, (now - newest) / 60.0)
+
+
+def _user_activity_min(now=None):
+    """Minutes since Claude Code last wrote its own config, or None if it is unreadable."""
+    now = time.time() if now is None else now
+    try:
+        m = os.path.getmtime(_claude_json_path())
+    except OSError:
+        return None
+    return max(0.0, (now - m) / 60.0)
+
+
+def last_heartbeat_min(sdir, now=None):
+    """Minutes since anybody last WORKED here, or None if there is no evidence either way.
+
+    ⛔ TWO SOURCES, BECAUSE ONE OF THEM IS THE THING THAT BREAKS. This used to read only the
+    gate's own `.alive` files - so when the gate hook was not wired up, the signal went flat
+    while the owner was still working and the watcher read the flatness as "gone home".
+    MEASURED 2026-08-30: `.alive` frozen at 1225 minutes, the machine in continuous use, the
+    watcher asleep for 20 hours, and `install.py --status` printing "everything is live".
+
+    ⭐ THE SECOND SOURCE IS NOT OURS, and the recording caught it surviving the exact failure:
+    across the 22 minutes before the hooks were repaired - `.alive` over 1000 minutes old, so
+    provably dead - ~/.claude.json was written nine times and its MAXIMUM age was 3.71
+    minutes, against an idle_after_min of 15.
+
+    ⛔ REJECTED ALTERNATIVES, both for reasons that only measurement could give:
+      - `projects/*/*.jsonl` (the transcript) is written at TURN boundaries, so a twenty-
+        minute turn writes nothing for twenty minutes. Same defect, new coat.
+      - `~/.claude/backups` is a 5-file ROTATING, PRUNED ring: the newest surviving file can
+        itself be old, so its age is not the age of the last write. A signal whose meaning
+        changes when a cleaner runs is not a signal.
+
+    ⚠ `None` keeps its old meaning - "nothing has ever run here" - which should_fetch() treats
+    as a fresh state directory rather than an idle machine. Only a NEWER answer can come out
+    of the second source, never an older one.
+    """
+    now = time.time() if now is None else now
+    ages = [a for a in (_gate_heartbeat_min(sdir, now), _user_activity_min(now))
+            if a is not None]
+    return min(ages) if ages else None
+
+
+def hook_silent_min(sdir, now=None):
+    """How far the GATE's signal lags the independent one, or None when they agree.
+
+    ⭐ THE DISAGREEMENT IS ITSELF A DIAGNOSIS, and it has exactly one explanation: somebody is
+    working and our hooks are not firing. Nothing else makes Claude Code's own file fresh
+    while every `.alive` is stale.
+
+    ⛔ A SEPARATE FUNCTION ON PURPOSE. last_heartbeat_min() returns ONE number, so the two
+    sources are collapsed before any caller sees them and the diagnosis cannot be recovered
+    from it. Splitting is what makes the marker computable at all.
+
+    ⚠ Returns None when there is nothing to report: the signals agree, or either is missing.
+    A caller must not read None as "healthy" - it is "no disagreement to show".
+    """
+    now = time.time() if now is None else now
+    gate, user = _gate_heartbeat_min(sdir, now), _user_activity_min(now)
+    if gate is None or user is None:
+        return None
+    return gate - user if gate - user > 0 else None
+
+
+def should_fetch(sdir, cfg, now=None):
+    """`--watch` only: may the API be asked, and if not, why not? Returns (bool, note).
+
+    ⛔ SPLIT OUT SO IT CAN BE CHECKED WITHOUT HTTP. The decision it makes is invisible when
+    it is right and expensive when it is wrong - a watcher that never pauses burns the five
+    calls per token overnight, and one that pauses too eagerly shows a frozen number during
+    real work. Neither failure announces itself, so both need a check.
+
+    ⚠ Zero or a negative idle_after_min disables the pause entirely. Somebody who wants the
+    old always-poll behaviour should be able to say so without editing code.
+    """
+    limit = cfg.get("idle_after_min", 15)
+    if not isinstance(limit, (int, float)) or limit <= 0:
+        return True, None
+    idle = last_heartbeat_min(sdir, now)
+    if idle is None:
+        # ⚠ Nothing has EVER fired a hook here. That is a fresh state directory, not an
+        # idle machine, and refusing to fetch would leave the first render empty forever.
+        return True, None
+    if idle <= limit:
+        return True, None
+    # ⚠ Short on purpose: it is appended inside a status line, and a sentence here is what
+    # pushed that line past the terminal width - which wrapped it, which stranded a row `\r`
+    # could never reach.
+    return False, "idle %s" % duration(idle)
+
+
+WATCH_MARK = "watch.alive"
+
+
+def _note_watch(sdir):
+    """Touch a file on every redraw, so somebody can ask whether the watcher is running.
+
+    ⛔ WHY THIS IS NOT `renders.log`. That file records STATUSLINE renders, keyed by session
+    id, and a `--watch` process has no session - so the one question people actually ask,
+    "is the VS Code usage terminal alive?", had no answer anywhere. Measured 2026-08-28: a
+    second machine's terminal did not appear, and every diagnostic could report the task was
+    installed while none could report whether it had ever run.
+
+    ⭐ ON REDRAW, NOT ON FETCH. The watcher deliberately stops calling the API when nobody is
+    working and keeps REDRAWING, so a fetch-based heartbeat would read as dead during exactly
+    the idle stretch it is designed for. What is being proved here is that the process is
+    alive, and the redraw is that proof.
+    """
+    try:
+        with open(os.path.join(sdir, WATCH_MARK), "w", encoding="utf-8") as f:
+            f.write(str(time.time()))
+    except OSError:
+        pass                              # a read-only state dir must not kill the watcher
+
+
+def watch(sdir, cfg, argv):
+    """Reprint the usage line on an interval, for a terminal that stays open.
+
+    ⭐ By default it REWRITES ONE LINE rather than scrolling. A watcher that adds a row
+    every thirty seconds fills the panel with history nobody asked for, and the only line
+    that means anything is the newest one. Set `watch_scroll: true`, or pass `--scroll`,
+    to keep every line instead.
+
+    ⚠ Rewriting needs a real terminal. Redirected to a file or a pipe there is no cursor
+    to move, and a carriage return would collapse the whole run onto one unreadable line -
+    so it falls back to scrolling automatically when stdout is not a tty.
+
+    ⭐ IT NOW FETCHES, so it is self-sufficient: no statusline has to exist anywhere for
+    this to show a real number. That is what makes it the answer for the VS Code
+    extension, whose panel renders no statusline at all.
+
+    ⚠ It fetches at most once per fetch_seconds regardless of --every, so a two-second
+    --every costs nothing extra at the API. A line that stops advancing now means the
+    fetch is failing rather than that usage stopped moving, and fetch.log says which.
+    """
+    every = 30
+    if "--every" in argv:
+        i = argv.index("--every")
+        if i + 1 < len(argv):
+            try:
+                every = max(2, int(argv[i + 1]))
+            except ValueError:
+                pass
+
+    scroll = bool(cfg.get("watch_scroll", False)) or "--scroll" in argv
+    try:
+        if not sys.stdout.isatty():
+            scroll = True          # no cursor to rewrite; see the docstring
+    except Exception:
+        scroll = True
+
+    ERASE_TO_EOL = "\033[K"        # so a shorter line cannot leave the old tail behind
+    drawn_idle = False             # has this quiet spell's SLEEP line been drawn already?
+    # ⛔ ONCE, BEFORE ANYTHING IS DRAWN. See _watch_open(): the line the previous run left
+    # behind is above the row this one can reach, so nothing later can remove it.
+    opening = _watch_open(scroll)
+    if opening:
+        sys.stdout.write(opening)
+        sys.stdout.flush()
+        # ⭐ atexit RATHER THAN A finally AROUND THE LOOP, deliberately: the loop is a
+        # `while True` with several ways out, and this runs on all of them - a clean return,
+        # Ctrl-C, an unhandled error - without reindenting a body whose cursor arithmetic is
+        # the thing being protected. ⚠ Wrapped in try/except: a closed pipe at shutdown must
+        # not turn a clean stop into a traceback.
+        def _restore(_bytes=_watch_close(scroll)):
+            try:
+                sys.stdout.write(_bytes)
+                sys.stdout.flush()
+            except Exception:
+                pass
+        atexit.register(_restore)
+    try:
+        while True:
+            # ⭐ Pause the FETCH when nobody is working - never the redraw. A frozen
+            # line would read as a current number, which is the confident wrong answer
+            # this plugin refuses everywhere else, so the note below says both that
+            # nothing is being fetched and how old the figure is.
+            # ⚠ No catch-up on resume: this simply starts calling ensure_fresh() again,
+            # and that honours fetch_seconds, so waking costs one call and not a burst.
+            may_fetch, idle_note = should_fetch(sdir, cfg)
+            if may_fetch:
+                data, reason = ensure_fresh(sdir, cfg)  # in memory; no re-read
+            else:
+                data, reason = read_json(cfg["token_usage_file"]), None
+            data = data if isinstance(data, dict) else {}
+            age = None
+            if data.get("ts"):
+                age = (time.time() * 1000 - data["ts"]) / 60000.0
+            v = verdict(sdir, cfg, data=data)           # same record, passed by value
+            idle = bool(idle_note)
+            # ⛔ WHILE IDLE THIS LINE CARRIES NO NOTE AT ALL. `2 min old` and `idle 15m` both
+            # restate what SLEEP already says - the line stopped moving because nobody is
+            # working - and a note that repeats the word beside it is a note people stop
+            # reading. The OAuth warning used to be the one exception; the owner removed it
+            # (2026-08-29), so nothing survives here now.
+            # ⚠ `reason` cannot appear while idle either: idle means no fetch was attempted,
+            # so there is no failure to report.
+            note = None
+            if not idle:
+                if age is not None and age > cfg["stale_min"]:
+                    note = "%.0f min old" % age
+                if reason and (note or age is None):
+                    note = "%s; %s" % (note, reason) if note else reason
+            # ⭐ ONE FUNCTION OWNS THE WHOLE LINE, INCLUDING ITS WIDTH. This used to assemble
+            # the stamp, the body and the verdict word here - and _line() fitted only the
+            # BODY, so the sixteen columns added around it overflowed the terminal and the
+            # line wrapped. See _watch_line() for what that cost.
+            # ⚠ AND THE LINE STILL ENDS WITH TWO SPACES. `--watch` rewrites in place, so the
+            # terminal parks its cursor on the last character - which renders as a box over
+            # the "O" of GO. Those two spaces put it somewhere harmless; ERASE_TO_EOL still
+            # clears whatever a longer previous line left behind.
+            # ⛔ WHILE IDLE, DRAW ONCE AND THEN STOP - the owner's instruction, and it removes
+            # the reported defect at its source instead of mitigating it. A line nothing is
+            # rewriting cannot strand a row whatever its width, and an idle machine stops
+            # scrolling a terminal full of identical lines all night.
+            # ⇒ ONE render marks the transition: the same figures, no colour, the word SLEEP.
+            # After that nothing is printed until work resumes. ⚠ `drawn_idle` is cleared on
+            # the way back, so the NEXT quiet spell marks itself too - without that, a machine
+            # that went idle, woke and went idle again would never say so a second time.
+            if idle and drawn_idle:
+                _note_watch(sdir)
+                time.sleep(every)
+                continue
+            drawn_idle = idle
+            # ⭐ COMPUTED HERE, not inside the row builder, so the two filesystem reads that
+            # decide it happen at the same moment as the rest of the row. ⚠ They are still a
+            # moment apart from should_fetch()'s own read above - see hook_silent_min().
+            lines = _watch_line(time.strftime("%H:%M:%S"), data, v, note, cfg, idle=idle,
+                                hook_silent=hook_silent_min(sdir),
+                                burn=burn_triple(sdir, cfg, data))
+            # ⛔ NO CLIMBING. See _redraw(): the watcher cleared the screen at startup and
+            # redraws all of it from an absolute home, because a relative move is only right
+            # while nothing else has touched the cursor - and in a VS Code panel it does.
+            if scroll:
+                for one in lines:
+                    print(one)
+            else:
+                sys.stdout.write(_redraw(lines, ERASE_TO_EOL))
+            sys.stdout.flush()
+            _note_watch(sdir)
+            time.sleep(every)
+    except KeyboardInterrupt:
+        if not scroll:
+            sys.stdout.write("\n")
+        return 0
+
+
+def selftest():
+    """`usage.py --selftest` - asserts the fetch layer's two dangerous decisions.
+
+    Both are dangerous in the same direction: a wrong answer here reads LOW and holds the
+    brake off. Neither is exercised by simply running the tool, because both only matter
+    on inputs the API does not normally send - which is exactly why they need a check that
+    fails loudly instead of a comment that hopes.
+
+    Touches no real state: it builds its own temp directory and makes no HTTP request.
+    """
+    import tempfile
+
+    # Scale. (0, 1] is ambiguous - 1% and 100% cannot be told apart - so it is refused.
+    assert _api_window({"utilization": 22.0})["used_percentage"] == 22.0
+    assert _api_window({"utilization": 0.0})["used_percentage"] == 0.0
+    for bad in (0.22, 1.0, 101, -1, None, True, "22"):
+        assert _api_window({"utilization": bad}) is None, bad
+    assert _api_window(None) is None and _api_window("x") is None
+
+    # ⭐ ...unless the response says which scale it meant. `limits[].percent` is a whole
+    # number, so exactly one reading of an ambiguous `utilization` can match it. Measured
+    # 2026-08-27: a week that had just rolled over returned utilization 1.0 beside
+    # percent 1, and refusing it made the 7d segment vanish from the line entirely.
+    assert _api_window({"utilization": 1.0}, 1.0)["used_percentage"] == 1.0
+    assert _api_window({"utilization": 0.01}, 1.0)["used_percentage"] == 1.0
+    assert _api_window({"utilization": 1.0}, 100.0)["used_percentage"] == 100.0
+    # ⛔ A hint that matches NEITHER reading proves nothing, so the value is still refused.
+    assert _api_window({"utilization": 1.0}, 47.0) is None
+    raw = {"five_hour": {"utilization": 8.0}, "seven_day": {"utilization": 1.0},
+           "limits": [{"kind": "session", "percent": 8},
+                      {"kind": "weekly_all", "percent": 1}]}
+    assert _whole_percent(raw, "seven_day") == 1.0
+    assert _whole_percent(raw, "five_hour") == 8.0
+    assert _whole_percent({"limits": []}, "seven_day") is None
+    assert _whole_percent(raw, "nonexistent") is None
+
+    # Timestamps. The API sends fractional seconds and an offset; the stored value must be
+    # whole seconds, or two identical readings compare unequal. 1787742000 is a measured
+    # pair: that ISO string and the epoch the file already held for the same window.
+    got = _api_window({"utilization": 5,
+                       "resets_at": "2026-08-26T11:00:00.203505+00:00"})["resets_at"]
+    assert got == 1787742000 and isinstance(got, int), got
+    assert _api_window({"utilization": 5, "resets_at": "2026-08-26T11:00:00+00:00"}
+                       )["resets_at"] == 1787742000
+    assert _api_window({"utilization": 5, "resets_at": "nonsense"}).get("resets_at") is None
+    a = _api_window({"utilization": 5, "resets_at": "2026-08-26T11:00:00.203505+00:00"})
+    b = _api_window({"utilization": 5, "resets_at": "2026-08-26T11:00:00.390781+00:00"})
+    assert a == b, "microseconds must not make two identical readings differ"
+    # ⚠ Observed live: the SAME window came back on either side of the second boundary.
+    # Truncating made the reset appear to move; rounding lands both on the same second.
+    c = _api_window({"utilization": 5, "resets_at": "2026-08-26T10:59:59.912345+00:00"})
+    assert c == a, "a sub-second wobble across the boundary must not move the reset"
+
+    # ⛔ THE WATCHER'S IDLE PAUSE, both directions. It is invisible when right and expensive
+    # when wrong: never pausing burns the five calls per token overnight, pausing too
+    # eagerly freezes the number during real work. Neither failure announces itself.
+    # ⛔ EVERY CASE BELOW POINTS $CLAUDE_USER_CONFIG AT A FILE THE FIXTURE OWNS, and without
+    # that the block cannot be written at all. MEASURED when the second source landed:
+    # against an empty temp state directory last_heartbeat_min() returned 0.68 minutes - the
+    # age of the REAL ~/.claude.json - so no fixture could express "an idle machine" and four
+    # assertions here became unwritable or, worse, passed through the wrong branch.
+    # ⚠ An env var rather than a module constant BECAUSE test_usage_watch.py launches the
+    # watcher through subprocess.Popen, where a monkeypatched constant does not cross the
+    # process boundary.
+    _saved_cj = os.environ.get(CLAUDE_JSON_ENV)
+    with tempfile.TemporaryDirectory() as sdir:
+        os.makedirs(os.path.join(sdir, "state"))
+        cfg_i = {"idle_after_min": 15}
+        now = time.time()
+        user_cfg = os.path.join(sdir, "claude.json")
+        os.environ[CLAUDE_JSON_ENV] = user_cfg
+        try:
+            # ⛔ NEITHER SOURCE EXISTS: nothing has ever run here. That is not idleness, and
+            # refusing to fetch would leave the very first render empty for ever.
+            # ⚠ Asserted on the REASON, not only on the boolean - this assertion used to pass
+            # through the wrong branch once a second source existed, which is the failure
+            # class this file keeps meeting.
+            assert last_heartbeat_min(sdir, now) is None, "an empty machine must be unknowable"
+            assert should_fetch(sdir, cfg_i, now)[0] is True, "an empty state dir must fetch"
+
+            beat = os.path.join(sdir, "state", "abc.alive")
+            for back_min, expect in ((0, True), (14, True), (16, False), (600, False)):
+                for f_path in (beat, user_cfg):
+                    with open(f_path, "w") as f:
+                        f.write("x")
+                    os.utime(f_path, (now - back_min * 60, now - back_min * 60))
+                got, note = should_fetch(sdir, cfg_i, now)
+                assert got is expect, "%d min idle -> %s" % (back_min, got)
+                assert (note is None) is expect, note
+            # ⚠ The NEWEST heartbeat wins: one live session among twenty dead ones is activity.
+            with open(os.path.join(sdir, "state", "live.alive"), "w") as f:
+                f.write("x")
+            assert should_fetch(sdir, cfg_i, now)[0] is True, "a live session was ignored"
+            # 0 or negative switches the pause off entirely.
+            assert should_fetch(sdir, {"idle_after_min": 0}, now)[0] is True
+
+            # ⭐ THE WHOLE POINT: a DEAD GATE beside a WORKING PERSON must not read as idle.
+            # This is the 2026-08-30 failure, reproduced - .alive frozen at 21 hours while
+            # Claude Code's own file was written every minute or two.
+            os.utime(beat, (now - 1225 * 60, now - 1225 * 60))
+            os.utime(os.path.join(sdir, "state", "live.alive"),
+                     (now - 1225 * 60, now - 1225 * 60))
+            os.utime(user_cfg, (now - 60, now - 60))
+            got, note = should_fetch(sdir, cfg_i, now)
+            assert got is True, "a dead gate beside a live person read as idle: %r" % (note,)
+            assert hook_silent_min(sdir, now) > 1000, hook_silent_min(sdir, now)
+            # ...and when BOTH are stale it is genuinely idle, or the check above proves
+            # nothing: the owner refused a change that polls for ever.
+            os.utime(user_cfg, (now - 1225 * 60, now - 1225 * 60))
+            assert should_fetch(sdir, cfg_i, now)[0] is False, "a quiet machine kept fetching"
+            # ⛔ AND THE DIAGNOSIS IS SILENT WHEN THE SIGNALS AGREE. None here means "nothing
+            # to report", never "healthy" - the docstring says so and this pins it.
+            assert hook_silent_min(sdir, now) is None, hook_silent_min(sdir, now)
+            # ⚠ A missing user file must not fabricate a disagreement either. ⛔ Asserted
+            # with the gate deliberately STALE, so a build that forgot the None guard reaches
+            # the subtraction and fails on the ASSERTION rather than crashing on a TypeError -
+            # a crash is a bug found by accident, not a property held by a check.
+            os.remove(user_cfg)
+            assert _user_activity_min(now) is None
+            got = None
+            try:
+                got = hook_silent_min(sdir, now)
+            except TypeError:
+                got = "TypeError - the None guard is gone"
+            assert got is None, got
+        finally:
+            if _saved_cj is None:
+                os.environ.pop(CLAUDE_JSON_ENV, None)
+            else:
+                os.environ[CLAUDE_JSON_ENV] = _saved_cj
+
+    # ⛔ THE PATH SEAM ITSELF, all three branches. $CLAUDE_CONFIG_DIR support falls out of it,
+    # which is why it is pinned rather than left to be rediscovered.
+    _saved_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+    try:
+        os.environ.pop(CLAUDE_JSON_ENV, None)
+        os.environ.pop("CLAUDE_CONFIG_DIR", None)
+        assert _claude_json_path() == os.path.join(os.path.expanduser("~"), ".claude.json")
+        os.environ["CLAUDE_CONFIG_DIR"] = os.path.join("X", "cfg")
+        assert _claude_json_path() == os.path.join("X", "cfg", ".claude.json")
+        os.environ[CLAUDE_JSON_ENV] = os.path.join("Y", "explicit.json")
+        assert _claude_json_path() == os.path.join("Y", "explicit.json"), "the env must win"
+    finally:
+        for _k, _v in ((CLAUDE_JSON_ENV, _saved_cj), ("CLAUDE_CONFIG_DIR", _saved_dir)):
+            if _v is None:
+                os.environ.pop(_k, None)
+            else:
+                os.environ[_k] = _v
+
+    # ⛔ CT: zero and unknown are different answers, decided by whether the KEY is there.
+    # Rendering "cannot read" as 0% would be a confident wrong answer erring LOW.
+    assert _context_pct({"model": {}}) is None, "an absent key must be unknown"
+    assert _context_pct({CONTEXT_KEY: {"used_percentage": 41.0}}) == 41.0
+    assert _context_pct({CONTEXT_KEY: {"used_percentage": 0}}) == 0.0
+    assert _context_pct({CONTEXT_KEY: {"current_usage": None,
+                                       "context_window_size": 200000}}) == 0.0
+    assert _context_pct({CONTEXT_KEY: {"renamed": 1, "current_usage": {"x": 1}}}) is None
+    assert _context_pct({CONTEXT_KEY: "not a dict"}) is None
+    # ...and the three render differently, which is the point of the whole exercise.
+    _rec = {"five_hour": {"used_percentage": 5.0, "resets_at": time.time() + 3600}}
+    _zero = _line(_rec, None, {"width": None}, {CONTEXT_KEY: {"used_percentage": 0}})
+    _absent = _line(_rec, None, {"width": None}, {"model": {}})
+    _real = _line(_rec, None, {"width": None}, {CONTEXT_KEY: {"used_percentage": 41.0}})
+    assert "CT " in _zero and " 0%" in _zero, _zero
+    assert "CT " in _absent and "--" in _absent and "0%" not in _absent, _absent
+    assert _zero != _absent, "a real zero and an unreadable one rendered the same"
+    assert "41%" in _real, _real
+
+    # Jitter is ADDED, never subtracted, so the effective wait can never dip under the
+    # floor - which is the whole point, since the floor is what protects the five calls.
+    for width in (JITTER_SECONDS, 5, 300):
+        _cfg = {"fetch_seconds": FETCH_FLOOR_SECONDS, "fetch_seconds_jitter": width}
+        seen = [_interval(_cfg) for _ in range(500)]
+        assert min(seen) >= FETCH_FLOOR_SECONDS, "went BELOW the floor: %r" % min(seen)
+        assert max(seen) <= FETCH_FLOOR_SECONDS + width, (width, max(seen))
+        assert max(seen) - min(seen) > width / 2, "not jittering at %r: %r" % (width, seen[:3])
+    # 0 disables it, and a negative value must not be able to subtract.
+    _cfg = {"fetch_seconds": FETCH_FLOOR_SECONDS, "fetch_seconds_jitter": 0}
+    assert _interval(_cfg) == FETCH_FLOOR_SECONDS
+    _cfg["fetch_seconds_jitter"] = -60
+    assert _interval(_cfg) >= FETCH_FLOOR_SECONDS, "a negative jitter subtracted"
+
+    # The token expiry is read, not discovered from a 401: a dead token must not cost one of
+    # the five calls. ⛔ AND IT REACHES NO DISPLAY. The owner removed the OAuth note from the
+    # bar in two steps on 2026-08-29 - the countdown, then the expired form.
+    _saved_env = os.environ.pop("ANTHROPIC_TOKEN", None)
+    _saved_reader = read_json
+
+    def _fake(now_offset_s):
+        exp = (time.time() + now_offset_s) * 1000
+        return lambda path, fallback=None: (
+            {"claudeAiOauth": {"accessToken": "sk-x", "expiresAt": exp}}
+            if path.endswith(".credentials.json") else _saved_reader(path, fallback))
+    try:
+        # ⛔ NO OAUTH NOTE ON THE BAR, IN ANY TOKEN STATE. ⚠ Pinned by the SYMBOL, not by
+        # rendering one line: the note is re-added under its own name whenever somebody puts
+        # it back, and a text assertion on one rendered line cannot see the other display -
+        # the statusline and the watcher build their notes separately.
+        assert "token_note" not in globals(), \
+            "token_note() is back - the bar must not report an OAuth token"
+        globals()["read_json"] = _fake(-60)
+        # ⛔ THE EXPIRY IS STILL READ, AND MUST NOT SPEND A CALL TO FIND OUT. ⚠ Checked by
+        # counting requests, NOT by reading the message: a real 401 reply also says
+        # "expired", so an assertion
+        # on the text alone cannot tell "never asked" from "asked and was refused" - it
+        # passed against a build with this guard removed, and made a live request doing it.
+        called = []
+        _saved_open = urllib.request.urlopen
+        urllib.request.urlopen = lambda *a, **k: called.append(1)
+        try:
+            got = fetch({})
+            assert "expired" in str(got).lower(), got
+            assert not called, "fetch asked anyway on a token it could see was dead"
+        finally:
+            urllib.request.urlopen = _saved_open
+    finally:
+        globals()["read_json"] = _saved_reader
+        if _saved_env is not None:
+            os.environ["ANTHROPIC_TOKEN"] = _saved_env
+
+    # The floor is enforced, not merely documented.
+    # ⛔ 120 IS ASSERTED AS A LITERAL, not as FETCH_FLOOR_SECONDS. Writing the constant on
+    # both sides makes this test agree with any floor somebody types in, including the 60
+    # that drew three 429s on 2026-08-31 - so it would have stayed green through exactly
+    # the regression it exists to catch.
+    tmp = tempfile.mkdtemp()
+    for asked in (30, 60, 119):
+        with open(os.path.join(tmp, "config.json"), "w", encoding="utf-8") as f:
+            json.dump({"fetch_seconds": asked}, f)
+        assert config(tmp)["fetch_seconds"] == 120, (asked, config(tmp)["fetch_seconds"])
+    assert FETCH_FLOOR_SECONDS == 120, FETCH_FLOOR_SECONDS
+    with open(os.path.join(tmp, "config.json"), "w", encoding="utf-8") as f:
+        json.dump({"fetch_seconds": 120}, f)
+    assert config(tmp)["fetch_seconds"] == 120       # at the floor: passes through
+    with open(os.path.join(tmp, "config.json"), "w", encoding="utf-8") as f:
+        json.dump({"fetch_seconds": 600, "stale_min": 60}, f)
+    assert config(tmp)["fetch_seconds"] == 600
+    # jitter comes from config, defaults to 30, and a negative one is refused
+    assert config(tmp)["fetch_seconds_jitter"] == 30
+    for value, want in ((5, 5), (0, 0), (-1, 0)):
+        with open(os.path.join(tmp, "config.json"), "w", encoding="utf-8") as f:
+            json.dump({"fetch_seconds_jitter": value, "stale_min": 60}, f)
+        assert config(tmp)["fetch_seconds_jitter"] == want, (value, want)
+
+    # A failed fetch must leave a good stored value alone. fetch() returns a reason string
+    # for every failure, and ensure_fresh() must not write on one.
+    cfg = config(tmp)
+    good = {"ts": int(time.time() * 1000) - 3600_000,
+            "five_hour": {"used_percentage": 6, "resets_at": 1787742000}}
+    with open(cfg["token_usage_file"], "w", encoding="utf-8") as f:
+        json.dump(good, f)
+    calls = []
+    saved = fetch
+    globals()["fetch"] = (
+        lambda cfg=None, sdir=None: (calls.append(1), "HTTP 429 rate limited")[1])
+    try:
+        rec, why = ensure_fresh(tmp, cfg)
+        assert "429" in (why or ""), why
+        # ⛔ The record must come back BY VALUE on every path, including the common one
+        # where nothing needed doing - callers rely on it instead of re-reading the file,
+        # so a path that returns None makes them render -- with good data on disk.
+        assert rec, "ensure_fresh returned no record on the failure path"
+        assert rec == good, "the old record must survive a failed fetch, in memory too"
+        assert read_json(cfg["token_usage_file"]) == good, "a 429 must not touch the cache"
+        # ⛔ The claim is NOT released on failure, so the next caller must not retry. This
+        # is the only backoff there is, and without it a persistent 429 becomes a loop
+        # that spends the whole five-call budget. It is also what stops several sessions'
+        # statuslines from all fetching on the same interval boundary.
+        again = ensure_fresh(tmp, cfg)
+        assert again[1] is None, "a second call must be refused by the claim"
+        assert again[0] == good, "the fresh/refused path must still hand back the record"
+        assert len(calls) == 1, "the claim did not prevent the second request: %r" % calls
+        # ⛔ And an empty record from a caller must NOT be mistaken for "no data exists".
+        assert verdict(tmp, cfg, data={})["verdict"] != "NO-DATA", (
+            "an empty dict was accepted as a record instead of falling back to the file")
+        # ⛔ THE COMMON PATH, tested separately because the two above do not reach it. With
+        # a FRESH record nothing needs doing, and that is the path taken on almost every
+        # tick - so it is the one whose return value matters most. ⚠ The earlier assertions
+        # went down the claim-refused branch instead, and a mutation that emptied this
+        # branch passed them: every tick would have rendered -- with good data on disk.
+        fresh = {"ts": int(time.time() * 1000),
+                 "five_hour": {"used_percentage": 11, "resets_at": 1787742000}}
+        with open(cfg["token_usage_file"], "w", encoding="utf-8") as f:
+            json.dump(fresh, f)
+        del calls[:]                       # count only what THIS path does
+        # ⚠ THE CLAIM IS CLEARED FIRST, deliberately. Leaving it would let the claim check
+        # refuse the fetch, so this assertion would pass even with the freshness check gone
+        # - the two guards cover each other and the test would be measuring the wrong one.
+        # Removing it makes freshness the ONLY thing that can prevent the request.
+        try:
+            os.remove(os.path.join(tmp, "fetch.claim"))
+        except OSError:
+            pass
+        rec2, why2 = ensure_fresh(tmp, cfg)
+        assert why2 is None and rec2 == fresh, (
+            "the FRESH path must hand the record back by value: %r %r" % (rec2, why2))
+        assert not calls, "the fresh path made a request"
+    finally:
+        globals()["fetch"] = saved
+
+    # ⛔ RETENTION - the only setting in this file that DELETES, so it is checked hardest.
+    # Two properties, and the second one is the safety argument for the whole feature.
+    assert _days(None, HISTORY_KEEP_DAYS_DEFAULT) == HISTORY_KEEP_DAYS_DEFAULT
+    assert _days(30, 30) == 30 and _days("30", 30) == 30      # a hand-typed "30" still works
+    # ⛔ EVERY UNUSABLE VALUE MEANS KEEP FOR EVER, never "fall back to 30 and start
+    # deleting". A wrong number elsewhere in this file costs a wrong reading on a line; a
+    # wrong number here costs a record nobody can get back.
+    for bad in (0, -1, True, False, "abc", "", [], {}, float("nan"), float("inf")):
+        assert _days(bad, 30) == 0, bad
+
+    tmp2 = tempfile.mkdtemp(prefix="dg-prune-")
+    logs = os.path.join(tmp2, "logs")
+    os.makedirs(logs)
+    now2 = time.time()
+    planted = {"token_usage_history_20200101-000000.jsonl": 60,   # ours, old
+               "API_response_usage_20200101-000000.jsonl": 60,     # ours, old
+               "token_usage_history_20990101-000000.jsonl": 1,     # ours, fresh
+               "limits-history-20200101-000000.jsonl": 400,        # RETIRED name, ancient
+               "not-ours.jsonl": 400,                              # NOT ours, old
+               "notes.txt": 400}                                   # NOT ours, old
+
+    def replant():
+        for fname, age in planted.items():
+            p = os.path.join(logs, fname)
+            with open(p, "w", encoding="utf-8") as f:
+                f.write("x" + chr(10))
+            os.utime(p, (now2 - age * 86400, now2 - age * 86400))
+
+    replant()
+    cfg2 = {"history_dir": logs, "history_keep_days": 30}
+    # ⚠ TWO: the history file and the response dump, one old file each.
+    assert prune_logs(tmp2, cfg2, now2) == 2, "expected exactly the two old OURS"
+    left = set(os.listdir(logs))
+    # ⛔ THE SAFETY ARGUMENT: history_dir is configurable and the docs suggest pointing it
+    # at a synced folder, so anything without one of this plugin's two prefixes must
+    # survive no matter how old it is. A blanket *.jsonl sweep would delete a stranger's
+    # data, and nothing would ever report it.
+    assert "not-ours.jsonl" in left and "notes.txt" in left, left
+    assert "token_usage_history_20990101-000000.jsonl" in left, left
+    assert "token_usage_history_20200101-000000.jsonl" not in left, left
+    # ⛔ A NAME THIS PLUGIN NO LONGER WRITES IS NOT TOUCHED, however old it is. There is one
+    # set of names now and prune_logs() knows only that set - so a file from a retired naming
+    # scheme is a stranger's file as far as this function is concerned, and strangers' files
+    # are never deleted. ⚠ Anyone updating is expected to run Tools/clean-dispatch-guard.ps1,
+    # which removes the whole state directory including these.
+    assert "limits-history-20200101-000000.jsonl" in left, left
+
+    # 0 and every unreadable value keep everything - checked through prune_logs itself,
+    # not only through _days(), because this function is reached with a cfg that never
+    # passed through config().
+    for keep in (0, "abc", True, -5, [], ""):
+        replant()
+        c = {"history_dir": logs, "history_keep_days": keep}
+        assert prune_logs(tmp2, c, now2) == 0, keep
+        assert len(os.listdir(logs)) == len(planted), keep
+
+    # ⚠ AN EXPLICIT null IS *NOT* "FOR EVER" - it means "use the default", the same as
+    # history_dir: null and the same as leaving the key out. ⛔ 0 is the value that keeps
+    # everything, and config.example.json says so where somebody editing the file will
+    # read it. Pinned here because the two readings are easy to confuse and one of them
+    # deletes.
+    replant()
+    assert prune_logs(tmp2, {"history_dir": logs, "history_keep_days": None}, now2) == 2
+
+    # ⭐ And the trigger: history_path() prunes ONLY when it mints a new day's name.
+    replant()
+    minted = history_path(tmp2, cfg2, now2)
+    assert not os.path.exists(minted), "history_path must not create the file"
+    assert len(os.listdir(logs)) == len(planted) - 2, "minting a new name must prune"
+    replant()
+    with open(minted, "w", encoding="utf-8") as f:
+        f.write("x" + chr(10))
+    same = history_path(tmp2, cfg2, now2)
+    assert same == minted, (same, minted)
+    assert len(os.listdir(logs)) == len(planted) + 1, "an existing day's file must NOT prune"
+
+    # ⛔ THERE IS EXACTLY ONE FILE NAME NOW, and this checks that the reader and the writer
+    # agree on it. They are built from the same constant, so the risk is not that they differ
+    # - it is that BOTH are wrong and _projection() answers None, which looks exactly like
+    # "not enough samples yet". There is no error to notice, which is why it is asserted.
+    tmp3 = tempfile.mkdtemp(prefix="dg-history-")
+    logs3 = os.path.join(tmp3, "logs")
+    os.makedirs(logs3)
+    resets3 = int(time.time()) + 3600
+    rows3 = [{"at": stamp(time.time() - 1800), "pct": 10, "resets_at": stamp(resets3)},
+             {"at": stamp(time.time() - 60), "pct": 40, "resets_at": stamp(resets3)}]
+    cfg3 = {"history_dir": logs3, "debug": {"token_usage": True}}
+    written = history_path(tmp3, cfg3)
+    assert os.path.basename(written).startswith("token_usage_history_"), written
+    with open(written, "w", encoding="utf-8") as f:
+        for row in rows3:
+            f.write(json.dumps(row) + chr(10))
+    proj = _projection(tmp3, cfg3, 40, resets3, time.time())
+    assert proj is not None and proj > 40, (
+        "the writer's own file name was not read back: %r (%s)" % (proj, written))
+    # ⛔ AND A NAME THIS PLUGIN NO LONGER USES IS NOT READ. The owner asked for one name with
+    # no compatibility path; a projection quietly assembled from files two renames old is
+    # worth less than one that says it has no data yet. Mutation-checked: put the rows under
+    # a retired name and the projection must go away.
+    os.rename(written, os.path.join(logs3, "limits-history-20200101-000000.jsonl"))
+    assert _projection(tmp3, cfg3, 40, resets3, time.time()) is None, \
+        "a retired file name is still being read"
+
+    # ⛔ ONE SWITCH, ONE NAME, AND EVERY OLD NAME IGNORED. `keep_history` was what this used
+    # to be called; it is not read any more, so a config still carrying it gets the DEFAULT.
+    # ⚠ That is the owner's decision and it is asserted rather than assumed, because the
+    # opposite - a name that quietly still works - is how a settings file ends up with three
+    # spellings of one switch and nobody able to say which wins.
+    tmp4 = tempfile.mkdtemp(prefix="dg-switch-")
+    for blob, want, why in (
+            ({}, True, "absent -> ON, the default"),
+            ({"debug": {"token_usage": False}}, False, "the one name, OFF"),
+            ({"debug": {"token_usage": True}}, True, "the one name, ON"),
+            ({"keep_history": False}, True, "a retired name must be IGNORED, not obeyed"),
+            ({"token_usage_history": False}, True, "and so must the other retired name")):
+        with open(os.path.join(tmp4, "config.json"), "w", encoding="utf-8") as f:
+            json.dump(blob, f)
+        assert config(tmp4)["debug"]["token_usage"] is want, "%s: %r" % (why, blob)
+
+    # ⛔ THE WATCHER'S LINE MUST NEVER BE WIDER THAN THE TERMINAL. It was, and the way it
+    # failed is the reason this check exists at all: _line() fitted the BODY, watch() then
+    # added a timestamp and a verdict word around it, and the sixteen columns nobody had
+    # subtracted pushed the line into a wrap. `\r` returns to the start of the LAST VISUAL
+    # ROW and `\033[K` clears only that row, so every render stranded its first row on
+    # screen for ever. MEASURED at width 150: body 149, line 165.
+    _now = time.time()
+    _live = {"ts": int(_now * 1000),
+             "five_hour": {"used_percentage": 55, "resets_at": int(_now) + 1600},
+             "seven_day": {"used_percentage": 32, "resets_at": int(_now) + 300000}}
+    _v = {"verdict": "GO", "pct": 55}
+    _note = "idle 7h-35m; OAuth token expires in 10m - open a session"
+    # ⚠ EVERY ROW, not the joined text: the point of a second row is that each one fits.
+    for _w in (200, 150, 120, 100, 80, 60, 40, 25):
+        for _idle in (True, False):
+            _wrows = _watch_line("07:26:12", _live, _v, _note, {"width": _w}, idle=_idle)
+            assert 1 <= len(_wrows) <= 2, _wrows
+            for _r in _wrows:
+                assert _visible_len(_r) <= _w, (
+                    "width %d, idle=%s: a row is %d columns and WILL wrap: %r"
+                    % (_w, _idle, _visible_len(_r), _r))
+
+    # ⛔ THE SHAPE OF THE ROW, EXACTLY AS THE OWNER SPECIFIED IT ON 2026-09-01. Three parts,
+    # each load-bearing differently: the icon sits BETWEEN the timestamp and the first window
+    # with NO space either side; each window's reset time sits in brackets after its own
+    # remaining time; TWO spaces finish the row.
+    # ⚠ THE TRAILING PAIR IS THE ONE THAT LOOKS LIKE LITTER AND IS NOT. The terminal parks its
+    # cursor on the last column and draws a block there; over anything worth reading that
+    # block is unreadable. A tidy-up that strips trailing whitespace breaks the display and
+    # nothing else would say so - hence an assertion on the bytes rather than on the intent.
+    _t7 = _watch_line("07:26:12", _live, _v, None, {"width": 300, "colour": False})[0]
+    # ⚠ ONE SPACE AFTER THE ICON, NONE BEFORE IT - and the space is not cosmetic. An
+    # emoji occupies TWO cells and the terminal draws it into the second, so the flush
+    # form `07:26:12🟢5h` put the glyph over the `5`. Seen on the owner's terminal
+    # 2026-09-01, after the flush form had itself been the owner's instruction.
+    assert _t7.startswith("07:26:12" + VERDICT_ICON["GO"] + " " + FIVE_HOUR_LABEL), (
+        "the row must open: stamp, icon, ONE space, 5h - got %r" % _t7[:24])
+    assert not _t7.startswith("07:26:12 "), "no space before the icon: %r" % _t7[:24]
+    assert _t7.endswith("  ") and not _t7.endswith("   "), repr(_t7[-16:])
+    # ⭐ EACH RESET TIME LIVES BESIDE ITS OWN NUMBER, not at the end of the row. A reader who
+    # sees two remaining times and one clock time cannot tell which window it belongs to.
+    _when5 = _reset_clock(_live["five_hour"]["resets_at"], time.time())
+    _when7 = _reset_clock(_live["seven_day"]["resets_at"], time.time())
+    assert _when5 and _when7, (_when5, _when7)
+    assert _when5 in _t7 and _when7 in _t7, (_when5, _when7, _t7)
+    assert _t7.index(_when5) < _t7.index(SEVEN_DAY_LABEL) < _t7.index(_when7), _t7
+    # ⚠ THE FIVE-HOUR WINDOW NEVER CARRIES A WEEKDAY - it cannot reach tomorrow - and the
+    # seven-day one carries one ONLY when it does not reset today.
+    assert "%a" not in _when5 and len(_when5) == len("(00:00)"), _when5
+    _tomorrow = dict(_live, seven_day=dict(_live["seven_day"],
+                                           resets_at=time.time() + 26 * 3600))
+    _rt = _watch_line("07:26:12", _tomorrow, _v, None, {"width": 300, "colour": False})[0]
+    assert "(" + time.strftime("%a ", time.localtime(time.time() + 26 * 3600)) in _rt, _rt
+
+    # ⛔ AND NO SEVEN-DAY WINDOW MEANS NO TIME - never the word None on the screen. The two
+    # trailing spaces survive, because what they protect is the cursor, not the time.
+    _no7 = dict(_live)
+    _no7.pop("seven_day")
+    _r7 = _watch_line("07:26:12", _no7, _v, None, {"width": 300, "colour": False})[0]
+    assert _r7.endswith("  ") and not _r7.endswith("   "), repr(_r7[-16:])
+    assert "None" not in _r7, _r7
+
+    # ⛔ THE BURN RATE CARRIES NO UNIT - `.30%`, not `.30%/m`. Owner-asked 2026-09-01; the
+    # unit is per minute and now lives only in the documentation.
+    _bp = _STRIP_ANSI.sub("", _burn_part(263, 60, 0.30, {"colour": False}))
+    assert ".30% " in _bp and "%/m" not in _bp, _bp
+
+    # ⛔ THE WATCHER IS ONE ROW, WITH OR WITHOUT A BURN RATE - and that is the terminal's
+    # rule, not a preference. A second row can only be redrawn by moving the cursor UP, and
+    # the panel this exists for ignores every vertical move: measured by elimination across
+    # four releases, then confirmed by capturing the byte stream, where a `\033[2J` per draw
+    # still stacked three complete two-row draws.
+    _burn3 = (188, 106, 0.38)
+    _one = _watch_line("07:26:12", _live, _v, None, {"width": 200}, burn=_burn3)
+    assert len(_one) == 1, _one
+    assert (FIVE_HOUR_LABEL in _one[0] and BURN_LABEL in _one[0]
+            and VERDICT_ICON["GO"] in _one[0]), _one
+    # ⭐ AND THE GAUGE IS DRAWN AS DASHES WHEN THERE IS NO RATE, never omitted. Its absence
+    # then means exactly one thing - the row was too narrow - instead of two things the
+    # screen cannot tell apart.
+    _dashes = _watch_line("07:26:12", _live, _v, None, {"width": 200})
+    assert len(_dashes) == 1 and BURN_LABEL in _dashes[0] and "--" in _dashes[0], _dashes
+    # ...and it fits at every width, which is what `\r` needs to be enough: a row wider than
+    # the terminal wraps, and a wrapped row is the one thing a carriage return cannot repair.
+    for _w in (200, 150, 120, 100, 80, 60, 40, 25):
+        for _idle in (True, False):
+            _rr = _watch_line("07:26:12", _live, _v, _note, {"width": _w},
+                              idle=_idle, burn=_burn3)
+            assert len(_rr) == 1, (_w, _rr)
+            assert _visible_len(_rr[0]) <= _w, (
+                "width %d idle=%s: %d columns WILL wrap: %r"
+                % (_w, _idle, _visible_len(_rr[0]), _rr[0]))
+
+    # ⛔ THE CLI STATUSLINE IS UNTOUCHED by any of this - it is a different surface with a
+    # different terminal, and it keeps its own two-row setting.
+    _sl = _line(_live, None, {"width": 200, "colour": True}, None, burn=_burn3)
+    assert isinstance(_sl, str) and chr(10) not in _sl, _sl
+    assert BURN_LABEL in _sl and FIVE_HOUR_LABEL in _sl, _sl
+
+    # ⭐ IDLE KEEPS THE NUMBERS, DROPS EVERY COLOUR, AND SAYS Sleep. The owner's rule: while
+    # nobody is working nobody is spending, so a frozen figure cannot drift - and hiding it
+    # threw away information for a danger that is not there. `Sleep` is what says the line
+    # is not live.
+    _idle_line = chr(10).join(
+        _watch_line("07:26:12", _live, _v, _note, {"width": 200}, idle=True))
+    assert SLEEP_WORD in _idle_line, _idle_line
+    assert "55%" in _idle_line, "idle threw the percentage away: %r" % _idle_line
+    assert _STRIP_ANSI.sub("", _idle_line) == _idle_line, (
+        "the idle line is coloured: %r" % _idle_line)
+    # ...and the active line is the opposite on all three counts, or the test proves nothing.
+    _live_line = chr(10).join(
+        _watch_line("07:26:12", _live, _v, _note, {"width": 200}, idle=False))
+    assert (SLEEP_WORD not in _live_line
+            and VERDICT_ICON["GO"] in _live_line), _live_line
+    assert _STRIP_ANSI.sub("", _live_line) != _live_line, (
+        "the active line lost its colour: %r" % _live_line)
+
+    # ⛔ AND A WINDOW THAT ALREADY RESET STILL SHOWS DASHES, EVEN IDLE. This is the one place
+    # the owner's rule collides with an existing invariant, and the invariant wins: overnight
+    # idle crosses the five-hour reset by construction, and a percentage stored before a
+    # reset reads HIGH. Measured 2026-08-26: the display said 97% while the account page
+    # said 0%.
+    _past = dict(_live)
+    _past["five_hour"] = {"used_percentage": 97, "resets_at": int(_now) - 60}
+    _reset_line = chr(10).join(
+        _watch_line("07:26:12", _past, _v, _note, {"width": 200}, idle=True))
+    assert "97%" not in _reset_line, (
+        "a percentage from before the reset was shown: %r" % _reset_line)
+    assert SLEEP_WORD in _reset_line, _reset_line
+
+    # ⚠ MUTATION CHECK on the width guard: a line built WITHOUT the overhead subtraction must
+    # actually exceed the terminal. Without this the loop above could be passing because
+    # _line() happens to be short, not because anything subtracts.
+    # ⚠ The note here is the ORIGINAL 110-character one, from the owner's screenshot, because
+    # that is the input that actually filled a 150-column terminal. A short note leaves _line
+    # well under its budget and the control passes for the wrong reason.
+    _long = ("OAuth token expires in 10 min - open a Claude session to refresh it; "
+             "no session active for 7h-35m; not fetching")
+    _body = _line(_live, _long, {"width": 150})
+    _unfitted = "%s  %s  %s  " % ("07:26:12", _body, "GO")
+    assert _visible_len(_body) <= 150, _visible_len(_body)
+    assert _visible_len(_unfitted) > 150, (
+        "the unfitted line is only %d columns - this check no longer proves anything"
+        % _visible_len(_unfitted))
+    # ...and the same input, through the function under test, must FIT - on every row.
+    for _r in _watch_line("07:26:12", _live, _v, _long, {"width": 150}):
+        assert _visible_len(_r) <= 150, _r
+
+    # ⭐ TWO ROWS RATHER THAN DROPPING WHAT WILL NOT FIT. Narrow enough, and the context bar,
+    # the model and the note move to a second row instead of being thrown away.
+    _wide = {"ts": int(time.time() * 1000),
+             "five_hour": {"used_percentage": 55, "resets_at": int(time.time()) + 1600},
+             "seven_day": {"used_percentage": 32, "resets_at": int(time.time()) + 300000}}
+    # ⚠ THE WATCHER CANNOT SPEND A SECOND ROW, so what will not fit is dropped from the
+    # right - the five-hour window is kept, because it is what the brake acts on.
+    _cut_row = _watch_line("07:26:12", _wide, _v, _long, {"width": 100})
+    assert len(_cut_row) == 1, _cut_row
+    assert FIVE_HOUR_LABEL in _cut_row[0] and _visible_len(_cut_row[0]) <= 100, _cut_row
+    # ...while a wide terminal keeps the note as well as everything else.
+    _room = _watch_line("07:26:12", _wide, _v, _long, {"width": 240})
+    assert len(_room) == 1 and "OAuth" in _room[0], _room
+
+    # ⛔ THE MODEL-SCOPED WINDOW, against BOTH measured accounts. The rows below are the real
+    # `limits[]` entries captured 2026-08-27 from an account that may NOT use Fable and one
+    # that may, in Memory/tasks/20260827-153945-usage-api-fable-window/. They are inlined
+    # rather than read from that folder because Memory/ is not part of the published
+    # repository - a check that cannot run where the code runs is not a check.
+    #
+    # ⚠ WHAT SEPARATES THEM IS NOT AN ENTITLEMENT FLAG, because the response has none. The
+    # row exists on both, `is_active` is false on both - it stayed false at 19% used - and
+    # `nimbus_quill` read 0.0 while the scoped row read 19%, which argues against that
+    # codename being Fable's counterpart. Only `percent` and `resets_at` differ.
+    _cannot = {"limits": [
+        {"kind": "session", "percent": 9, "is_active": False},
+        {"kind": "weekly_all", "percent": 12, "is_active": True},
+        {"kind": "weekly_scoped", "percent": 0, "resets_at": None, "is_active": False,
+         "scope": {"model": {"id": None, "display_name": "Fable"}, "surface": None}}]}
+    _can = {"limits": [
+        {"kind": "session", "percent": 59, "is_active": True},
+        {"kind": "weekly_all", "percent": 21, "is_active": False},
+        {"kind": "weekly_scoped", "percent": 19, "is_active": False,
+         "resets_at": "2026-09-02T02:59:59.602732+00:00",
+         "scope": {"model": {"id": None, "display_name": "Fable"}, "surface": None}}]}
+    assert _scoped_window(_cannot) is None, _scoped_window(_cannot)
+    _got = _scoped_window(_can)
+    assert _got and _got["label"] == "Fable" and _got["used_percentage"] == 19.0, _got
+    assert isinstance(_got.get("resets_at"), int), _got
+
+    # ⭐ THE MODEL IS NOT HARD-CODED: the row names itself, so another scoped model works.
+    _other = {"limits": [{"kind": "weekly_scoped", "percent": 4, "is_active": False,
+                          "resets_at": None,
+                          "scope": {"model": {"display_name": "Mythos"}}}]}
+    assert (_scoped_window(_other) or {}).get("label") == "Mythos", _scoped_window(_other)
+
+    # ⛔ AND NOTHING ELSE IN limits[] MAY BE MISTAKEN FOR ONE. `session` and `weekly_all` are
+    # not scoped, and a scoped row with no model name is not usable.
+    assert _scoped_window({"limits": [{"kind": "session", "percent": 99}]}) is None
+    assert _scoped_window({"limits": [{"kind": "weekly_scoped", "percent": 9,
+                                       "scope": {}}]}) is None
+    assert _scoped_window({}) is None and _scoped_window(None) is None
+
+    # ⭐ It reaches the line, and ONLY when there is one. The owner asked for no extra text
+    # on an account that has none - not "cannot use Fable", nothing at all.
+    _with = {"ts": int(time.time() * 1000),
+             "five_hour": {"used_percentage": 55, "resets_at": int(time.time()) + 1600},
+             "scoped": _got}
+    # ⚠ THE SEGMENT IS FOUND BY ITS ICON, NOT BY THE ACCOUNT'S LABEL. The API's label
+    # ("Fable") no longer reaches the row - it was five columns saying what the presence of
+    # the segment already says - so a check looking for that word tests nothing about what a
+    # reader sees.
+    _shown = _line(_with, None, {"width": 200})
+    assert "Fable" in _shown, _shown
+    _without = dict(_with)
+    del _without["scoped"]
+    _plain = _line(_without, None, {"width": 200})
+    assert "Fable" not in _plain and "annot" not in _plain, _plain
+
+    # ⛔ AND IT DEGRADES LIKE THE OTHER BARS, or it is the one bar that lies. Past its reset,
+    # dashes - not a percentage stored before the window turned over.
+    _old = dict(_with)
+    _old["scoped"] = dict(_got, resets_at=int(time.time()) - 60)
+    assert "19%" not in _line(_old, None, {"width": 200}), _line(_old, None, {"width": 200})
+
+    # ⛔ WHEN THE WINDOW RUNS OUT, NOT ONLY WHETHER. "Projected 175% by reset" says it will
+    # be exhausted and leaves the reader to work out whether there is room for another wave.
+    # ⚠ AND None MEANS UNKNOWABLE, NEVER SAFE - three ways to get there, each checked, because
+    # a missing warning and a warning that says "fine" look identical on a screen.
+    _bt = tempfile.mkdtemp(prefix="dg-burn-")
+    _blogs = os.path.join(_bt, "logs")
+    os.makedirs(_blogs)
+    # ⛔ WHICH ACCOUNT IS SIGNED IN is a fixture from here to the end of the burn blocks, or
+    # every row below is dropped as "not this account" and the checks read the owner's REAL
+    # ~/.claude.json. Made-up ids; nothing from Debug/ is copied here.
+    _ACCT_A = "aaaaaaaa-0000-4000-8000-00000000000a"
+    _ACCT_B = "bbbbbbbb-0000-4000-8000-00000000000b"
+    _acct_file = os.path.join(_bt, "claude.json")
+
+    def _sign_in(acct):
+        with open(_acct_file, "w", encoding="utf-8") as _f:
+            json.dump({"cachedUsageUtilization": {"accountUuid": acct, "fetchedAtMs": 1}}
+                      if acct else {"cachedUsageUtilization": {"fetchedAtMs": 1}}, _f)
+
+    _saved_acct_env = os.environ.get(CLAUDE_JSON_ENV)
+    os.environ[CLAUDE_JSON_ENV] = _acct_file
+    # ⚠ AND NO TOKEN VARIABLE FROM THE CALLER'S SHELL: with $ANTHROPIC_TOKEN exported, the label
+    # is (correctly) unknown and every burn fixture below reads as "no rate". Found by the
+    # round-2 review of 0.57.0. Popped here, restored with the config path at the end.
+    _saved_tok_env = os.environ.pop("ANTHROPIC_TOKEN", None)
+    _sign_in(_ACCT_A)
+    assert _current_account() == _ACCT_A
+    # ⚠ burn_window_min 0 = the WHOLE window, which is what these fixtures were written
+    # against. The trailing baseline gets its own block below rather than silently changing
+    # what every case here means.
+    _bcfg = {"history_dir": _blogs, "soft_pct_5h": 70, "hard_pct_5h": 85, "stale_min": 15,
+             "near_reset_min": 10, "soft_pct_7d": 95, "hard_pct_7d": 97,
+             "burn_window_min": 0, "debug": {"token_usage": True}}
+    _bnow = time.time()
+
+    def _plant(rows, resets):
+        for _f in glob.glob(os.path.join(_blogs, "*.jsonl")):
+            os.remove(_f)
+        with open(os.path.join(_blogs, HISTORY_PREFIX + "20200101-000000.jsonl"),
+                  "w", encoding="utf-8") as _f:
+            for _at, _pct in rows:
+                _f.write(json.dumps({"at": stamp(_at), "pct": _pct, "acct": _ACCT_A,
+                                     "resets_at": stamp(resets)}) + chr(10))
+
+    # ⚠ THE FIXTURE OPENS ITS WINDOW WHERE ITS FIRST ROW IS, at zero used, so the anchor is a
+    # no-op here and the arithmetic stays readable: 55 points in 55 minutes is 1 %/min, and
+    # from 55% there are 45 points left, so ~45 minutes. A fixture logged LATE would be
+    # measuring the anchor instead of the burn-out; the anchor gets its own check below.
+    _far = _bnow + 245 * 60                          # ⇒ the window opened 55 minutes ago
+    _samples = [(_far - 5 * 3600, 0), (_bnow - 1, 55)]
+    _plant(_samples, _far)
+    _b = burnout_min(_bt, _bcfg, 55, _far, _bnow)
+    assert _b is not None and 40 <= _b <= 50, _b
+    # ⭐ The projection and the burn-out must agree, because they share one sampling. A window
+    # projected past 100% MUST have a burn-out inside it, or the line contradicts itself.
+    _pj = _projection(_bt, _bcfg, 55, _far, _bnow)
+    assert _pj is not None and _pj >= 100 and _b < (_far - _bnow) / 60, (_pj, _b)
+
+    _v = verdict(_bt, _bcfg, data={"ts": int(_bnow * 1000),
+                                   "five_hour": {"used_percentage": 55,
+                                                 "resets_at": int(_far)}})
+    assert _v["burns_out_early"] is True, _v
+    assert "SPENT in ~" in _v["text"] and "BEFORE it resets" in _v["text"], _v["text"]
+
+    # ⛔ AND IT MUST STAY QUIET when the window resets first - the same rate, a nearer reset.
+    _near = _bnow + 20 * 60
+    _plant([(_near - 5 * 3600, 0), (_bnow - 1, 55)], _near)
+    _vn = verdict(_bt, _bcfg, data={"ts": int(_bnow * 1000),
+                                    "five_hour": {"used_percentage": 55,
+                                                  "resets_at": int(_near)}})
+    assert _vn["burns_out_early"] is False, _vn
+    assert "SPENT in ~" not in _vn["text"], _vn["text"]
+
+    # ⛔ FLAT IS A MEASUREMENT, AND THIS ASSERTION IS REVERSED FROM WHAT IT SAID BEFORE
+    # 2026-09-01. Nothing spent, from the window's open to now, means the window will not be
+    # exhausted at this pace - not that the pace is unknowable. ⚠ The old `rate <= 0 -> None`
+    # blanked the gauge at the moment it had something worth saying, which is how the owner
+    # found it: `Burn ────────── --` during a quiet stretch.
+    # ⚠ "Flat" MEANS FLAT FROM THE WINDOW'S OPEN, not flat across the logged rows: two equal
+    # rows late in a window still describe a climb from zero, which is a rate.
+    _plant([(_bnow - 1800, 0), (_bnow - 1, 0)], _far)            # flat: a rate of ZERO
+    assert _burn_rate(_bt, _bcfg, 0, _far, _bnow) == 0.0, _burn_rate(_bt, _bcfg, 0, _far, _bnow)
+    _flat = burnout_min(_bt, _bcfg, 0, _far, _bnow)
+    assert _flat is not None and _flat > (_far - _bnow) / 60, (
+        "a flat window must outlast its own reset, not read as unknowable: %r" % (_flat,))
+    # ...and the display draws that as a FULL bar with a zero rate, never as dashes.
+    _fb = _STRIP_ANSI.sub("", _burn_part(_flat, int((_far - _bnow) / 60), 0.0, {"colour": False}))
+    assert ".00%" in _fb and "─" not in _fb, _fb
+
+    # ⚠ THE UNKNOWABLE CASES. Each returns None and none of them warns.
+    # ⛔ A FALLING percentage stays unknowable, and that is the distinction the fix rests on:
+    # the stored number went DOWN, so a window turned over inside the baseline or a stale
+    # reading is being compared against a live one. There is no rate to draw.
+    # ⚠ WITH A REAL `burn_window_min`, not `_bcfg`'s 0. Zero means "the whole window", which
+    # anchors the baseline at the open with 0% - and against that anchor nothing can fall.
+    _fall = dict(_bcfg, burn_window_min=10)
+    _plant([(_bnow - 1800, 40), (_bnow - 1, 40)], _far)
+    assert _burn_rate(_bt, _fall, 10, _far, _bnow) is None, (
+        "a falling percentage gave a rate: %r" % (_burn_rate(_bt, _fall, 10, _far, _bnow),))
+    assert _burn_rate(_bt, _fall, 40, _far, _bnow) == 0.0, "flat must be zero, not None"
+    _short = _bnow + 5 * 3600 - 60                               # opened 60 seconds ago
+    _plant([(_bnow - 1, 55)], _short)                            # under 5 min of span
+    assert burnout_min(_bt, _bcfg, 55, _short, _bnow) is None
+    for _f in glob.glob(os.path.join(_blogs, "*.jsonl")):        # no history at all
+        os.remove(_f)
+    assert burnout_min(_bt, _bcfg, 55, _far, _bnow) is None
+    # ...and a window already at 100% is not "unknowable", it is spent NOW.
+    _plant(_samples, _far)
+    assert burnout_min(_bt, _bcfg, 100, _far, _bnow) == 0
+
+    # ⭐ THE WINDOW'S OWN START AS THE ANCHOR: THE WINDOW'S OWN START COUNTS. Logging does not begin when the window
+    # does - a reinstall, a first run, a machine that was off - and reading only the logged
+    # rows lets a busy tail stand for the whole window. MEASURED on a second machine: the
+    # window opened at 14:10, the first row is 16:49 with 35% ALREADY SPENT, and those rows
+    # gave 0.48 %/min for a window whose true average was 0.22.
+    # ⇒ Same last reading, logged late: the anchored rate must come out well UNDER what the
+    # logged segment alone says.
+    _aw = _bnow + 60 * 60                                        # opened 4 hours ago
+    _open = _aw - 5 * 3600
+    _plant([(_bnow - 1800, 35), (_bnow - 1, 52)], _aw)           # 17 points in 30 min
+    _ar = _burn_rate(_bt, _bcfg, 52, _aw, _bnow) * 60
+    _seg = (52 - 35) / 30.0                                      # 0.567 %/min
+    assert _ar < _seg / 2, "the unlogged head was ignored: %.3f vs %.3f %%/min" % (_ar, _seg)
+    # ...and what it lands on is the whole-window average, the only thing knowable about a
+    # stretch nobody recorded.
+    assert abs(_ar - 52.0 / ((_bnow - _open) / 60.0)) < 0.01, _ar
+    # ⚠ AND A NO-OP WHERE LOGGING DID COVER THE WINDOW: the first row already sits at the
+    # open with nothing used, so the anchor lands on top of it.
+    _plant([(_open, 0), (_bnow - 1, 52)], _aw)
+    assert abs(_burn_rate(_bt, _bcfg, 52, _aw, _bnow) * 60 - _ar) < 0.01
+    # ⭐ ONE LOGGED ROW IS NOW ENOUGH, which is the whole point: a machine that has just
+    # started logging still gets a rate, where before it got None.
+    _plant([(_bnow - 1, 52)], _aw)
+    assert abs(_burn_rate(_bt, _bcfg, 52, _aw, _bnow) * 60 - _ar) < 0.01
+
+    # ⭐⭐ THE TRAILING BASELINE - what the gauge actually uses. The owner asked for a gauge
+    # that reacts to the last half hour rather than to the whole window, and the two answers
+    # differ by an order of magnitude on the same history. Every case below plants ONE history
+    # and reads it two ways, so what is being checked is the baseline and nothing else.
+    _tt = tempfile.mkdtemp(prefix="dg-trail-")
+    _tlogs = os.path.join(_tt, "logs")
+    os.makedirs(_tlogs)
+    _t30 = {"history_dir": _tlogs, "burn_window_min": 30, "debug": {"token_usage": True}}
+    _tall = dict(_t30, burn_window_min=0)
+    _tnow = time.time()
+
+    def _rate(cfgd, pct, resets, why):
+        """The rate as %/min, refusing to be None - a None here is the defect, not a case."""
+        _r = _burn_rate(_tt, cfgd, pct, resets, _tnow)
+        assert _r is not None, "no rate where one is measurable: %s" % why
+        return _r * 60
+
+    def _tplant(rows, resets):
+        for _f in glob.glob(os.path.join(_tlogs, "*.jsonl")):
+            os.remove(_f)
+        with open(os.path.join(_tlogs, HISTORY_PREFIX + "20200101-000000.jsonl"),
+                  "w", encoding="utf-8") as _f:
+            for _at, _pct in rows:
+                _f.write(json.dumps({"at": stamp(_at), "pct": _pct, "acct": _ACCT_A,
+                                     "resets_at": stamp(resets)}) + chr(10))
+
+    # A window that opened 200 minutes ago, so the cut at 30 minutes is well inside it.
+    _tres = _tnow + 100 * 60
+    _topen = _tres - 5 * 3600
+
+    # ⛔ BURNED HARD EARLY, QUIET NOW. The whole-window figure still reports the morning; the
+    # trailing one reports the last half hour, which is the question the gauge is asked.
+    _tplant([(_topen + 60, 0), (_topen + 30 * 60, 40), (_tnow - 40 * 60, 40)], _tres)
+    _slow = _rate(_t30, 41, _tres, "quiet tail, 30 min baseline")
+    _whole = _rate(_tall, 41, _tres, "quiet tail, whole window")
+    assert abs(_slow - 1.0 / 30.0) < 0.001, (
+        "the baseline is not the last 30 minutes: %.4f, expected %.4f %%/min - the whole "
+        "window reads %.4f" % (_slow, 1.0 / 30.0, _whole))
+    assert _whole > 5 * _slow, (_whole, _slow)
+
+    # ⭐ AND THE REVERSE, which is the whole point: quiet early, busy now. The whole-window
+    # figure is still reporting the quiet hours while the machine is spending fast.
+    _tplant([(_topen + 60, 0), (_tnow - 40 * 60, 5)], _tres)
+    _fast = _rate(_t30, 25, _tres, "busy tail, 30 min baseline")
+    _whole = _rate(_tall, 25, _tres, "busy tail, whole window")
+    assert abs(_fast - 20.0 / 30.0) < 0.001, (
+        "the baseline is not the last 30 minutes: %.4f, expected %.4f %%/min - the whole "
+        "window reads %.4f" % (_fast, 20.0 / 30.0, _whole))
+    assert _fast > 5 * _whole, (_fast, _whole)
+
+    # ⛔ THE END POINT IS `now`, NOT THE LAST LOGGED ROW - the bug this replaces. Rows are
+    # written only when a number MOVES, so an idle stretch writes nothing and reading the last
+    # row as "now" froze both ends: the same number was redrawn while time passed.
+    # ⚠ Asked over the WHOLE window so the last row is the only candidate endpoint.
+    _tplant([(_topen + 60, 0), (_tnow - 90 * 60, 30)], _tres)
+    _live = _rate(_tall, 30, _tres,
+                  "the end point is the last logged row again, so the span ran backwards")
+    assert abs(_live - 30.0 / 200.0) < 0.001, (
+        "the rate does not end at `now`: %.5f, expected %.5f %%/min" % (_live, 30.0 / 200.0))
+    _frozen = 30.0 / ((_tnow - 90 * 60 - _topen) / 60.0)   # what the last row alone gives
+    assert _live < _frozen * 0.6, (_live, _frozen)
+
+    # ⛔ AND IDLE READS AS ZERO, NOT AS UNKNOWABLE - REVERSED 2026-09-01. Nothing was spent
+    # inside the baseline, and that is a measurement: the burn has STOPPED. ⚠ The old rule
+    # collapsed "no rate" and "a rate of nothing" into None, and the gauge went blank at the
+    # moment it had something worth saying. The owner found it: `Burn ────────── --` during a
+    # quiet stretch, with the baseline row sitting right there.
+    _tplant([(_topen + 60, 0), (_tnow - 90 * 60, 30)], _tres)
+    assert _burn_rate(_tt, _t30, 30, _tres, _tnow) == 0.0, _burn_rate(_tt, _t30, 30, _tres, _tnow)
+    # ⭐ The dashes are still there for what is GENUINELY unknowable - no history, too short a
+    # span, a falling percentage - and _burn_part() gives that its own glyph rather than an
+    # empty bar, because empty means DANGER in that column.
+    assert "─" in _burn_part(None, 100, None, {"colour": False})
+    assert "─" not in _STRIP_ANSI.sub("", _burn_part(120, 100, 0.0, {"colour": False}))
+
+    # ⛔ THE HEARTBEAT ROW. A history row used to be written ONLY when a number moved, so a
+    # quiet stretch wrote nothing and a gap had two causes the timestamps could not tell
+    # apart: nothing was spent, or nothing was WATCHING. Owner-asked 2026-09-01, after
+    # noticing API responses with no matching row. ⚠ The cost is bounded - at worst one row
+    # per burn_window_min.
+    _hb = tempfile.mkdtemp()
+    _hblogs = os.path.join(_hb, "logs")
+    os.makedirs(_hblogs)
+    _hbcfg = dict(DEFAULTS)
+    _hbcfg.update({"history_dir": _hblogs, "burn_window_min": 10,
+                   "token_usage_file": os.path.join(_hb, "token_usage.json"),
+                   "debug": {"token_usage": True}})
+    _hbnow = time.time()
+
+    def _hbrows():
+        return sum(1 for _f in glob.glob(os.path.join(_hblogs, "*.jsonl"))
+                   for _l in open(_f, encoding="utf-8") if _l.strip())
+
+    _hbprev = None
+    for _off, _pct, _want in ((0, 30, 1), (120, 30, 1), (601, 30, 2), (700, 30, 2),
+                              (720, 31, 3)):
+        _write_record(_hb, _hbcfg,
+                      {"ts": int((_hbnow + _off) * 1000),
+                       "five_hour": {"used_percentage": _pct,
+                                     "resets_at": int(_hbnow + 3600)}}, _hbprev)
+        _hbprev = read_json(_hbcfg["token_usage_file"], {})
+        assert _hbrows() == _want, (
+            "t+%ds pct=%s: expected %d history rows, got %d - the heartbeat is %s"
+            % (_off, _pct, _want, _hbrows(),
+               "not firing" if _hbrows() < _want else "firing on every fetch"))
+        assert isinstance(_hbprev.get("history_at"), (int, float)), _hbprev
+    shutil.rmtree(_hb, ignore_errors=True)
+
+    # ⭐ INSIDE THE FIRST burn_window_min MINUTES THE ANCHOR STILL CARRIES IT, with no logged
+    # row at all: the cut reaches back past the open, and a window opens at zero by definition.
+    _young = _tnow + 5 * 3600 - 20 * 60                    # opened 20 minutes ago
+    _tplant([], _young)
+    assert _burn_rate(_tt, _t30, 10, _young, _tnow) is None      # no history file: unknowable
+    _tplant([(_tnow - 60, 10)], _young)
+    _anch = _rate(_t30, 10, _young, "young window, anchor at the open")
+    assert abs(_anch - 10.0 / 20.0) < 0.001, _anch
+    shutil.rmtree(_tt, ignore_errors=True)
+
+    # ⛔ AND THE FLOOR IS CLAMPED UP RATHER THAN SILENTLY DISABLING THE GAUGE. Under five
+    # minutes the span guard refuses every sample, so a well-meant 2 would switch the gauge
+    # off for ever instead of making it twitchy. ⚠ 0 is NOT clamped - it asks for the whole
+    # window - and that distinction is the whole reason this check exists.
+    _cdir = tempfile.mkdtemp(prefix="dg-bwcfg-")
+    assert config(_cdir)["burn_window_min"] == DEFAULTS["burn_window_min"]
+    for _v, _want in ((2, BURN_WINDOW_FLOOR_MIN), (0, 0), (-1, DEFAULTS["burn_window_min"]),
+                      (45, 45)):
+        with open(os.path.join(_cdir, "config.json"), "w", encoding="utf-8") as _f:
+            json.dump({"burn_window_min": _v}, _f)
+        assert config(_cdir)["burn_window_min"] == _want, (_v, config(_cdir))
+    shutil.rmtree(_cdir, ignore_errors=True)
+
+    # ⛔⛔ THE COLLISION ITSELF, AS A FIXTURE - the check that would have caught the defect.
+    # Two accounts whose five-hour windows reset 0.08 s apart (stamp() rounds to the second,
+    # so resets_at cannot tell them apart at all), rows from BOTH in one file, and the rate
+    # must come from account A's rows alone. ⚠ A trailing baseline, not the whole window:
+    # with burn_window_min 0 the start is the anchor (opened, 0) and a foreign row cannot
+    # move the number, so the check could not discriminate. ⚠ And B's row is placed so the
+    # MIXED answer is a wrong NUMBER (3.5 %/min), not None - a None here would read like the
+    # "blank is acceptable" case below and the mutation check would be blind.
+    _cx = tempfile.mkdtemp(prefix="dg-acct-")
+    _cxlogs = os.path.join(_cx, "logs")
+    os.makedirs(_cxlogs)
+    _cxcfg = {"history_dir": _cxlogs, "burn_window_min": 10, "debug": {"token_usage": True}}
+    _cxnow = time.time()
+    _cxres = _cxnow + 100 * 60                     # A's window, opened 200 minutes ago
+    _cxres_b = _cxres + 0.08                       # B's window, 0.08 s later: one bucket
+
+    def _cxplant(rows):
+        for _f in glob.glob(os.path.join(_cxlogs, "*.jsonl")):
+            os.remove(_f)
+        with open(os.path.join(_cxlogs, HISTORY_PREFIX + "20200101-000000.jsonl"),
+                  "w", encoding="utf-8") as _f:
+            for _r in rows:
+                _f.write(json.dumps(_r) + chr(10))
+
+    def _cxrow(at, pct, acct, resets=None, label=True):
+        _d = {"at": stamp(at), "pct": pct, "resets_at": stamp(resets or _cxres)}
+        if label:
+            _d["acct"] = acct
+        return _d
+
+    _sign_in(_ACCT_A)
+    # A: 20% at -20 min, 30% at -11 min, live 40% now => 10 points in the last 10 minutes,
+    # 1.0 %/min. B: 5% at -10.5 min - the newest row at the cut if it were let in, and then
+    # the rate would read (40 - 5) / 10 = 3.5 %/min.
+    _mixed = [_cxrow(_cxnow - 20 * 60, 20, _ACCT_A), _cxrow(_cxnow - 11 * 60, 30, _ACCT_A),
+              _cxrow(_cxnow - 10 * 60 - 30, 5, _ACCT_B, _cxres_b)]
+    _cxplant(_mixed)
+    _cr = _burn_rate(_cx, _cxcfg, 40, _cxres, _cxnow)
+    assert _cr is not None, "account A has rows in the window and got no rate"
+    assert abs(_cr * 60 - 1.0) < 0.001, (
+        "rows from two accounts were mixed into one rate: got %.3f %%/min, expected 1.000 "
+        "from account A's rows alone (3.500 is the mixed answer)" % (_cr * 60))
+    # ⛔ AN UNLABELLED ROW IS DROPPED, not silently trusted: a legacy row, or one written
+    # while the account could not be read. Only unlabelled rows => nothing usable => blank.
+    _cxplant([_cxrow(_cxnow - 20 * 60, 20, None, label=False),
+              _cxrow(_cxnow - 11 * 60, 30, None)])
+    assert _burn_rate(_cx, _cxcfg, 40, _cxres, _cxnow) is None, "an unlabelled row was trusted"
+    # ...and an unlabelled row beside A's rows does not move A's answer either.
+    _cxplant(_mixed + [_cxrow(_cxnow - 10 * 60 - 10, 2, None, label=False)])
+    assert abs(_burn_rate(_cx, _cxcfg, 40, _cxres, _cxnow) * 60 - 1.0) < 0.001
+    # ⛔ A BLANK RATHER THAN A WRONG RATE when nothing usable survives: only B's rows with A
+    # signed in; A's rows with the current account UNKNOWN - field missing, file missing,
+    # file unreadable. None of these may guess.
+    _cxplant([_cxrow(_cxnow - 20 * 60, 20, _ACCT_B, _cxres_b),
+              _cxrow(_cxnow - 11 * 60, 30, _ACCT_B, _cxres_b)])
+    assert _burn_rate(_cx, _cxcfg, 40, _cxres, _cxnow) is None, "another account's rows gave a rate"
+    _cxplant(_mixed)
+    _sign_in(None)
+    assert _current_account() is None
+    assert _burn_rate(_cx, _cxcfg, 40, _cxres, _cxnow) is None, "unknown current account gave a rate"
+    os.remove(_acct_file)
+    assert _current_account() is None and _burn_rate(_cx, _cxcfg, 40, _cxres, _cxnow) is None
+    for _junk in ('{"cachedUsageUtilization": 5}', '{"cachedUsageUtilization": {"accountUuid": ""}}',
+                  '{"cachedUsageUtilization": {"accountUuid": 7}}', '[]', 'not json', ''):
+        with open(_acct_file, "w", encoding="utf-8") as _f:
+            _f.write(_junk)
+        assert _current_account() is None, _junk
+    _sign_in(_ACCT_A)
+    assert abs(_burn_rate(_cx, _cxcfg, 40, _cxres, _cxnow) * 60 - 1.0) < 0.001
+    # ⛔ $ANTHROPIC_TOKEN: the numbers come from the token's owner, whom the profile does not
+    # know, so the label is UNKNOWN - same answer _account_ids() gives, same reason. Found by
+    # the review of 0.57.0: without this the rows were labelled with an account that did not
+    # produce their numbers, and the filter kept every one of them.
+    _saved_tok = os.environ.get("ANTHROPIC_TOKEN")
+    os.environ["ANTHROPIC_TOKEN"] = "sk-not-a-real-token"
+    try:
+        assert _current_account() is None, "a label was read while $ANTHROPIC_TOKEN was set"
+        assert _burn_rate(_cx, _cxcfg, 40, _cxres, _cxnow) is None, (
+            "rows were kept under $ANTHROPIC_TOKEN, where the label cannot be trusted")
+        os.environ["ANTHROPIC_TOKEN"] = "   "
+        assert _current_account() == _ACCT_A, "a blank token variable hid the label"
+    finally:
+        if _saved_tok is None:
+            os.environ.pop("ANTHROPIC_TOKEN", None)
+        else:
+            os.environ["ANTHROPIC_TOKEN"] = _saved_tok
+    assert _current_account() == _ACCT_A
+
+    # ⭐ EVERY NEW ROW CARRIES THE LABEL, THE RECORD CARRIES IT TOO, AND A SWITCH IS SAID ONCE
+    # in the state-directory copy of the gate log - never for unknown -> known, never twice.
+    _cxcfg2 = dict(DEFAULTS)
+    _cxcfg2.update({"history_dir": _cxlogs, "burn_window_min": 10,
+                    "token_usage_file": os.path.join(_cx, "token_usage.json"),
+                    "debug": {"token_usage": True}})
+    _cxplant([])
+
+    def _cxrec(off, pct):
+        return {"ts": int((_cxnow + off) * 1000),
+                "five_hour": {"used_percentage": pct, "resets_at": int(_cxres)}}
+
+    def _cxprev():
+        return read_json(_cxcfg2["token_usage_file"], {})
+
+    def _cxsaid():
+        try:
+            with open(os.path.join(_cx, "dispatch_gate.log"), encoding="utf-8") as _f:
+                return _f.read()
+        except OSError:
+            return ""
+
+    _write_record(_cx, _cxcfg2, _cxrec(0, 10), None)
+    assert _cxprev().get("acct") == _ACCT_A, (
+        "the record does not carry the account label: %r" % (_cxprev(),))
+    _cxrows = [json.loads(_l) for _f in glob.glob(os.path.join(_cxlogs, "*.jsonl"))
+               for _l in open(_f, encoding="utf-8") if _l.strip()]
+    assert _cxrows and all(_r.get("acct") == _ACCT_A for _r in _cxrows), (
+        "a new history row does not carry the account label: %r" % (_cxrows,))
+    assert _cxsaid() == "", "a first record logged a switch"
+    _write_record(_cx, _cxcfg2, _cxrec(60, 11), _cxprev())        # same account: silent
+    assert _cxsaid() == "", _cxsaid()
+    _sign_in(_ACCT_B)
+    _write_record(_cx, _cxcfg2, _cxrec(120, 3), _cxprev())
+    assert _cxsaid().count("ACCOUNT-SWITCH") == 1 and "aaaaaaaa.. -> bbbbbbbb.." in _cxsaid(), _cxsaid()
+    assert _ACCT_A not in _cxsaid() and _ACCT_B not in _cxsaid(), "the whole id was logged"
+    _write_record(_cx, _cxcfg2, _cxrec(180, 4), _cxprev())        # still B: silent
+    assert _cxsaid().count("ACCOUNT-SWITCH") == 1, "a switch was logged twice"
+    _sign_in(None)
+    _write_record(_cx, _cxcfg2, _cxrec(240, 5), _cxprev())        # known -> unknown: silent
+    assert _cxprev().get("acct") is None
+    _sign_in(_ACCT_A)
+    _write_record(_cx, _cxcfg2, _cxrec(300, 6), _cxprev())        # unknown -> known: silent
+    assert _cxsaid().count("ACCOUNT-SWITCH") == 1, "unknown->known was logged as a switch"
+    _cxrows = [json.loads(_l) for _f in glob.glob(os.path.join(_cxlogs, "*.jsonl"))
+               for _l in open(_f, encoding="utf-8") if _l.strip()]
+    assert [_r.get("acct") for _r in _cxrows] == [_ACCT_A, _ACCT_A, _ACCT_B, _ACCT_B, None,
+                                                   _ACCT_A], _cxrows
+    shutil.rmtree(_cx, ignore_errors=True)
+
+    if _saved_acct_env is None:
+        os.environ.pop(CLAUDE_JSON_ENV, None)
+    else:
+        os.environ[CLAUDE_JSON_ENV] = _saved_acct_env
+    if _saved_tok_env is not None:
+        os.environ["ANTHROPIC_TOKEN"] = _saved_tok_env
+    shutil.rmtree(_bt, ignore_errors=True)
+
+    # ⛔ THE REDRAW IS ABSOLUTE, AND THAT IS THE WHOLE POINT. A relative climb (`\033[1A`)
+    # moves up from wherever the cursor IS, so it is correct only while nothing else has moved
+    # it - and in a VS Code panel that is not this process's to control. Measured 2026-08-29,
+    # after both the fixed row count and wrapping-off: the FIRST draw was still stranded, so
+    # the cursor was already a row lower than any arithmetic believed. ⇒ No climb at all.
+    # ⚠ The bytes are asserted rather than the intent: "homed" and "homed one row too far"
+    # produce the same shape and different screens.
+    # ⛔ AND IT IS `\r` AND NOTHING ELSE. Four releases each removed a real way to strand a
+    # row - a startup clear, a fixed row count, auto-wrap off, an absolute home - and none of
+    # them fixed the owner's panel; the captured byte stream showed the program emitting
+    # exactly what it intended while the terminal stacked the draws anyway. ⇒ `\r` plus
+    # `\033[K` is the only pair that panel honours, and it can only rewrite ONE row.
+    # ⚠ The bytes are asserted rather than the intent: a stray escape here is invisible in a
+    # diff and fatal on screen.
+    assert _redraw(["a"], "<K>") == "\ra<K>", _redraw(["a"], "<K>")
+    for _seq in ("\033[1A", "\033[H", "\033[2J", "\n"):
+        assert _seq not in _redraw(["a"], "<K>"), _seq
+    # ⛔ AND IT REFUSES A SECOND ROW rather than drawing half of what it was handed. That is
+    # the only way a caller that changes its mind gets noticed.
+    try:
+        _redraw(["a", "b"], "<K>")
+        raise SystemExit("_redraw accepted two rows")
+    except AssertionError:
+        pass
+
+    # ⭐ TWO ROWS ARE A SETTING, AND BOTH SURFACES OBEY IT. The statusline was capped at one
+    # row on a BELIEF, not a limit: the documentation says "each `echo` or `print` statement
+    # displays as a separate row", and the shipped binary splits the command's output on
+    # newlines and counts them. ⇒ Throwing the context bar and the note away to fit one row
+    # was this plugin's choice, and it is now the owner's.
+    _tr = {"ts": int(time.time() * 1000),
+           "five_hour": {"used_percentage": 55, "resets_at": int(time.time()) + 1600},
+           "seven_day": {"used_percentage": 32, "resets_at": int(time.time()) + 300000}}
+    # ⚠ A REALISTIC note, not an absurd one. The real ones are this shape - the age, the idle
+    # reason, the token warning - and a 150-character fixture would prove only that _fit()
+    # drops parts it cannot fit, which is not the behaviour under test.
+    _tnote = "12 min old; idle 7h-35m; OAuth token expires in 10m - open a session"
+    for _pay in (None, {"model": {"display_name": "Opus 5"},
+                        CONTEXT_KEY: {"used_percentage": 41}}):
+        _on = line_rows(_tr, _tnote, {"width": 100, "two_rows": True}, _pay)
+        _off = line_rows(_tr, _tnote, {"width": 100, "two_rows": False}, _pay)
+        assert len(_on) == 2, "two_rows:true did not use a second row: %r" % (_on,)
+        assert len(_off) == 1, "two_rows:false used %d rows: %r" % (len(_off), _off)
+        for _r in _on + _off:
+            assert _visible_len(_r) <= 100, (_visible_len(_r), _r)
+        # ⛔ THE SECOND ROW MUST CARRY WHAT THE ONE-ROW FORM THREW AWAY, or it costs a row of
+        # the terminal and buys nothing. ⚠ A note this long still gets CUT on the second row
+        # at width 100 - what matters is that its opening survives there and nowhere in the
+        # one-row form.
+        assert "OAuth token expires" in _on[1], _on
+        assert "OAuth token expires" not in _off[0], _off
+        # ...and the five-hour window is on the FIRST row either way - it is what the brake
+        # acts on, and a display that can hide it is worse than a narrower one.
+        assert FIVE_HOUR_LABEL in _on[0] and FIVE_HOUR_LABEL in _off[0], (_on, _off)
+
+    # ⚠ AND THE WATCHER READS THE SAME KEY. One question, one answer: they had different ones
+    # for a while and that is how two surfaces drift.
+    # ⚠ AND THE WATCHER IGNORES IT, on purpose: `two_rows` is the statusline's choice, and
+    # the watcher has no choice to make - its terminal cannot redraw a second row at all.
+    _v2 = {"verdict": "GO", "pct": 55}
+    for _setting in (True, False):
+        assert len(_watch_line("07:26:12", _tr, _v2, _tnote,
+                               {"width": 100, "two_rows": _setting})) == 1, _setting
+
+    # ⚠ A line that FITS stays on one row whatever the setting, or every display grows a
+    # blank second row it does not need.
+    assert len(line_rows(_tr, None, {"width": 200, "two_rows": True})) == 1
+
+    # ⛔ THE TWO BARS SIT IN THE SAME COLUMN, AND NEITHER ROW MAY START WITH A SPACE.
+    # The context label is `CT` - TWO letters, so `CT ` is three columns before its bar,
+    # exactly like `5h `. That is the whole mechanism: no arithmetic, no dependence on how
+    # many rows there are.
+    # ⚠ TWO OBVIOUS FIXES FAILED FIRST AND THIS BLOCK IS WHAT REMEMBERS THEM. Padding the
+    # first row by one column shipped in 0.51.2 and MEASURED not to reach the screen - the
+    # plugin emitted it (`lead=1`) and Claude Code trimmed it off the row, so anything
+    # leading is discarded. Dropping the space before the bar shipped in 0.51.3 and left the
+    # label touching its own bar on a one-row terminal. Owner-reported both, 2026-08-31, and
+    # then settled it by shortening the label.
+    # ⚠ 70, not 100: at 100 this fixture fits on one row and there is nothing to align.
+    _cpay = {"model": {"display_name": "Opus 5 (1M context)"},
+             CONTEXT_KEY: {"used_percentage": 0}}
+    _al = line_rows(_tr, None, {"width": 70, "two_rows": True}, _cpay)
+    assert len(_al) == 2, _al
+    assert _bar_col(_al[0]) == _bar_col(_al[1]), (_bar_col(_al[0]), _bar_col(_al[1]), _al)
+    for _r in _al:
+        assert not _STRIP_ANSI.sub("", _r).startswith(" "), \
+            "a leading space is trimmed by the harness, so it aligns nothing: %r" % (_r,)
+        assert _visible_len(_r) <= 70, (_visible_len(_r), _r)
+    # ⚠ THE SPACE IS ASSERTED, not just the column. Without it the label touches its own bar,
+    # which is what 0.51.3 shipped and what was rejected on sight.
+    assert "CT " + BAR_EMPTY in _STRIP_ANSI.sub("", _al[1]), _al[1]
+    # ⭐ ...and the one-row form is the SAME segment, space and all - which is the point of
+    # solving this in the label rather than at row-assembly time.
+    _wide = _STRIP_ANSI.sub("", line_rows(_tr, None, {"width": 400, "two_rows": True},
+                                          _cpay)[0])
+    assert "CT " + BAR_EMPTY in _wide, "the one-row form lost the space: %r" % (_wide,)
+    assert _bar_col(_wide[_wide.index("CT "):]) == 3, _wide
+    # ⚠ The watcher's head still owns column zero - the pad goes on the SECOND row there,
+    # because the timestamp already pushes the first row's bar to the right of `CT`.
+    _wl = _rows(*_line_parts(_tr, None, {}, {"model": {"display_name": "Opus 5"},
+                                             CONTEXT_KEY: {"used_percentage": 0}}),
+                width=100, head="07:26:12  ", always_split=True)
+    assert len(_wl) == 2 and _bar_col(_wl[0]) == _bar_col(_wl[1]), _wl
+    assert not _wl[0].startswith(" "), "the timestamp lost column zero: %r" % (_wl[0],)
+
+    # ⛔ THE BRAKE WEIGHS BOTH WINDOWS. It used to read the five-hour percentage and nothing
+    # else: the seven-day figure produced a NOTE and never a level, so an account at 7d 99%
+    # beside 5h 0% was told GO and kept dispatching until the SERVER refused. Both numbers
+    # were true and the answer was wrong, which is the shape of every defect in this file.
+    _bnow2 = time.time()
+    _bc = {"soft_pct_5h": 70, "hard_pct_5h": 85, "soft_pct_7d": 95, "hard_pct_7d": 97,
+           "near_reset_min": 20, "stale_min": 15, "debug": {"token_usage": False}}
+    _bdir = tempfile.mkdtemp(prefix="dg-brake-")
+
+    def _verdict(p5, p7, r5=None, r7=None):
+        return verdict(_bdir, _bc, data={
+            "ts": int(_bnow2 * 1000),
+            "five_hour": {"used_percentage": p5,
+                          "resets_at": int(r5 if r5 else _bnow2 + 3 * 3600)},
+            "seven_day": {"used_percentage": p7,
+                          "resets_at": int(r7 if r7 else _bnow2 + 3 * 86400)}})
+
+    _v = _verdict(0, 99)
+    assert (_v["verdict"], _v["driver"]) == ("STOP", "7d"), _v
+    # ⭐ AND IT SAYS WHICH WINDOW, or the reader looks at 5h 0% and concludes the brake is
+    # broken - which is how a guard gets switched off.
+    assert "7d at 99%" in _v["text"] and "5h window is NOT the constraint" in _v["text"], _v
+    assert _verdict(0, 96)["verdict"] == "PACE", _verdict(0, 96)
+    assert _verdict(0, 90)["verdict"] == "GO", _verdict(0, 90)
+    # ...and the five-hour thresholds still do their own job, unchanged.
+    assert (_verdict(90, 10)["verdict"], _verdict(90, 10)["driver"]) == ("STOP", "5h")
+    assert _verdict(75, 10)["verdict"] == "PACE"
+    # ⚠ TIES GO TO THE FIVE-HOUR WINDOW, because it is the nearer and more actionable one.
+    assert _verdict(90, 99)["driver"] == "5h", _verdict(90, 99)
+
+    # ⛔ A SEVEN-DAY WINDOW THAT RESETS FIRST IS STILL A CONSTRAINT, AND THIS ASSERTION IS
+    # REVERSED FROM WHAT IT SAID BEFORE 2026-09-01. The old rule was "it resets before the 5h
+    # window ends, so its percentage is on its way out - ignore it". ⚠ That asks whether the
+    # WINDOW will still be there; the question is whether its HEADROOM will last. Measured on
+    # the owner's own account: 7d 89%, 11% left, 71 minutes to reset, 0.30%/min - gone in 37
+    # minutes, while the plugin printed "IGNORE, not a constraint" about the only window that
+    # could stop the work. Here: 99%, half an hour to reset, one percent of headroom.
+    _v = _verdict(0, 99, r7=_bnow2 + 1800)
+    assert (_v["verdict"], _v["driver"]) == ("STOP", "7d"), _v
+    assert "IGNORE, not a constraint" not in _v["text"], _v
+    assert "does not reset for" in _v["text"], "the note must say how long it binds for: %r" % _v
+
+    # ⛔ AND THE EARLY RETURN THAT THREW THE WEEK AWAY. A five-hour window that has already
+    # turned over used to return GO on the spot - so an account whose WEEK was spent was told
+    # GO the moment its five-hour window rolled over.
+    _v = _verdict(0, 99, r5=_bnow2 - 60)
+    assert (_v["verdict"], _v["driver"]) == ("STOP", "7d"), _v
+    # ...while the same reset with a quiet week is still the plain "treat usage as fresh".
+    _v = _verdict(0, 10, r5=_bnow2 - 60)
+    assert _v["verdict"] == "GO" and "already reset" in _v["text"], _v
+
+    # ⚠ NEAR-RESET SOFTENING IS PER WINDOW. A 5h STOP twelve minutes from its reset softens;
+    # a 7d STOP three days out does not, and one shared test would have softened both.
+    assert _verdict(90, 10, r5=_bnow2 + 12 * 60)["verdict"] == "PACE"
+    assert _verdict(0, 99)["verdict"] == "STOP"
+    # ⭐ SOFTENING IS NOW THE ONLY THING THAT FORGIVES AN IMMINENT RESET, and it does the job
+    # the deleted `resets > five_resets` test was pretending to do - by how CLOSE the reset
+    # is, per window, rather than by which window resets first. Twelve minutes out, a 7d STOP
+    # softens to PACE; seventy-one minutes out it does not.
+    assert _verdict(0, 99, r7=_bnow2 + 12 * 60)["verdict"] == "PACE", "near-reset softening"
+    assert _verdict(0, 99, r7=_bnow2 + 71 * 60)["verdict"] == "STOP", "71 min is not near"
+    shutil.rmtree(_bdir, ignore_errors=True)
+
+    # ⛔ THE BURN GAUGE. It answers ONE forward-looking question - can I keep spending - by
+    # measuring the budget's life against the TIME LEFT IN THE WINDOW. Full bar means the
+    # window resets before you run dry.
+    _bcfg2 = {"colour": True, "width": 200}
+    _full = _burn_part(188, 106, 0.38, _bcfg2)          # outlasts the reset
+    _half = _burn_part(80, 119, 0.60, _bcfg2)           # 67% of the time left
+    _dry = _burn_part(12, 130, 3.40, _bcfg2)            # 9%
+    # ⛔ THE TAIL IS A TIME IN EVERY CASE NOW, including this one where the burn-out lands
+    # AFTER the reset. The owner's instruction: the words cost fourteen columns to repeat
+    # what the full bar already says. ⚠ 188 minutes with 106 left, so the number printed is
+    # deliberately LONGER than the window has - that is when burn-out lands, not a promise.
+    # ⭐ THE TAIL IS `.38% 3h8m` AND NOTHING ELSE - the owner's third pass. Each piece removed
+    # was one the reader already had: the leading zero of a rate always below one, the
+    # separating dot, the word `left` after a duration that can only be a time remaining, and
+    # now the unit itself, which never changes and so is learnt once and paid for for ever.
+    assert ".38% 3h8m" in _full and BAR_EMPTY not in _STRIP_ANSI.sub("", _full), _full
+    assert "left" not in _full and "·" not in _full and "/m" not in _full, _full
+    # ⛔ AND THE LEADING ZERO GOES ONLY WHEN IT IS A ZERO. A rate above one carries magnitude
+    # in that digit, and dropping it would read as a hundredth of the real burn.
+    assert "1.20% " in _burn_part(80, 119, 1.20, _bcfg2), _burn_part(80, 119, 1.20, _bcfg2)
+    # ⛔ AND IT IS BAR_WIDTH + 1 WIDE, like the CT segment and unlike a bare bar. The three
+    # usage bars carry the elapsed marker, which sits between cells and costs them a column;
+    # a burn bar one narrower cannot line up beneath them however the row is indented.
+    # ⚠ Column equality alone does NOT catch this - both start in the same place and end in
+    # different ones - so it is asserted separately. Mutation-checked: BAR_WIDTH here and the
+    # alignment check still passes while the rows visibly disagree.
+    _glyphs = [c for c in _STRIP_ANSI.sub("", _full) if c in (BAR_FULL, BAR_EMPTY, BAR_MARK)]
+    assert len(_glyphs) == BAR_WIDTH + 1, (len(_glyphs), _full)
+    assert "outlasts" not in _full, _full
+    assert "1h20m" in _half, _half
+    # ⛔ THESE FOUR ASSERTIONS WERE REWRITTEN, NOT DELETED, AND THE DISTINCTION IS THE POINT.
+    # They used to read the colour off `ratio` - `ANSI["ok"] in _full`, `ANSI["warn"] in
+    # _half`, `ANSI["alarm"] in _dry`, and a fourth pinning that a FULL bar is never warn- or
+    # alarm-coloured. ⚠ MEASURED when the split landed: only the FIRST of them failed. The
+    # other three went on PASSING FOR A NEW REASON - `_half` and `_dry` happened to land in
+    # the same colours by rate, and the fourth survived only because a full bar became
+    # `caution`, a key that did not exist when it was written. ⇒ A green suite would have
+    # reported four guarded properties while guarding none of them.
+    #
+    # ⭐ WHAT THEY PIN NOW: the colour is a function of the RATE and of nothing else, so it is
+    # asserted with the cells held CONSTANT. Same bar, three rates, three colours - which no
+    # ratio-derived colour could ever produce.
+    _bx = dict(_bcfg2, burn_x_yellow=1.0, burn_x_orange=1.75, burn_x_red=2.25)
+    _clock = 100.0 / (FIVE_HOUR_SECONDS / 60.0)
+    for _mult, _want in ((0.5, "ok"), (1.2, "caution"), (2.0, "warn"), (3.0, "alarm")):
+        _row = _burn_part(188, 106, _mult * _clock, _bx)     # 188/106 -> a FULL bar every time
+        _cells = [c for c in _STRIP_ANSI.sub("", _row) if c in (BAR_FULL, BAR_EMPTY)]
+        assert _cells.count(BAR_EMPTY) == 0, ("the fixture stopped being a full bar", _row)
+        assert ANSI[_want] in _row, ("%.1fx clock wanted %s: %r" % (_mult, _want, _row))
+    # ⛔ AND A FULL BAR IN RED IS NOW LEGAL - the old fourth assertion forbade exactly this,
+    # and forbidding it is what made the colour redundant. Burning hard with a window that
+    # only just opened is a real state and the gauge must be able to say so.
+    assert ANSI["alarm"] in _burn_part(188, 106, 3.0 * _clock, _bx), "a full bar cannot go red"
+    # ⛔ ZERO CELLS IS alarm WHATEVER THE RATE, because at ratio < 0.05 no achievable slowdown
+    # changes the crossing - and an empty bar wearing green would say the opposite of the
+    # truth in a column where empty already means DANGER.
+    _empty = _burn_part(0, 119, 0.1 * _clock, _bx)
+    assert BAR_FULL not in _empty and ANSI["alarm"] in _empty, _empty
+    assert ANSI["ok"] not in _empty, ("an empty bar was painted green: %r" % _empty)
+    # ⚠ ...and the guard is on the CELLS, not on a burnout of zero. Zero cells covers
+    # burnout_min 0 through 5 at remain=119, and five of those six are not "already over" -
+    # they are "you would have to slow by 24x to 119x", which is the same answer.
+    for _b in (0, 1, 5):
+        _e = _burn_part(_b, 119, 0.1 * _clock, _bx)
+        assert ANSI["alarm"] in _e and ANSI["ok"] not in _e, (_b, _e)
+    # ...and six cells is where it stops being forced, or the check above proves nothing.
+    assert ANSI["ok"] in _burn_part(6, 119, 0.1 * _clock, _bx), _burn_part(6, 119, 0.1 * _clock, _bx)
+
+    # ⛔ THE THREE EDGES MUST ASCEND, AND ALL THREE FALL BACK TOGETHER. A half-honoured set is
+    # a calibration nobody chose, and an unreachable band is indistinguishable from a speed
+    # that never happened.
+    _btmp = tempfile.mkdtemp()
+    for _bad in ({"burn_x_yellow": 3.0, "burn_x_orange": 1.0, "burn_x_red": 2.0},
+                 {"burn_x_yellow": 0, "burn_x_orange": 1.0, "burn_x_red": 2.0},
+                 {"burn_x_yellow": 1.0, "burn_x_orange": 2.0, "burn_x_red": 2.0}):
+        with open(os.path.join(_btmp, "config.json"), "w", encoding="utf-8") as _f:
+            json.dump(_bad, _f)
+        _got = config(_btmp)
+        assert (_got["burn_x_yellow"], _got["burn_x_orange"], _got["burn_x_red"]) == (
+            DEFAULTS["burn_x_yellow"], DEFAULTS["burn_x_orange"], DEFAULTS["burn_x_red"]), (
+            "a bad edge set was half-honoured: %r -> %r" % (_bad, _got))
+    # ...and a GOOD set is honoured, or the check above passes by rejecting everything.
+    with open(os.path.join(_btmp, "config.json"), "w", encoding="utf-8") as _f:
+        json.dump({"burn_x_yellow": 0.5, "burn_x_orange": 1.5, "burn_x_red": 4.0}, _f)
+    _got = config(_btmp)
+    assert (_got["burn_x_yellow"], _got["burn_x_orange"], _got["burn_x_red"]) == (0.5, 1.5, 4.0), _got
+    # ⛔ AND A LIST IS STILL IGNORED, which is WHY these are three scalars. Pinned so nobody
+    # "tidies" them into one key and hands the reader a default they did not choose.
+    with open(os.path.join(_btmp, "config.json"), "w", encoding="utf-8") as _f:
+        json.dump({"burn_x_yellow": [1.0, 1.75, 2.25]}, _f)
+    assert config(_btmp)["burn_x_yellow"] == DEFAULTS["burn_x_yellow"], config(_btmp)
+    shutil.rmtree(_btmp, ignore_errors=True)
+
+    # ⛔ UNKNOWABLE IS NEVER AN EMPTY BAR AND NEVER A ZERO. In a column where empty means
+    # DANGER, drawing "no data" as empty says the opposite of the truth.
+    for _u in (_burn_part(None, 119, 0, _bcfg2),
+               _burn_part(188, 0, 0.38, _bcfg2),
+               _burn_part(188, 106, 0.38, _bcfg2, stale=True)):
+        assert BAR_EMPTY not in _u and BAR_FULL not in _u, _u
+        assert "0.00%/m" not in _u and "0m left" not in _u, _u
+        assert "--" in _u and _STRIP_ANSI.sub("", _u) == _u, _u
+
+    # ⭐ IT REACHES THE LINE, on the FIRST row, after the windows - it is a decision input
+    # like they are, not context like the model name.
+    _brec = {"ts": int(time.time() * 1000),
+             "five_hour": {"used_percentage": 29, "resets_at": int(time.time()) + 5900}}
+    _wins, _extras = _line_parts(_brec, None, _bcfg2, None, burn=(188, 106, 0.38))
+    assert any(w.startswith(BURN_LABEL) for w in _wins), _wins
+    assert not any(x.startswith(BURN_LABEL) for x in _extras), _extras
+    assert _wins[0].startswith(FIVE_HOUR_LABEL), "the burn segment displaced the five-hour window"
+    # ...and it is the LAST of them, so a narrow terminal drops it before any usage bar.
+    assert _wins[-1].startswith(BURN_LABEL), _wins
+
+    # ⚠ Absent when there is nothing to show, and switchable.
+    assert not any(w.startswith(BURN_LABEL)
+                   for w in _line_parts(_brec, None, _bcfg2, None, burn=None)[0])
+    assert not any(w.startswith(BURN_LABEL) for w in _line_parts(
+        _brec, None, dict(_bcfg2, show_burn=False), None, burn=(188, 106, 0.38))[0])
+
+    # ⛔ AND burn_triple() MUST REFUSE A WINDOW THAT HAS ALREADY RESET, where the stored
+    # percentage reads stale-high and any rate computed from it is meaningless.
+    _past = {"five_hour": {"used_percentage": 97, "resets_at": int(time.time()) - 60}}
+    assert burn_triple(tempfile.gettempdir(), {}, _past) is None
+    assert burn_triple(tempfile.gettempdir(), {}, {}) is None
+
+    # ⛔ THE PROJECTION MUST NOT SET THE VERDICT. Switched off deliberately, and pinned here
+    # so switching it back on is a decision somebody makes on purpose rather than a line that
+    # creeps back.
+    #
+    # ⚠ WHAT IT DID, measured on a second machine's real history: the verdict flipped
+    # GO→PACE→GO→PACE→GO in twelve minutes while the PERCENTAGE climbed smoothly from 40% to
+    # 52%, never within twenty points of soft_pct_5h. The boundary is
+    # (100 - pct) / minutes_left, so at 47% with 114 minutes left a swing of one HUNDREDTH of
+    # a percent per minute crosses it - and under bursty dispatch the rate swings far more
+    # than that between two samples. Since 0.35.0 a PACE also makes a handoff a precondition
+    # of dispatching, so one flickering sample blocked a dispatch that should have gone
+    # through.
+    _pdir = tempfile.mkdtemp(prefix="dg-proj-")
+    _plogs = os.path.join(_pdir, "logs")
+    os.makedirs(_plogs)
+    _pcfg = {"history_dir": _plogs, "soft_pct_5h": 70, "hard_pct_5h": 85,
+             "soft_pct_7d": 95, "hard_pct_7d": 97, "near_reset_min": 20, "stale_min": 15,
+             "burn_window_min": 0, "debug": {"token_usage": True}}
+    _pnow = time.time()
+    # ⚠ 47% SPENT IN THE FIRST HOUR OF THE WINDOW, which is what a projection over 100% takes
+    # once the rate is anchored at the window's open (0.38.0). The incident above happened at
+    # 114 minutes left, and that shape can no longer project over the line at all: 47% with
+    # 186 of 300 minutes gone is 0.25 %/min, and it projects to 76%. ⇒ Anchoring removed the
+    # exact reading that flipped the verdict; the pin stays anyway, because it guards the
+    # decision - display-only - and not that one reading.
+    _presets = _pnow + 240 * 60                      # ⇒ the window opened 60 minutes ago
+    with open(os.path.join(_plogs, HISTORY_PREFIX + "20200101-000000.jsonl"),
+              "w", encoding="utf-8") as _f:
+        for _t, _p in ((_pnow - 1800, 23.5), (_pnow - 1, 47)):
+            _f.write(json.dumps({"at": stamp(_t), "pct": _p,
+                                 "resets_at": stamp(_presets)}) + chr(10))
+    _pv = verdict(_pdir, _pcfg, data={"ts": int(_pnow * 1000),
+                                      "five_hour": {"used_percentage": 47,
+                                                    "resets_at": int(_presets)}})
+    assert _pv["projected_pct"] is not None and _pv["projected_pct"] >= 100, _pv
+    assert _pv["verdict"] == "GO", (
+        "the projection is setting the verdict again - it is display-only, and re-enabling "
+        "it needs hysteresis and a minimum history first. See the block in verdict(): %r"
+        % (_pv,))
+    # ⭐ ...but it is still REPORTED, or switching it off would have hidden the figure the
+    # owner wants to watch.
+    assert _pv["burnout_min"] is not None, _pv
+
+    # ⛔ AND NEITHER BURN FIGURE MAY REACH THE WORD - the owner's instruction, 2026-08-29:
+    # "GO / PACE / STOP 派工或剎車都不參考這個值". The pin above covers the projection only,
+    # and burnout_min is a second way in: it is computed in verdict(), it is returned, and it
+    # writes a sentence into the text. One `if` on `early` would silently make it a brake.
+    # ⚠ FORCED, NOT READ. Both figures are driven to their worst - "spent in one minute" and
+    # "projected 999%" - at a percentage twenty-three points under soft_pct_5h. Reading the
+    # code proves what it says; forcing proves what it does.
+    _fb, _fp = burnout_min, _projection
+    globals()["burnout_min"] = lambda *a, **k: 1
+    globals()["_projection"] = lambda *a, **k: 999
+    try:
+        _forced = verdict(_pdir, _pcfg, data={"ts": int(_pnow * 1000),
+                                              "five_hour": {"used_percentage": 47,
+                                                            "resets_at": int(_presets)}})
+    finally:
+        globals()["burnout_min"], globals()["_projection"] = _fb, _fp
+    # The forcing must REACH the figures, or the check passes by never running the path.
+    assert _forced["burnout_min"] == 1 and _forced["projected_pct"] == 999, _forced
+    assert _forced["verdict"] == "GO" and _forced["exit"] == 0, (
+        "a burn figure moved the verdict - the brake must not read it. See the owner's "
+        "instruction in Memory/notes/SHELVED-burn-meter.md: %r" % (_forced,))
+    # ⭐ ...and it still WARNS, which is the whole design: a sentence, never a decision.
+    assert "SPENT in ~1 min" in _forced["text"], _forced["text"]
+    shutil.rmtree(_pdir, ignore_errors=True)
+
+    # ------------------------------------------------- WARN: a colour, never a decision
+    # ⛔ THE ONE THING THAT MUST NOT DRIFT: WARN is a DISPLAY state and verdict() must never
+    # emit it. dispatch_gate.py tests the word against literal tuples in four places, so a
+    # fifth word silently changes what the brake DOES - the owner asked for 只變色不做任何處理.
+    # ⚠ Pinned across the whole percentage range against a half-spent window, not at one
+    # value: a single sample would pass against a verdict() that emitted WARN above 51%.
+    _wnow = 1_700_000_000.0
+    _wresets = _wnow + 2.5 * 3600                    # the 5h window is exactly half over
+    _wdir = tempfile.mkdtemp()
+    _wcfg = dict(DEFAULTS)
+    for _p in (10, 49, 50, 51, 69, 70, 84, 85, 99):
+        _wrec = {"ts": int(_wnow * 1000),
+                 "five_hour": {"used_percentage": float(_p), "resets_at": int(_wresets)}}
+        _wv = verdict(_wdir, _wcfg, data=_wrec, now=_wnow)
+        assert _wv["verdict"] in ("GO", "PACE", "STOP"), (
+            "verdict() emitted a display-only word at %d%%: %r" % (_p, _wv["verdict"]))
+        assert _wv["verdict"] != "WARN", _wv
+    shutil.rmtree(_wdir, ignore_errors=True)
+
+    # ⭐ THE MARKER IS THE CONDITION, PLUS A DEADBAND - and the deadband was added 2026-09-01
+    # because without it the tier fired on the first percent of every window. ⚠ Measured
+    # minutes after the seven-day window reset: 1% used against 0.48% elapsed drew a yellow
+    # bar and a yellow dot, and a seven-day clock advances 0.0099%/min, so one percent of
+    # usage stays yellow for about a hundred minutes. A warning that fires on the first
+    # percent of every window is a warning nobody reads.
+    # Half the window gone, so the ┃ sits at 50%; the margin defaults to 5 points.
+    assert _state(49, _wcfg, 50.0) == "GO", _state(49, _wcfg, 50.0)
+    assert _state(50, _wcfg, 50.0) == "GO", "equal is not PAST the marker"
+    assert _state(54, _wcfg, 50.0) == "GO", "4 points ahead is inside the deadband"
+    assert _state(56, _wcfg, 50.0) == "WARN", _state(56, _wcfg, 50.0)
+    assert _state(69, _wcfg, 50.0) == "WARN", _state(69, _wcfg, 50.0)
+    # ⛔ THE CASE THE OWNER SAW: a window minutes past its reset, barely touched.
+    assert _state(1.0, _wcfg, 0.48) == "GO", (
+        "a freshly reset window went yellow on its first percent: %r"
+        % (_state(1.0, _wcfg, 0.48),))
+    # ...and a genuinely alarming early burn still fires: 20% spent in 5% of the window.
+    assert _state(20.0, _wcfg, 5.0) == "WARN", _state(20.0, _wcfg, 5.0)
+    assert _state(70, _wcfg, 50.0) == "PACE", _state(70, _wcfg, 50.0)
+    assert _state(85, _wcfg, 50.0) == "STOP", _state(85, _wcfg, 50.0)
+    # ⛔ NO MARKER, NO WARN - the tier cannot fire on a window with no time axis, and this is
+    # what keeps every pre-existing _colour() caller on exactly the three colours it had.
+    assert _state(99.0, _wcfg, None) == "STOP" and _state(51, _wcfg, None) == "GO", (
+        "the WARN tier fired without a time_pct")
+
+    # ⭐ THE DOT ONLY EVER TURNS A GREEN YELLOW. A real PACE or STOP reaching display_state()
+    # comes back unchanged, because the display must not soften a word the gate is acting on.
+    _dr = {"five_hour": {"used_percentage": 60.0, "resets_at": int(_wresets)}}
+    assert display_state({"verdict": "GO", "pct": 60.0}, _dr, _wcfg, _wnow) == "WARN"
+    assert display_state({"verdict": "PACE", "pct": 60.0}, _dr, _wcfg, _wnow) == "PACE"
+    assert display_state({"verdict": "STOP", "pct": 60.0}, _dr, _wcfg, _wnow) == "STOP"
+    assert display_state({"verdict": "NO-DATA"}, _dr, _wcfg, _wnow) == "NO-DATA"
+    # ...and a GO that is BEHIND its marker stays a GO, or the test above proves nothing.
+    _dr2 = {"five_hour": {"used_percentage": 20.0, "resets_at": int(_wresets)}}
+    assert display_state({"verdict": "GO", "pct": 20.0}, _dr2, _wcfg, _wnow) == "GO"
+
+    # ⛔ AND IT IS THE FIVE-HOUR WINDOW THAT DECIDES, not whichever bar happens to be worst.
+    # ⚠ Pinned with the two windows on OPPOSITE sides of their own markers, because that is
+    # the only fixture that can tell them apart: with a record carrying five_hour alone, a
+    # _five_hour_time_pct() that read the seven-day window would return None and simply never
+    # warn - passing this check for the wrong reason. Here, reading the wrong window flips the
+    # answer instead of silencing it.
+    _w7resets = _wnow + 3.5 * 86400                  # a 7d window half over: marker at 50%
+    _dr3 = {"five_hour": {"used_percentage": 20.0, "resets_at": int(_wresets)},
+            "seven_day": {"used_percentage": 90.0, "resets_at": int(_w7resets)}}
+    assert display_state({"verdict": "GO", "pct": 20.0}, _dr3, _wcfg, _wnow) == "GO", (
+        "the dot followed the seven-day bar; it must follow the five-hour one")
+    _dr4 = {"five_hour": {"used_percentage": 60.0, "resets_at": int(_wresets)},
+            "seven_day": {"used_percentage": 10.0, "resets_at": int(_w7resets)}}
+    assert display_state({"verdict": "GO", "pct": 60.0}, _dr4, _wcfg, _wnow) == "WARN", (
+        "a quiet seven-day window suppressed a five-hour WARN")
+
+    # ⭐ FIVE STATES, FIVE ICONS, AND THE BAR WEARS THE SAME COLOUR AS THE DOT. Asserted on the
+    # rendered row rather than on the map, because the row is what the owner reads.
+    # ⚠ THIS FIXTURE USES THE REAL CLOCK, unlike the ones above. _watch_line() reaches
+    # time.time() through _line_parts(), so a record stamped at a frozen _wnow renders as a
+    # window that reset long ago - dashes, no colour, and an assertion that passes or fails
+    # for a reason that has nothing to do with WARN.
+    _rnow = time.time()
+    _drl = {"ts": int(_rnow * 1000),
+            "five_hour": {"used_percentage": 60.0, "resets_at": int(_rnow + 2.5 * 3600)}}
+    _wl = _watch_line("13:20:00", _drl, {"verdict": "GO", "pct": 60.0}, None,
+                      dict(_wcfg, width=200))[0]
+    assert VERDICT_ICON["WARN"] in _wl and VERDICT_ICON["GO"] not in _wl, _wl
+    # ⛔ THE DOT'S OWN COLOUR, ASSERTED AGAINST THE DOT AND NOT AGAINST THE ROW. ⚠ Measured:
+    # `ANSI["caution"] in _wl` passed against a build that coloured the dot by percentage,
+    # because the BAR beside it was yellow for its own reasons. The escape must sit
+    # immediately before the icon, which is the one arrangement only _state_colour() produces.
+    assert ANSI["caution"] + VERDICT_ICON["WARN"] in _wl, (
+        "the WARN dot is not wearing the WARN colour: %r" % _wl)
+    assert set(VERDICT_ICON) == {"GO", "WARN", "PACE", "STOP", "NO-DATA"}, VERDICT_ICON
+    assert len(set(VERDICT_ICON.values())) == 5, "two states share an icon: %r" % VERDICT_ICON
+    assert len(set(ANSI[k] for k in STATE_ANSI.values())) == 4, (
+        "two states share a colour: %r" % STATE_ANSI)
+
+    # ⭐ A ZERO UNIT IS NEVER PRINTED, and the larger unit never is. ⚠ The `%dd%dh` branch is
+    # included: it is the same defect and the owner's examples did not reach it.
+    for _m, _want in ((0, "0m"), (32, "32m"), (59, "59m"), (60, "1h"), (92, "1h32m"),
+                      (180, "3h"), (188, "3h8m"), (1439, "23h59m"), (1440, "1d"),
+                      (1500, "1d1h"), (5760, "4d")):
+        assert duration(_m) == _want, (_m, duration(_m), _want)
+
+    print("selftest OK")
+    return 0
+
+
+def fetch_now(sdir, cfg):
+    """`usage.py --fetch-now` - spend one call, then print the verdict. Exit code is it.
+
+    ⛔ WHY THIS EXISTS AS A NAMED MODE. The capability was already here but unreachable by
+    anyone who had not read the source: only --statusline and --watch fetch, so the way to
+    turn a NO-DATA into a number was to pipe an empty JSON object into STATUSLINE mode -
+    `echo {} | usage.py --statusline`. Nobody guesses that. A brake whose one repair is
+    undiscoverable is a brake that stays broken.
+
+    ⚠ It spends one of about five calls per access token, so it is a DIAGNOSTIC, not a
+    substitute for the statusline or for `--watch`. Those two are what keep the number
+    fresh; this answers "is the instrument broken, or is the number real?" once.
+
+    ⭐ It is also the honest answer to "should I probe usage by dispatching a cheap agent?"
+    No: an agent that replies proves only that nothing is hard-blocked right now, carries no
+    percentage and no reset time, costs the most expensive action in the protocol, and pays
+    for it out of the very allowance being measured. This costs one HTTP GET and returns the
+    real number.
+    """
+    record, reason = ensure_fresh(sdir, cfg)
+    if reason:
+        print("fetch FAILED: %s" % reason)
+    v = verdict(sdir, cfg)
+    print(v["text"])
+    return v["exit"]
+
+
+def main():
+    argv = sys.argv[1:]
+    if "--selftest" in argv:
+        return selftest()
+    sdir = state_dir(argv)
+    cfg = config(sdir)
+    if "--fetch-now" in argv:
+        return fetch_now(sdir, cfg)
+    if "--statusline" in argv:
+        return collect(sdir, cfg)
+    if "--watch" in argv:
+        return watch(sdir, cfg, argv)
+    result = verdict(sdir, cfg)
+    if "--json" in argv:
+        print(json.dumps(result, ensure_ascii=False))
+    else:
+        print(result["text"])
+    return result["exit"]
+
+
+def _utf8_console():
+    """Make output survive a legacy console codepage.
+
+    ⛔ Windows consoles default to a legacy codepage - cp950 on this machine - and a
+    single non-ASCII character in a message then raises UnicodeEncodeError and kills the
+    script. Measured 2026-08-26: install.py wrote its file and THEN crashed on the very
+    warning explaining what to do next, so the user saw a traceback instead of the
+    instruction. errors="replace" is deliberate: a mangled glyph is a cosmetic problem,
+    a crash is not.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+if __name__ == "__main__":
+    _utf8_console()
+    try:
+        sys.exit(main())
+    except Exception as exc:
+        # ⛔ Never take the statusline or a hook down. A broken usage check must look
+        # like "unknown", not like a crash the caller has to interpret.
+        sys.stderr.write("usage.py: %r\n" % (exc,))
+        sys.exit(3)

@@ -1,0 +1,18 @@
+# Line endings are LOAD-BEARING for the two launcher scripts, in opposite directions.
+#
+# run.sh  Its shebang is #!/bin/sh. Ending that line with CR makes a Unix
+#         kernel look for an interpreter literally named "sh" + CR. It reports
+#         "bad interpreter: no such file or directory" - naming a shell that
+#         plainly does exist, so it reads as the plugin being broken.
+# run.cmd cmd.exe mis-parses a .cmd file saved with bare LF: measured here, a
+#         label or a multi-line block silently does the wrong thing.
+#
+# Without this file, git on Windows normalises both to CRLF on checkout and the
+# .sh breaks for everyone who clones on Linux or macOS.
+*.sh  text eol=lf
+*.cmd text eol=crlf
+
+# Everything else: normalise in the repository, checkout native.
+*.py   text
+*.md   text
+*.json text
