@@ -167,8 +167,9 @@ completely alone. Re-verify every cited line number at the moment of writing.
 
 ⛔ **USAGE IS A DIFFERENT TRIGGER, AND ONLY THE WORD PULLS IT.** You hand over when the verdict
 says **PACE** or **STOP** — never because the `SPENT in ~N min` sentence appeared. That figure
-sizes the NEXT block and nothing else, it is loudest early in a window when headroom is largest,
-and `dispatch-protocol` holds the one live copy of the rule. **At GO you keep working.**
+sizes the NEXT block and nothing else, and it is loudest early in a window when headroom is
+largest. `dispatch-protocol` carries the full rule with its measurement; this paragraph is its
+scope line, and both have to stay. **At GO you keep working.**
 
 Once HANDOFF.md is on disk, the gate arms the resume itself when your turn ends at PACE/STOP
 (0.58.0); `resume.py --status` shows it, and if it shows none, arm it yourself — an unarmed

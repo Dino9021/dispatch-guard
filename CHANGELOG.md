@@ -33,6 +33,18 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.58.3
+
+**0.58.2 的文字叫人刪掉一段它自己的檢查要求保留的話。** `unattended-work` §17 寫著
+「規則的唯一一份正本在 `dispatch-protocol`」，而 `case_burn_figure_never_winds_down`
+斷言四個技能檔**全部**都要提到這個數字。照著那句話刪掉 §17 那一段，檢查就會失敗——
+一條會把守衛絆倒的指示。
+
+- 改成：完整規則和量測在 `dispatch-protocol`，§17 那一段是它的界線那一句，兩邊都要留著。
+  英文與中文同時改。
+
+---
+
 ## 0.58.2
 
 **`SPENT in ~N min` 那一行把 agent 嚇停了，而且是在用量只用掉 20% 的時候。** owner 回報：
@@ -2143,6 +2155,19 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.58.3
+
+**0.58.2's own text told the reader to delete a paragraph its own check requires.**
+`unattended-work` §17 said `dispatch-protocol` "holds the one live copy of the rule", while
+`case_burn_figure_never_winds_down` asserts that **all four** skill files mention the figure.
+Following that sentence and deleting §17's paragraph fails the check - an instruction that
+trips the guard.
+
+- Reworded: `dispatch-protocol` carries the full rule with its measurement, §17 carries its
+  scope line, and both have to stay. Both languages.
 
 ---
 
