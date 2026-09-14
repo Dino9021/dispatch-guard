@@ -1890,10 +1890,76 @@ def case_skill_copies():
     print("ok - one file registers each skill, and the reading copy stays a reading copy")
 
 
+def case_burn_figure_never_winds_down():
+    """⛔ THE `SPENT in ~N min` SENTENCE MAY NOT BE WRITTEN AS A REASON TO STOP.
+
+    The brake reads the PERCENTAGE and never the burn figure - the owner's decision of
+    2026-08-29 (`Memory/notes/SHELVED-burn-meter.md`: 「GO / PACE / STOP 派工或剎車都不參考
+    這個值」), pinned in usage.py by a check that forces the figure and asserts the verdict
+    does not move. ⚠ A skill that tells an agent to hand over on N enforces, in prose, exactly
+    the rule the code refuses to enforce - and prose is the half that actually reaches the
+    agent.
+
+    ⛔ NOT HYPOTHETICAL. 0.56.2 to 0.58.1 said "N is your budget ... write the handover BEFORE
+    it runs out" and "STOP for a new wave". Agents armed a resume and stopped at 20% of the
+    five-hour window, because the line fires at the START of a window, not the end: the rate
+    is anchored at the window's own open, so a young window makes any spend look steep.
+    MEASURED 2026-09-14 - 10% used 10 minutes in prints `SPENT in ~90 min`; the same 10% at 45
+    minutes in prints nothing at all.
+    """
+    import glob
+    import re
+    # ⭐ Each pattern is a phrasing that actually shipped, not a guess at one. A detector
+    # written against imagined wording cannot fail on the wording that caused the incident.
+    FORBIDDEN = (
+        (r"N is (?:your|the) budget", "calls N a budget"),
+        (r"handover inside N", "tells the agent to hand over inside N"),
+        (r"handover BEFORE it runs out", "makes N the handover trigger"),
+        (r"STOP for a new wave", "turns N into a dispatch verdict"),
+        (r"N\s*(?:是|就是)[^\n]{0,12}預算", "calls N a budget (zh)"),
+        (r"在\s*N\s*(?:之內|以內)[^\n]{0,8}(?:寫|交接)", "tells the agent to hand over inside N (zh)"),
+    )
+    # ⚠ The scoping sentence is REQUIRED, not merely the bad one absent. A file that says
+    # nothing about N leaves the agent to infer, and inference is what this is fixing.
+    REQUIRED = {"SKILL.md": "At GO you keep working",
+                "SKILL.zh-TW.md": "判定是 GO 就繼續做"}
+    paths = sorted(glob.glob(os.path.join(repo_path("skills"), "*", "SKILL*.md")))
+    assert len(paths) >= 4, "expected two files per skill, found %r" % (paths,)
+    seen = 0
+    for path in paths:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        for pat, why in FORBIDDEN:
+            assert not re.search(pat, text), \
+                "%s %s - the burn figure sizes the NEXT block, it never winds anybody down" \
+                % (path, why)
+        if "SPENT in" not in text:
+            continue                      # this file does not carry the rule at all
+        seen += 1
+        want = REQUIRED["SKILL.zh-TW.md" if ".zh-TW." in path else "SKILL.md"]
+        assert want in text, \
+            "%s discusses the burn figure but never says %r" % (path, want)
+    # ⛔ BOTH SKILLS, BOTH LANGUAGES. An English-only fix leaves the pair drifted, which is how
+    # this defect survived: the zh-TW files never carried the bad rule, so a grep for the
+    # English phrasing looked clean in half the repository.
+    assert seen == 4, \
+        "expected all four skill files to carry the burn rule, found %d" % seen
+    # ⚠ MUTATION CHECK: the detector must fire on the text that actually shipped.
+    for pat, _why in FORBIDDEN[:4]:
+        assert re.search(pat, "That N is your budget ... write the handover inside N, and "
+                              "write the handover BEFORE it runs out. GO with a small N is "
+                              "still GO for the step you are on and STOP for a new wave."), \
+            "the detector misses 0.58.1's own wording: %r" % pat
+    assert re.search(FORBIDDEN[4][0], "N 是你的預算"), FORBIDDEN[4][0]
+    assert re.search(FORBIDDEN[5][0], "在 N 之內寫好交接"), FORBIDDEN[5][0]
+    print("ok - the burn figure sizes the next block and winds nobody down, in both languages")
+
+
 def main():
     fresh_scratch()
     case_selftests_never_read_the_terminal()
     case_skill_copies()
+    case_burn_figure_never_winds_down()
     with scratch_dir("state") as sdir, scratch_dir("repo") as root:
         fixture_repo(root)
         gate = load_gate(sdir)

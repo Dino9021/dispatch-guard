@@ -139,12 +139,23 @@ finish what is in flight, no new wave. **STOP** = wrap up, write `HANDOFF.md`, a
 (both routes the gate prints), end the turn. **NO-DATA** = report usage as UNKNOWN, never a
 number. Never compute headroom from raw percentages.
 
-⭐ **The same line also says WHEN the window is spent at the current rate** — `⛔ At the
-current rate the 5h window is SPENT in ~N min - M min BEFORE it resets. Plan for the gap, not
-for the reset.` That N is your budget, not a forecast to note and move past: fit the remaining
-work into it, and write the handover BEFORE it runs out, because the reset is M minutes further
-away than the money. GO with a small N is still GO for the step you are on and STOP for a new
-wave. Do not compute N yourself; act on the number the line prints.
+⭐ **The line sometimes ADDS when the window empties at the recent rate** — `⛔ At the current
+rate the 5h window is SPENT in ~N min - M min BEFORE it resets.`
+
+⛔ **N NEVER WINDS YOU DOWN.** Handing over, writing `HANDOFF.md` and arming a resume are
+triggered by the WORD, and by nothing else. N answers exactly one question: **does the block I
+am about to START fit inside N?** It fits → start it. It does not → start a smaller one. That
+is the whole of it. **At GO you keep working, however small N is.**
+
+⚠ **N SHOUTS LOUDEST WHERE IT IS LEAST TRUSTWORTHY.** The rate is anchored at the window's own
+open, so a young window makes any spend look steep. Measured 2026-09-14: at **10% used, 10
+minutes in**, the line fires with `SPENT in ~90 min`; the **same 10%, 45 minutes in**, prints
+nothing at all. The ⛔ is loudest exactly where the headroom is largest.
+
+⭐ **The brake reads the PERCENTAGE, never this figure** — a deliberate decision, recorded by
+the owner on 2026-08-29 and pinned by a check in `usage.py`: the burn figure is *a sentence,
+never a decision*. An agent that stops on N is enforcing a rule the plugin itself refuses to
+enforce. Do not compute N yourself either; read the number the line prints.
 
 ## HANDOFF.md after a STOP
 

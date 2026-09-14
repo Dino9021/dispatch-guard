@@ -165,11 +165,14 @@ Prepare first: (1) a standalone handover document (state, decisions, done/not-do
 tried-and-failed); (2) the next session's prompt saved as its own file, written to stand
 completely alone. Re-verify every cited line number at the moment of writing.
 
-The same rule when the USAGE runs short: the verdict line says `SPENT in ~N min - M min BEFORE
-it resets`. N is the budget for finishing AND handing over, and the reset is further away than
-the money. Write the handover inside N, not after the STOP. Once HANDOFF.md is on disk, the gate
-arms the resume itself when your turn ends at PACE/STOP (0.58.0); `resume.py --status` shows it,
-and if it shows none, arm it yourself — an unarmed handoff is a handoff nothing will ever read.
+⛔ **USAGE IS A DIFFERENT TRIGGER, AND ONLY THE WORD PULLS IT.** You hand over when the verdict
+says **PACE** or **STOP** — never because the `SPENT in ~N min` sentence appeared. That figure
+sizes the NEXT block and nothing else, it is loudest early in a window when headroom is largest,
+and `dispatch-protocol` holds the one live copy of the rule. **At GO you keep working.**
+
+Once HANDOFF.md is on disk, the gate arms the resume itself when your turn ends at PACE/STOP
+(0.58.0); `resume.py --status` shows it, and if it shows none, arm it yourself — an unarmed
+handoff is a handoff nothing will ever read.
 
 ## 18. The working-style checklist
 

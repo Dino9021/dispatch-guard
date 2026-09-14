@@ -33,6 +33,36 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.58.2
+
+**`SPENT in ~N min` 那一行把 agent 嚇停了，而且是在用量只用掉 20% 的時候。** owner 回報：
+agent 把那個燃燒數字讀成「用量快沒了」，於是預約續跑、收工——判定明明是 GO。
+
+⛔ **根因在提示詞，不在程式。** 剎車讀的是百分比，永遠不讀這個數字，那是 owner 在
+2026-08-29 的決定（`Memory/notes/SHELVED-burn-meter.md`：「GO / PACE / STOP 派工或剎車都
+不參考這個值」），`usage.py` 裡有檢查釘住它。但 0.56.2 到 0.58.1 的技能寫著
+「N is your budget ... write the handover BEFORE it runs out」和「STOP for a new wave」——
+**用散文去執行一條程式本身拒絕執行的規則**，而散文才是真正送到 agent 面前的那一半。
+
+⚠ **而且那一行是在視窗剛開的時候叫，不是快結束的時候。** 燃燒速度的起點錨在視窗自己的開窗
+時間，所以視窗越年輕，任何花費看起來都越陡。2026-09-14 實測：**用掉 10%、開窗 10 分鐘**
+就印 `SPENT in ~90 min`；**同樣 10%、開窗 45 分鐘**，什麼都不印。⛔ 最大聲的地方，
+正好是餘裕最多的地方。
+
+- 兩個技能都改寫：**N 只回答一個問題——我接下來要開的這一塊塞得進 N 嗎？** 交接、寫
+  `HANDOFF.md`、預約續跑，只由那個「字」（PACE / STOP）觸發。判定是 GO 就繼續做，不管 N 多小。
+- `unattended-work` §17 把用量規則**搬出**「context 快用完時的交接」那一節——它被放在一條交接
+  指示底下，光是那個位置就在做事，改字改不掉。規則的唯一一份正本現在在 `dispatch-protocol`。
+- ⭐ **中文版從來沒有這條壞規則**，所以搜英文句子在半個 repo 裡看起來是乾淨的。現在兩種語言
+  都帶著同一條收緊過的規則，漂移補上。
+- `test_guards.py` 新增 `case_burn_figure_never_winds_down`：四個技能檔都不准出現六種已經出貨過
+  的壞寫法，而且討論到這個數字的檔案必須寫出那句「GO 就繼續做」。三個突變實測都讓它失敗
+  （放回英文壞句、拿掉必要句、中文版放回壞句）。
+- ⚠ 沒有動 `usage.py`。那一行仍然在 GO 後面掛一個 ⛔，跟同一行的「Headroom available」互相
+  矛盾——已經跟 owner 提出，未處理。
+
+---
+
 ## 0.58.1
 
 **0.58.0 的 Bash 判斷把「讀」當成「寫」。** 第二輪程式碼審查透過真正的 hook 行程量到：
@@ -2113,6 +2143,42 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.58.2
+
+**The `SPENT in ~N min` line stopped agents at 20% of the five-hour window.** The owner
+reported agents reading that burn figure as "usage is nearly gone", arming a resume and
+winding down - while the verdict said GO.
+
+⛔ **The defect was in the prompts, not the code.** The brake reads the percentage and never
+this figure - the owner's decision of 2026-08-29 (`Memory/notes/SHELVED-burn-meter.md`:
+「GO / PACE / STOP 派工或剎車都不參考這個值」), pinned by a check in `usage.py`. But from
+0.56.2 to 0.58.1 the skills said "N is your budget ... write the handover BEFORE it runs out"
+and "STOP for a new wave" - **prose enforcing exactly the rule the code refuses to enforce**,
+and prose is the half that actually reaches the agent.
+
+⚠ **And the line fires at the START of a window, not the end.** The rate is anchored at the
+window's own open, so a young window makes any spend look steep. Measured 2026-09-14: at
+**10% used, 10 minutes in** it prints `SPENT in ~90 min`; the **same 10% at 45 minutes in**
+prints nothing at all. The ⛔ is loudest exactly where the headroom is largest.
+
+- Both skills rewritten: **N answers exactly one question - does the block I am about to START
+  fit inside N?** Handing over, writing `HANDOFF.md` and arming a resume are triggered by the
+  WORD (PACE / STOP) and by nothing else. At GO you keep working, however small N is.
+- `unattended-work` §17 **moves** the usage rule out of "Handover when context runs short". It
+  was filed under a handover instruction, and that placement was doing work no rewording could
+  undo. `dispatch-protocol` now holds the one live copy.
+- ⭐ **The zh-TW files never carried the bad rule**, so a grep for the English phrasing read
+  clean across half the repository. Both languages now carry the same tightened rule; the drift
+  is closed.
+- `test_guards.py` gains `case_burn_figure_never_winds_down`: none of the four skill files may
+  contain any of six phrasings that actually shipped, and a file that discusses the figure must
+  state the "at GO you keep working" scope. Three mutations were measured to fail it (the
+  English phrasing restored, the required sentence removed, the Chinese phrasing restored).
+- ⚠ `usage.py` is untouched. The line still hangs a ⛔ off a GO verdict beside "Headroom
+  available" on the same line - raised with the owner, not acted on.
 
 ---
 
