@@ -2939,14 +2939,75 @@ def _user_activity_min(now=None):
     return max(0.0, (now - m) / 60.0)
 
 
+# ⚠ MIRRORS dispatch_gate.py DEFAULTS["slot_ttl_min"]. It lives in the config's `dispatch`
+# block, which belongs to the gate and is NOT in this module's DEFAULTS, so config() never
+# surfaces it - _slot_ttl_min() reads it straight off disk. If the two ever drift, this side
+# is only a SAFETY cap on how long a crashed dispatch keeps the watcher awake, and a smaller
+# value here just pauses sooner - the safe direction.
+DISPATCH_SLOT_TTL_FALLBACK_MIN = 30
+
+
+def _slot_ttl_min(sdir):
+    """`slot_ttl_min` from the shared config.json, or the fallback when it is absent/invalid."""
+    disk = read_json(os.path.join(sdir, "config.json"), {}) or {}
+    for src in ((disk.get("dispatch") or {}), disk):
+        v = src.get("slot_ttl_min")
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+            return v
+    return DISPATCH_SLOT_TTL_FALLBACK_MIN
+
+
+def _dispatch_in_flight_min(sdir, now=None):
+    """0.0 while a sub-agent dispatch is in flight here, else None.
+
+    ⛔ THE THIRD HEARTBEAT SOURCE, AND THE ONE FOR A FOREGROUND SUPERVISOR. A session that
+    dispatches ONE long sub-agent and waits fires no hook of ours until the agent returns -
+    every `.alive` goes stale mid-run, ~/.claude.json is not written during a single long
+    tool call either, and the watcher crosses idle_after_min and PAUSES while tokens are
+    still being spent. A frozen number reads LOW, so the brake then fails OPEN during exactly
+    the heavy run it exists to govern.
+
+    ⭐ THE GATE WRITES state/<session>.slotN WHEN A DISPATCH STARTS and removes it on the
+    dispatch's PostToolUse, so an open slot is proof work is happening NOW with no hook in
+    between. Reporting activity keeps the watcher on its NORMAL 120 s cadence - it does not
+    poll one bit faster, so it cannot spend the endpoint's tiny call budget.
+
+    ⛔ CAPPED AT slot_ttl_min - THE SAME CLOCK claim_slot() USES TO RECLAIM A DEAD SLOT. A
+    dispatch that dies without its PostToolUse leaves its slot behind; past slot_ttl_min the
+    gate calls it abandoned, and so must this. Without the cap one crashed dispatch would keep
+    the watcher polling all night - the precise failure idle_after_min exists to prevent, and
+    this repository's own Memory/tasks/20260902-082020-stale-slot-after-a-failed-dispatch/.
+
+    ⚠ RETURNS 0.0, NOT THE SLOT'S AGE. An open, non-stale slot means work is happening NOW;
+    the claim time is how long the agent has run, not how long since anyone worked. Feeding
+    the age back would make a 20-minute agent read as 20 minutes idle and pause anyway - the
+    bug this exists to fix.
+    """
+    now = time.time() if now is None else now
+    ttl_sec = _slot_ttl_min(sdir) * 60
+    for path in glob.glob(os.path.join(sdir, "state", "*.slot*")):
+        try:
+            if now - os.path.getmtime(path) <= ttl_sec:
+                return 0.0
+        except OSError:
+            continue
+    return None
+
+
 def last_heartbeat_min(sdir, now=None):
     """Minutes since anybody last WORKED here, or None if there is no evidence either way.
 
-    ⛔ TWO SOURCES, BECAUSE ONE OF THEM IS THE THING THAT BREAKS. This used to read only the
+    ⛔ THREE SOURCES, EACH COVERING A BLIND SPOT OF THE OTHERS. This used to read only the
     gate's own `.alive` files - so when the gate hook was not wired up, the signal went flat
     while the owner was still working and the watcher read the flatness as "gone home".
     MEASURED 2026-08-30: `.alive` frozen at 1225 minutes, the machine in continuous use, the
     watcher asleep for 20 hours, and `install.py --status` printing "everything is live".
+
+    ⭐ THE THIRD SOURCE IS AN IN-FLIGHT DISPATCH (_dispatch_in_flight_min). A foreground
+    supervisor waiting on one long sub-agent fires no hook and writes no ~/.claude.json until
+    the agent returns, so both sources above go stale mid-run and the watcher pauses while
+    tokens are spent. An open dispatch slot is proof work is happening now; it is capped at
+    slot_ttl_min so a crashed dispatch cannot keep the watcher awake for ever.
 
     ⭐ THE SECOND SOURCE IS NOT OURS, and the recording caught it surviving the exact failure:
     across the 22 minutes before the hooks were repaired - `.alive` over 1000 minutes old, so
@@ -2965,7 +3026,8 @@ def last_heartbeat_min(sdir, now=None):
     of the second source, never an older one.
     """
     now = time.time() if now is None else now
-    ages = [a for a in (_gate_heartbeat_min(sdir, now), _user_activity_min(now))
+    ages = [a for a in (_gate_heartbeat_min(sdir, now), _user_activity_min(now),
+                        _dispatch_in_flight_min(sdir, now))
             if a is not None]
     return min(ages) if ages else None
 
@@ -3299,6 +3361,39 @@ def selftest():
             except TypeError:
                 got = "TypeError - the None guard is gone"
             assert got is None, got
+
+            # ⛔ THE THIRD SOURCE: AN IN-FLIGHT DISPATCH. Both other sources are stale here -
+            # every `.alive` at 1225 min, ~/.claude.json removed - so the ONLY thing that can
+            # make it fetch below is an open slot. That isolation is the mutation check: strip
+            # _dispatch_in_flight_min out of last_heartbeat_min and the fresh-slot case flips
+            # to False, because nothing else here is fresh.
+            slot = os.path.join(sdir, "state", "sess.slot0")
+            with open(slot, "w") as f:
+                f.write("{}")
+            # A slot just claimed => work is happening NOW => fetch, and the heartbeat reads 0.
+            os.utime(slot, (now, now))
+            assert _dispatch_in_flight_min(sdir, now) == 0.0, _dispatch_in_flight_min(sdir, now)
+            assert last_heartbeat_min(sdir, now) == 0.0, "an open slot beside stale sources"
+            assert should_fetch(sdir, cfg_i, now)[0] is True, "an in-flight dispatch read idle"
+            # ⚠ 20 MINUTES INTO THE AGENT, still under slot_ttl_min (30): it must STILL fetch.
+            # The slot's age is NOT fed back - a long agent is work NOW, not 20 minutes idle.
+            os.utime(slot, (now - 20 * 60, now - 20 * 60))
+            assert _dispatch_in_flight_min(sdir, now) == 0.0, "a live 20-min slot must read 0"
+            assert should_fetch(sdir, cfg_i, now)[0] is True, "a 20-min agent read as idle"
+            # ⛔ PAST slot_ttl_min THE SLOT IS ABANDONED and stops counting - or one crashed
+            # dispatch polls all night, the failure idle_after_min exists to prevent.
+            os.utime(slot, (now - 31 * 60, now - 31 * 60))
+            assert _dispatch_in_flight_min(sdir, now) is None, "a stale slot still counted"
+            assert should_fetch(sdir, cfg_i, now)[0] is False, "a crashed dispatch kept fetching"
+            # ⭐ AND slot_ttl_min IS READ FROM THE SHARED CONFIG: raise it and the same 31-min
+            # slot is live again. `dispatch` block first, top level second, fallback last.
+            with open(os.path.join(sdir, "config.json"), "w") as f:
+                f.write('{"dispatch": {"slot_ttl_min": 45}}')
+            assert _slot_ttl_min(sdir) == 45, _slot_ttl_min(sdir)
+            assert _dispatch_in_flight_min(sdir, now) == 0.0, "a raised slot_ttl_min was ignored"
+            os.remove(os.path.join(sdir, "config.json"))
+            os.remove(slot)
+            assert should_fetch(sdir, cfg_i, now)[0] is False, "removing the slot left it awake"
         finally:
             if _saved_cj is None:
                 os.environ.pop(CLAUDE_JSON_ENV, None)

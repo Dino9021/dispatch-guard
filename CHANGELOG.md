@@ -33,6 +33,35 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.58.4
+
+**前景長代理期間，用量會凍住,而煞車會 fail open。** 一個監督者派了「一個」跑很久的子代理然後在等,
+在子代理回來之前不會觸發任何我們的 hook、也不會寫 ~/.claude.json。於是 watcher 判斷活跡的兩個來源
+（`state/*.alive` 和 ~/.claude.json）都在半途過期,watcher 超過 `idle_after_min`（預設 15 分）就
+「暫停撈取」—— 而那正是還在燒 token 的時候。⛔ 凍住的數字會讀成「偏低」,所以煞車剛好在它最該作用的
+重載期間 fail open。
+
+⚠ 這不是靠「拉長或縮短 API 間隔」能修的。下限 120 秒是量出來的(60 秒會 429、變瞎),而拉長間隔只會
+讓數字更舊、更低。缺的不是頻率,是「還在工作」這個訊號。
+
+- `last_heartbeat_min()` 多了「第三個來源」:一個正在進行的派工佔位（`state/*.slotN`）。gate 在派工
+  「開始」時寫這個檔、在它的 PostToolUse 移除,所以一個開著的佔位就是「現在有在工作」的證據,中間不需要
+  任何 hook。watcher 因此維持「正常的 120 秒節奏」—— 絕不打得更快,所以不會花掉那支端點大約五次的額度。
+- ⛔ 以 `slot_ttl_min` 為上限（跟 `claim_slot()` 回收死佔位用的是同一個時鐘）。一個死在 PostToolUse
+  之前的派工過了這個時間就不再算活跡,否則一個死掉的派工會讓 watcher 整晚打 API —— 正是 `idle_after_min`
+  當初要防的（`Memory/tasks/20260902-082020-stale-slot-after-a-failed-dispatch/`）。
+- ⚠ 回傳 0.0,不是佔位的年齡。一個開著、還沒過期的佔位代表「現在」有在工作;它的年齡是代理跑了多久,
+  不是「距離上次有人工作多久」。餵年齡回去會讓一個 20 分鐘的代理讀成「閒置 20 分鐘」而照樣暫停。
+- 天花板先說清楚:這只拿掉一個「假暫停」,不會讓數字變即時。長代理期間最好也是 120～150 秒的舊,不是 2 分鐘。
+- ⚠ 前提:這只對「有在跑 `usage.py --watch`（VS Code 工作）或狀態列」的 session 有用 —— 那個 watcher
+  就是這次被解除暫停的計時器。兩個都沒有的話,唯一的刷新路徑是 `keep_clock_running()`,它從 gate hook
+  觸發,而 gate hook 在代理執行期間是靜默的,所以數字照樣凍住。修法是跑 `usage.py --watch`。
+- `usage.py --selftest` 用「兩個既有來源都過期、只留佔位當變因」把新來源獨立出來測。兩個突變實測失敗
+  （拿掉第三來源 → 開著的佔位讀成閒置;拿掉上限 → 死佔位永遠算活跡）。真背景派工不受影響 —— 它本來就被
+  `dispatch-protocol` 第 2 條禁止,因為它逃出計帳。
+
+---
+
 ## 0.58.3
 
 **0.58.2 的文字叫人刪掉一段它自己的檢查要求保留的話。** `unattended-work` §17 寫著
@@ -2155,6 +2184,43 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.58.4
+
+**Usage froze during a long FOREGROUND agent, and the brake failed open.** A supervisor that
+dispatches ONE long sub-agent and waits fires no hook of ours and writes no ~/.claude.json
+until the agent returns. Both of the watcher's liveness sources (`state/*.alive` and
+~/.claude.json) go stale mid-run, so the watcher crosses `idle_after_min` (default 15) and
+PAUSES - during exactly the stretch that is still spending tokens. ⛔ A frozen number reads
+LOW, so the brake fails OPEN during the heavy run it exists to govern.
+
+⚠ This is not fixed by lengthening or shortening the API interval. The 120 s floor is measured
+(60 s drew 429s and went blind), and a longer interval only makes the number older and lower.
+The missing thing is not frequency - it is a signal that says work is still happening.
+
+- `last_heartbeat_min()` gains a THIRD source: an in-flight dispatch slot (`state/*.slotN`).
+  The gate writes it when a dispatch STARTS and removes it on that dispatch's PostToolUse, so
+  an open slot is proof work is happening NOW with no hook in between. The watcher keeps its
+  NORMAL 120 s cadence - it never polls faster, so it cannot spend the endpoint's ~5-call budget.
+- ⛔ Capped at `slot_ttl_min` - the same clock `claim_slot()` uses to reclaim a dead slot. A
+  dispatch that dies before its PostToolUse stops counting past that age, or one crashed
+  dispatch would keep the watcher polling all night, the failure `idle_after_min` exists to
+  prevent (`Memory/tasks/20260902-082020-stale-slot-after-a-failed-dispatch/`).
+- ⚠ Returns 0.0, not the slot's age. An open, non-stale slot means work is happening NOW; its
+  age is how long the agent has run, not how long since anyone worked. Feeding the age back
+  would make a 20-minute agent read as 20 minutes idle and pause anyway.
+- Ceiling stated up front: this removes a FALSE pause, it does not make the number live. The
+  best during a long agent is still 120-150 s stale, not 2 minutes.
+- ⚠ PRECONDITION: it only helps a session running `usage.py --watch` (the VS Code task) or the
+  statusline - that watcher IS the timer this un-pauses. With neither, the only refresh path is
+  `keep_clock_running()`, which fires from the gate hook and is silent during the agent, so the
+  number still freezes. `usage.py --watch` is the repair.
+- `usage.py --selftest` isolates the new source (both existing sources stale, only the slot as
+  variable). Two mutations were measured to fail it (source removed - an open slot reads idle;
+  cap removed - a dead slot counts for ever). True BACKGROUND dispatch is unaffected: it is
+  already forbidden by `dispatch-protocol` refusal #2, because it escapes accounting.
 
 ---
 
