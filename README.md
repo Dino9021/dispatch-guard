@@ -819,8 +819,8 @@ watcher 睡了 20 小時，而 `install.py --status` 全程說一切正常。
 Context 長條、模型、說明移到第二列，**兩列各自裁到寬度**。
 
 ⭐ **訊號本來就在硬碟上：** gate 每次 hook 事件都會寫 `state/<session-id>.alive`。
-⚠ 而 `prune_state()` 是**按數量**留最新的 20 個，不是按年齡刪，所以活著的那個 session
-自己的檔案永遠不會被清掉、也就不會被誤判成閒置。
+⚠ 而 `prune_state()` 對 `.alive` 是**按數量**留最新的 20 個、不按年齡刪（`state/` 裡其他標記才是按年齡），
+所以活著的那個 session 自己的 `.alive` 永遠不會被清掉、也就不會被誤判成閒置。
 
 ⛔ **`--statusline` 不受這個限制。** 它會被呼叫，本來就是因為有 session 正在互動 ——
 在那裡加一個閒置檢查，只會在最該刷新的時候把刷新擋掉。
@@ -1244,6 +1244,16 @@ reset     : ⛔ STALE - armed for 22:18 but the stored reset is now 00:18,
 紀錄。`history_dir` 可以指到放著別人檔案的資料夾，所以全面清掃是不做的。
 ⚠ 讀不成正數的值（一個詞、空字串、`true`、負數）一律當成「全部保留」，不會退回 30 天然後開始刪。
 清理最多每個 process 一天一次，就在新的一天要開檔案的那一刻。
+
+**per-session 狀態標記保留幾天**（`state_keep_days`，預設 **7**）。`state/` 資料夾每個 session、每一種
+各留一個小檔 —— `.start`、`.branch-*`、每個技能一個 `.skill-seen-*`、`.warned*`、`.handoff-written`
+—— session 一結束就沒用了。`prune_state()` 在 session 開始時把 `state/` 裡超過這個天數的檔依時間清掉，
+只留兩個例外：`.alive` 用「數量」上限（最新 20 個）、`.slot*` 完全不碰（活的併發狀態）。⚠ **這是「安全
+邊際」不是「有用期」，** 而且必須超過單一 session 可能跑的最長時間，因為有兩個標記若在執行中被掃掉會
+「fail open」：`.start`（不見了那個 session 就降成勸告、煞車關掉）和 `.branch-<repo>`（不見了 commit-branch
+守衛會用「當下所在的分支」重設基準）。一個開著但閒置的 session 什麼都不刷新，所以視窗開著好幾天又設很小的值，
+兩個都會掉 —— 只有在你確定自己的 session 都很短時才調小。⚠ **跟 `history_keep_days` 一樣「刪除安全」：**
+一個詞、`0`、負數、`null` 都代表「全部保留」。
 
 **保留每一次 API 回應**（`debug.API_response_usage`，預設關閉）。打開之後，usage 端點每一次的
 回應都會**完整**存進 `history_dir`，檔名 `API_response_usage_<YYYYMMDD-HHMMSS>.jsonl`，一行一筆，
@@ -2369,8 +2379,9 @@ bars and the verdict stay on the first row; the context bar, the model and the n
 second, and **each row is fitted separately**.
 
 ⭐ **The signal was already on disk:** the gate writes `state/<session-id>.alive` on every hook
-event. ⚠ And `prune_state()` keeps those **by count, newest first**, rather than deleting by age,
-so a live session's own file can never be the one dropped and mistaken for idleness.
+event. ⚠ And `prune_state()` keeps `.alive` **by count, newest first**, rather than by age (the
+rest of `state/` is swept by age), so a live session's own `.alive` can never be the one dropped
+and mistaken for idleness.
 
 ⛔ **`--statusline` is not gated this way.** It is only ever invoked because a session is
 interacting, so a test there would suppress the refresh precisely when it is due.
@@ -2834,6 +2845,19 @@ so there is no blanket sweep.
 ⚠ Any value that cannot be read as a positive number — a word, an empty string, `true`, a
 negative — means **keep everything**, never "fall back to 30 and start deleting". The pruning
 runs at most once a day per process, at the moment a new day's file is started.
+
+**How long a per-session state marker is kept** (`state_keep_days`, default **7**). The `state/`
+folder holds one small file per session per kind — `.start`, `.branch-*`, one `.skill-seen-*`
+per skill, `.warned*`, `.handoff-written` — and they are dead the moment the session ends.
+`prune_state()` sweeps everything in `state/` older than this at session start, with two
+carve-outs: `.alive` is bounded by count (newest 20) and `.slot*` is never touched (live
+concurrency state). ⚠ **It is a SAFETY margin, not a usefulness one,** and it must exceed the
+longest a single session can run, because two markers fail **open** if swept mid-session: `.start`
+(its absence drops that session to advisory, brake off) and `.branch-<repo>` (its absence
+re-baselines the commit-branch guard to whatever is checked out). An open but idle session
+refreshes nothing, so a window left open for days with a small value loses both — shrink it only
+if you know your sessions are short. ⚠ **Delete-safe like `history_keep_days`:** a word, `0`, a
+negative or `null` means **keep everything**.
 
 **Keep every API response** (`debug.API_response_usage`, off by default). With it on, every
 response from the usage endpoint is stored **complete** under `history_dir` as

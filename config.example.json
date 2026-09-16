@@ -207,6 +207,10 @@
     "_slot_ttl_min_zh": "比這個更舊的佔位會被視為已放棄。一個死在 PostToolUse 之前的派工 — 被中斷、API 錯誤、行程被殺 — 否則會永遠佔著那個位子，而之後每一個派工都會被拒絕，「那看起來跟規則正常運作一模一樣」。",
     "slot_ttl_min": 30,
 
+    "_state_keep_days": "How many days a per-session state marker survives. The state/ folder holds one small file per session per kind (.start, .branch-*, .skill-seen-*, .warned*, .handoff-written); they are dead the moment the session ends, and prune_state() sweeps them by age at session start (.alive is bounded by count instead, .slot* is never touched). ⚠ IT IS A SAFETY MARGIN, not a usefulness one, and it must EXCEED the longest a single session can run, because two markers fail OPEN if swept mid-session: .start (its absence turns that session's brake off, dropping to advisory) and .branch-<repo> (its absence re-baselines the commit-branch guard to whatever branch is checked out, waving through a commit that drifted onto another session's branch). An open but IDLE session refreshes nothing, so a window left open for days with a small value loses both. 7 days is that margin - shrink it only if you know your sessions are short. ⚠ DELETE-SAFE like history_keep_days: a string, a negative, 0 or null means KEEP EVERYTHING, never fall back to 7 and start deleting.",
+    "_state_keep_days_zh": "每一個「per-session」的狀態標記檔保留幾天。state/ 資料夾每個 session、每一種各留一個小檔（.start、.branch-*、.skill-seen-*、.warned*、.handoff-written），session 一結束就沒用了；prune_state() 在 session 開始時依「檔案時間」清掉（.alive 改用「數量」上限、.slot* 完全不碰）。⚠ 這是「安全邊際」不是「有用期」，而且必須超過「單一 session 可能跑的最長時間」，因為有兩個標記若在 session 執行中被掃掉會「fail open」：.start（不見了那個 session 的煞車就關掉、降成勸告）和 .branch-<repo>（不見了 commit-branch 守衛會用「當下所在的分支」重設基準，把一個漂到別的 session 分支上的 commit 放行）。一個開著但閒置的 session 什麼都不刷新，所以視窗開著好幾天又設很小的值，兩個都會掉。7 天就是那個邊際 —— 只有在你確定 session 都很短時才調小。⚠ 跟 history_keep_days 一樣「刪除安全」：填字串、負數、0 或 null 都代表「全部保留」，絕不會退回 7 天然後開始刪。",
+    "state_keep_days": 7,
+
     "_brake_on_usage": "Refuse a dispatch when the verdict is STOP.",
     "_brake_on_usage_zh": "判定是 STOP 的時候拒絕派工。",
     "brake_on_usage": true,

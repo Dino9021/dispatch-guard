@@ -33,6 +33,25 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.59.1
+
+**state/ 目錄無限累積,現在會清。** 每個 session 在 state/ 留一組 per-session 標記檔(`.start`、
+`.branch-*`、`.skill-seen-*`、`.warned*`、`.handoff-written`…),session 一結束就沒用了。
+`prune_state()` 本來只清其中幾種,漏掉最大宗 —— 光 `.branch-*` 就佔 322 個檔裡的 179 個。現在改成
+「除了例外全掃」:state/ 裡超過 `state_keep_days` 天的檔一律依時間清掉,只留兩個例外 —— `.alive`
+改用「數量」上限、`.slot*` 完全不碰(那是活的併發狀態,有自己的分鐘級回收)。以後新增的標記種類會
+自動被涵蓋,不會再漏。
+
+- **`state_keep_days` 可在 config 設定,預設 7 天** —— 每個安裝都套用、未來持續清理。
+- ⚠ 這是「安全邊際」:一個還在跑的 session 的 `.start` 是讓它煞車保持「開」的開關,所以天數必須超過
+  單一 session 可能跑的最長時間。7 天就是那個邊際,不是隨便縮的旋鈕。
+- ⚠ 跟 `history_keep_days` 一樣「刪除安全」:填字串、負數、0、null 都代表「全部保留」,用
+  `usage._days()` 轉換,不列入 NUMERIC_KEYS。
+- selftest 驗證:各種舊標記被掃、近期的留著、`.slot*` 不動、`.alive` 依數量、壞設定不刪任何東西;
+  三個突變殺過(時間判斷、`.slot` 例外、刪除安全)。實測真實目錄:170 個 >7 天的會清、132 個近期的留。
+
+---
+
 ## 0.59.0
 
 **接近 reset 窗口、剩餘額度撐得過時,不再 PACE/STOP。** 舊規則只看固定門檻,所以一個馬上要重置、又還有餘裕的
@@ -2212,6 +2231,28 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.59.1
+
+**The state/ directory grew unbounded; it is now reaped.** Every session leaves a set of
+per-session markers in state/ (`.start`, `.branch-*`, `.skill-seen-*`, `.warned*`,
+`.handoff-written`); they are dead the moment the session ends. `prune_state()` reaped only a
+few kinds and missed the bulk - `.branch-*` alone was 179 of 322 files. It now sweeps ALL of
+state/ by age with only two carve-outs: `.alive` is bounded by count, and `.slot*` is never
+touched (live concurrency state with its own minute-scale reclaim). A marker kind added later
+is covered automatically instead of being missed the same way.
+
+- **`state_keep_days` is configurable, default 7 days** - shipped so every install applies it
+  and keeps cleaning, not just this one machine.
+- ⚠ It is a SAFETY margin: a live session's `.start` is the switch that keeps its brake ON, so
+  the window must exceed the longest a single session can run. 7 days is that margin.
+- ⚠ DELETE-SAFE like `history_keep_days`: a string, a negative, 0 or null keeps EVERYTHING
+  (coerced by `usage._days()`, not listed in NUMERIC_KEYS).
+- Selftest covers the age sweep across kinds, recent-kept, `.slot*` untouched, the `.alive`
+  count bound, and delete-safety; three mutations killed (age check, `.slot` exception,
+  delete-safe). Dry-run on the real folder: 170 files >7d swept, 132 recent kept.
 
 ---
 

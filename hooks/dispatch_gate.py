@@ -88,6 +88,16 @@ DEFAULTS = {
     "max_slots": 16,
     "slot_ttl_min": 30,
     "approval_ttl_min": 60,             # a concurrency approval expires; see approved_slots
+    # ⛔ HOW LONG A PER-SESSION STATE MARKER SURVIVES, in days. state/ holds one small file per
+    # session per kind (.start, .branch-*, .skill-seen-*, .warned*, ...) and they are dead the
+    # moment the session ends; prune_state() sweeps them by age at session start. ⚠ IT IS A
+    # SAFETY margin, not a usefulness one: a live session's .start is the switch that keeps its
+    # brake ON, so this must exceed the longest a single session can run - 7 days is that margin,
+    # not a tuning knob to shrink casually. ⚠ DELETE-SAFE like history_keep_days: a bad value
+    # (string, negative, 0) means KEEP EVERYTHING, never "fall back to 7 and start deleting" -
+    # so it is coerced by usage._days(), NOT listed in NUMERIC_KEYS.
+    "state_keep_days": 7,
+    "brake_on_usage": True,             # deny a dispatch when the verdict is STOP
     "brake_on_usage": True,             # deny a dispatch when the verdict is STOP
     "warn_on_usage": True,              # attach a note when the verdict is PACE
     # ⭐ ON BY DEFAULT: write the watcher task unless doing so would CONFLICT with something.
@@ -2400,38 +2410,54 @@ def failed_resume_note(sdir):
 # The owner asked how few could be kept. For `.alive` the answer is one; for `.start` the
 # question does not apply, because it is not a record - it is a switch.
 STATE_KEEP_ALIVE = 20            # only the newest is READ; the rest are a count on screen
-STATE_KEEP_START_DAYS = 7        # ⛔ an age rule, and it is a SAFETY margin - see below
+STATE_KEEP_DAYS_DEFAULT = 7      # ⛔ an age rule, and it is a SAFETY margin - see prune_state.
+                                 # Overridable per install via cfg["state_keep_days"].
 
 
-def prune_state(sdir):
+def prune_state(sdir, cfg=None):
     """Bound the state directory. Runs once per session start.
 
-    ⛔ WITHOUT THIS IT GROWS FOREVER. Every session leaves a `.start` and a `.alive` and
-    neither was ever removed - 63 files after one day of ordinary work, so a year is
-    thousands of tiny files in a folder a person is expected to look inside. Found because
-    the owner noticed it growing, not because anything failed.
+    ⛔ WITHOUT THIS IT GROWS FOREVER. Every session leaves one small file per KIND - a
+    `.start`, an `.alive`, a `.branch-<repo>`, a `.skill-seen-<name>` for each skill, a
+    `.warned`/`.warned-tool*`, a `.handoff-written` - and none was removed. Measured: 322
+    files across 19 days, in a folder a person is expected to look inside. Found because the
+    owner noticed it growing, not because anything failed.
 
-    ⭐ `.alive` IS PRUNED BY COUNT, and one would do. It exists so a scheduled resume can
-    ask "has any session been alive since the window reopened?", which only ever reads the
-    NEWEST. The others contribute a count to `install.py --status` and nothing else, so 20
-    is a generous round number rather than a requirement.
+    ⛔ ALL-BUT-EXCEPTIONS, NOT A SUFFIX LIST. An earlier version enumerated the kinds it knew
+    (`.warned`, `.handoff-written`, `.start`) and missed every other - `.branch-*` alone was
+    179 of those 322 files. A new marker kind added later would be missed again the same way.
+    So this sweeps EVERYTHING in state/ by age, with only the two kinds that have a different
+    rule carved out:
+      - `.alive` - PRUNED BY COUNT, newest STATE_KEEP_ALIVE kept. A scheduled resume reads only
+        the NEWEST ("has any session been alive since the window reopened?"); the rest are a
+        count on `install.py --status`. Handled first, then skipped by the age sweep.
+      - `.slot*` - NOT TOUCHED. Live concurrency state with its own minute-scale reclaim
+        (slot_ttl_min); removing a held one hands out a slot twice.
 
-    ⛔ `.start` IS PRUNED BY AGE ONLY, and NEVER BY COUNT. It is not data - it is the switch
-    that decides whether this session is ENFORCED. `session_start()` returning None sends
-    the gate down the ADVISORY branch, so deleting the marker of a session that is still
-    running silently turns its brake off. ⚠ And liveness cannot be inferred: an open but
-    IDLE session fires no hooks, so it refreshes nothing and looks exactly like a dead one.
-    A week is therefore a safety margin, not a usefulness one - the file is worthless the
-    moment its session ends, and the margin is there because we cannot tell when that was.
-    ⇒ If this ever needs to shrink, the thing to change is the FAIL-OPEN, not the margin.
+    ⛔ TWO ENFORCEMENT MARKERS ARE SWEPT BY AGE WITH THE REST, and that age is a SAFETY margin,
+    because BOTH fail OPEN when lost mid-session:
+      - `.start` is the switch that decides whether a session is ENFORCED at all:
+        `session_start()` returning None sends the gate down the ADVISORY branch, so deleting a
+        still-running session's marker silently turns its brake off.
+      - `.branch-<repo>` is the commit-branch guard's baseline (cmd_guards.g_commit_branch).
+        With it gone, the next commit RE-RECORDS whatever branch is checked out and allows it -
+        so a commit that has drifted onto another session's branch, the exact damage that guard
+        exists to prevent, is waved through and re-blessed.
+    ⚠ Liveness cannot be inferred - an open but IDLE session fires no hooks and looks exactly
+    like a dead one - so the margin must EXCEED the longest a single session can run.
+    `state_keep_days` (default 7) is that margin, not a tuning knob to shrink casually: set it
+    below your sessions' length and you weaken those two guards, not just tidy the folder.
 
-    ⚠ `.slotN` files are not touched at all. They are live concurrency state with their own
-    reclaim rule in minutes (slot_ttl_min), and removing a held one hands out a slot twice.
+    ⚠ DELETE-SAFE like history_keep_days: `state_keep_days` is coerced by usage._days(), so a
+    string / negative / 0 / null means KEEP EVERYTHING (skip the age sweep), never "fall back
+    to 7 and start deleting". The `.alive` COUNT prune still runs - it is a fixed bound, not a
+    retention setting, and deletes nothing a resume needs.
     """
     removed = 0
-    # .alive - by count, newest kept
+    state = os.path.join(sdir, "state")
+    # .alive - by count, newest kept (a fixed bound, always applied)
     alive = []
-    for path in glob.glob(os.path.join(sdir, "state", "*.alive")):
+    for path in glob.glob(os.path.join(state, "*.alive")):
         try:
             alive.append((os.path.getmtime(path), path))
         except OSError:
@@ -2442,26 +2468,20 @@ def prune_state(sdir):
             removed += 1
         except OSError:
             pass
-    # .warned and .handoff-written - per-session records, by the same age as .start. ⚠ Found
-    # by the round-2 review of 0.58.0: neither was ever pruned - one tiny file per session, and
-    # the handoff record names a path.
-    for pattern in ("*.warned", "*." + HANDOFF_SEEN):
-        for path in glob.glob(os.path.join(sdir, "state", pattern)):
+    # everything else by age. ⛔ DELETE-SAFE: a bad state_keep_days keeps everything.
+    days = usage._days((cfg or {}).get("state_keep_days"), STATE_KEEP_DAYS_DEFAULT)
+    if days > 0:
+        cutoff = time.time() - days * 86400
+        for path in glob.glob(os.path.join(state, "*")):
+            suffix = os.path.basename(path).rsplit(".", 1)[-1]
+            if suffix == "alive" or suffix.startswith("slot"):
+                continue             # .alive: by count above; .slot*: live, its own reclaim
             try:
-                if os.path.getmtime(path) < time.time() - STATE_KEEP_START_DAYS * 86400:
+                if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
                     os.remove(path)
                     removed += 1
             except OSError:
-                pass
-    # .start - by age only, never by count
-    cutoff = time.time() - STATE_KEEP_START_DAYS * 86400
-    for path in glob.glob(os.path.join(sdir, "state", "*.start")):
-        try:
-            if os.path.getmtime(path) < cutoff:
-                os.remove(path)
-                removed += 1
-        except OSError:
-            pass                 # in use, or gone already; either way not our problem
+                pass                 # in use, or gone already; either way not our problem
     return removed
 
 
@@ -2577,7 +2597,7 @@ def on_session_start(payload, root, sdir, cfg):
         with open(state_path(sdir, payload.get("session_id"), "start"), "w",
                   encoding="utf-8") as f:
             json.dump({"at": time.time(), "cwd": payload.get("cwd") or ""}, f)
-        prune_state(sdir)
+        prune_state(sdir, cfg)
     except OSError:
         pass
     # ⚠ The message below tells the agent the task root "already exists". Say that only
@@ -3749,6 +3769,43 @@ def selftest():
     _m3 = wind_down_note(_wpayload, _wdir, _wdir, {}, now=_base + 665)     # next bucket
     assert _m3 and "NET zone" in _m3, ("the net advisory did not re-fire after ~10 min: %r" % (_m3,))
     shutil.rmtree(_wdir, ignore_errors=True)
+
+    # ⛔ prune_state SWEEPS EVERY PER-SESSION MARKER BY AGE (not a suffix list), keeps the recent
+    # ones, keeps .slot* forever, bounds .alive by count, and is DELETE-SAFE on a bad setting.
+    _psdir = tempfile.mkdtemp(prefix="dg-prune-")
+    _pst = os.path.join(_psdir, "state")
+    os.makedirs(_pst)
+    _old = time.time() - 10 * 86400          # older than the 7-day margin
+    _new = time.time() - 60                  # a minute ago
+    def _plant(name, when):
+        p = os.path.join(_pst, name)
+        with open(p, "w", encoding="utf-8") as _f:
+            _f.write("x")
+        os.utime(p, (when, when))
+        return p
+    for _n in ("sidA.start", "sidA.branch-deadbeef", "sidA.skill-seen-unattended-work",
+               "sidA.warned", "sidA.warned-tool", "sidA.warned-tool-agent7",
+               "sidA.handoff-written", "sidA.require-skills-tries", "sidA.unattended-nagged"):
+        _plant(_n, _old)
+    _plant("sidB.start", _new)
+    _plant("sidB.branch-cafe", _new)
+    _plant("sidA.slot0", _old)               # live concurrency state - never age-pruned
+    for _i in range(STATE_KEEP_ALIVE + 5):
+        _plant("aliveS%d.alive" % _i, _new - _i)     # distinct mtimes for the count rule
+    prune_state(_psdir, {"state_keep_days": 7})
+    _left = set(os.listdir(_pst))
+    assert not any(n.startswith("sidA.") and n != "sidA.slot0" for n in _left), (
+        "an old per-session marker survived the age sweep: %r" % _left)
+    assert "sidB.start" in _left and "sidB.branch-cafe" in _left, (
+        "a recent marker was pruned: %r" % _left)
+    assert "sidA.slot0" in _left, "a .slot file was pruned - that is live concurrency state"
+    assert sum(1 for n in _left if n.endswith(".alive")) == STATE_KEEP_ALIVE, (
+        "the .alive count bound is wrong: %r" % _left)
+    # ⛔ DELETE-SAFE: a bad state_keep_days must KEEP EVERYTHING the age sweep would take.
+    _plant("sidC.start", _old)
+    prune_state(_psdir, {"state_keep_days": "abc"})
+    assert "sidC.start" in set(os.listdir(_pst)), "a bad state_keep_days still deleted by age"
+    shutil.rmtree(_psdir, ignore_errors=True)
 
     print("selftest OK")
     return 0
