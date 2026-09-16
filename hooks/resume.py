@@ -266,7 +266,12 @@ def reset_time(sdir, cfg):
     """
     data = usage.read_json(cfg["token_usage_file"], {}) or {}
     v = usage.verdict(sdir, usage.config(sdir), data=data)
-    key = "seven_day" if v.get("driver") == "7d" else "five_hour"
+    # ⛔ `relaxed_driver` COVERS THE RELAXED CASE. When a STOP is relaxed to GO near a reset the
+    # combined word is GO, so `driver` is None; without this, a relaxed 7d STOP arms for the 5h
+    # reset and wakes hours before the 7d window reopens - the days-away retry loop this function
+    # exists to avoid. verdict() names which window was relaxed.
+    key = ("seven_day" if v.get("driver") == "7d" or v.get("relaxed_driver") == "7d"
+           else "five_hour")
     win = data.get(key) or {}
     r = win.get("resets_at")
     if isinstance(r, (int, float)):

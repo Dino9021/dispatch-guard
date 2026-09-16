@@ -850,8 +850,9 @@ Context 長條、模型、說明移到第二列，**兩列各自裁到寬度**�
 變成長條圖跟數字互相矛盾。
 
 顏色只是提醒，不是政策：綠色 → `colour_warn_pct` 以上轉橘 → `colour_alarm_pct` 以上轉紅。
-⭐ **這兩個門檻跟「會拒絕東西」的門檻是對齊的：** 橘色 = `soft_pct_5h` 開始 PACE，
-紅色 = `hard_pct_5h` 開始 STOP。所以你瞄一眼的顏色，和 gate 做的決定，不會各說各話。
+⭐ **這兩個門檻跟「會拒絕東西」的門檻大致對齊：** 紅色 = `hard_pct_5h` 開始 STOP；橘色
+（`colour_warn_pct` 預設 70）在 5h 開始 PACE（`soft_pct_5h` 自 0.59.0 起預設 75）之前就先亮，
+所以顏色只會比煞車更早提醒、不會更晚。你瞄一眼的顏色，和 gate 做的決定，不會各說各話。
 ⚠ **但它們仍然是四個獨立的設定值。** 顏色是給人看的，門檻是拿來拒絕工具呼叫的；
 想要顏色比減速更早出現、或乾脆不要顏色的人，不該為此放棄煞車。
 
@@ -1020,7 +1021,7 @@ Nothing was dispatched. The agent has been told to save the current step and arm
 
 | 門檻 | 預設 | 行為 | 長條顏色 |
 |---|---|---|---|
-| `soft_pct_5h` | **70** | **PACE** —— 縮小範圍，派工**仍然允許** | 橘（`colour_warn_pct` 70） |
+| `soft_pct_5h` | **75** | **PACE** —— 縮小範圍，派工**仍然允許** | 橘（`colour_warn_pct` 70） |
 | `hard_pct_5h` | **85** | **STOP** —— 派工**被拒絕** | 紅（`colour_alarm_pct` 85） |
 | `soft_pct_7d` | **95** | **PACE**，由「七天」視窗觸發 | —— |
 | `hard_pct_7d` | **97** | **STOP**，由「七天」視窗觸發 | —— |
@@ -1101,8 +1102,9 @@ python hooks/usage.py --verdict --json   # 給程式讀的格式
 離開碼就是結論 — `0 GO`、`1 PACE`、`2 STOP`、`3 NO-DATA` — 腳本不用剖析文字就能分支。
 
 ⛔ **請依「那個字」行動，不要依百分比。**
-在重置前 `near_reset_min` 分鐘內，門檻會**故意**放寬，
-因為在那個時間點撞到上限的代價只是等幾分鐘，不是把做到一半的工作賠掉。
+接近重置時，若整窗燃燒速度顯示剩餘額度撐得到重置，PACE/STOP 會**故意**放寬成 GO
+（只放寬、永不收緊），因為在那個時間點撞到上限的代價只是等幾分鐘，不是把做到一半的工作賠掉。
+被放寬的 STOP 會進入 NET 區：自動設好續跑、提示更新 HANDOFF.md、並拒絕新派工。
 結論還處理了三件單看數字會判斷錯的事：重置時間的計算、週用量的假警報、以及燒完速度的推估。
 
 ---
@@ -2398,9 +2400,10 @@ than the window is passing; behind it means there is slack. A bare percentage ca
 proportion read a cell short, so the bar and the number disagree.
 
 Colours are attention, not policy: green, orange from `colour_warn_pct`, red from
-`colour_alarm_pct`. ⭐ **Aligned with the thresholds that decide:** orange is where
-`soft_pct_5h` starts PACE, red is where `hard_pct_5h` starts STOP, so the bar you glance at and the
-decision the gate makes cannot disagree. ⚠ They remain four separate keys: colour is what a
+`colour_alarm_pct`. ⭐ **Roughly aligned with the thresholds that decide:** red is where `hard_pct_5h` starts STOP;
+orange (`colour_warn_pct`, default 70) lights just BEFORE the 5h PACE point (`soft_pct_5h`, default
+75 since 0.59.0), so the colour only ever warns earlier than the brake, never later. The bar you
+glance at and the decision the gate makes cannot disagree. ⚠ They remain four separate keys: colour is what a
 person reads, the thresholds are what refuses a tool call, and wanting the warning earlier than
 the slow-down must not cost you the brake.
 
@@ -2581,7 +2584,7 @@ that is `PreToolUse`, judged on every dispatch, and refused every time.
 
 | Threshold | Default | Behaviour | Bar colour |
 |---|---|---|---|
-| `soft_pct_5h` | **70** | **PACE** — shrink scope, dispatch is **still allowed** | orange (`colour_warn_pct` 70) |
+| `soft_pct_5h` | **75** | **PACE** — shrink scope, dispatch is **still allowed** | orange (`colour_warn_pct` 70) |
 | `hard_pct_5h` | **85** | **STOP** — dispatch is **refused** | red (`colour_alarm_pct` 85) |
 | `soft_pct_7d` | **95** | **PACE**, driven by the seven-day window | — |
 | `hard_pct_7d` | **97** | **STOP**, driven by the seven-day window | — |
@@ -2667,10 +2670,12 @@ python hooks/usage.py --verdict --json   # machine-readable
 Exit codes carry the verdict — `0 GO`, `1 PACE`, `2 STOP`, `3 NO-DATA` — so a script can branch
 without parsing.
 
-⛔ **Act on the word, never on the percentage.** Within `near_reset_min` of a reset the thresholds
-deliberately soften, because hitting the cap there costs a pause of a few minutes rather than lost
-work. Three things the verdict handles that a raw reading gets wrong: reset arithmetic, weekly
-false alarms, and burn projection.
+⛔ **Act on the word, never on the percentage.** Near a reset, a PACE/STOP is deliberately
+RELAXED to GO when the whole-window burn rate says the remaining budget survives to the reset (it
+only loosens, never tightens), because hitting the cap there costs a pause of a few minutes rather
+than lost work. A relaxed STOP enters the NET zone: a resume is armed, HANDOFF.md is kept fresh,
+and new dispatch is refused. Three things the verdict handles that a raw reading gets wrong: reset
+arithmetic, weekly false alarms, and burn projection.
 
 ---
 

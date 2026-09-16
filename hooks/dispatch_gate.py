@@ -1695,7 +1695,10 @@ def handoff_refusal(root, sdir, cfg, folder, started, log_to=None):
     if not cfg.get("require_handoff_past_soft", DEFAULTS["require_handoff_past_soft"]):
         return None
     v = usage.verdict(sdir, usage.config(sdir))
-    if v["verdict"] not in ("PACE", "STOP"):
+    # ⭐ THE NET ZONE COUNTS AS PAST-SOFT. A relaxed STOP reads GO, but a new dispatch there
+    # still needs a fresh handoff - the window can hit the cap mid-dispatch, and the net's
+    # promise is that the handoff is current. `relaxed_stop` catches it whatever the word.
+    if v["verdict"] not in ("PACE", "STOP") and not v.get("relaxed_stop"):
         return None
     state, path = handoff_state(root, cfg, folder, started)
     if state in ("ok", "unknown"):
@@ -1738,8 +1741,13 @@ def arm_trigger(v):
     only when the window is closing - see the NO-DATA problem, where the guarantee is voided
     precisely because there is no verdict to act on. That change is one edit here and none
     anywhere else, which is the point of the function existing at all.
+
+    ⭐ AND IT ARMS IN THE NET ZONE. A relaxed STOP reads GO, but the whole point of relaxing it
+    was to keep working INTO a window that can still hit the cap - so the resume must be armed
+    exactly then, or the safety the relaxation promised does not exist. `relaxed_stop` is true
+    whenever a STOP was overridden in either window, independent of the display word.
     """
-    return v.get("verdict") in ("PACE", "STOP")
+    return v.get("verdict") in ("PACE", "STOP") or bool(v.get("relaxed_stop"))
 
 
 def generated_handoff(sdir, cfg, session_id, cwd, log_tail=""):
@@ -1813,7 +1821,7 @@ def gate_log_tail(sdir, lines=12):
         return ""
 
 
-def wind_down_note(payload, root, sdir, cfg):
+def wind_down_note(payload, root, sdir, cfg, now=None):
     """The PACE/STOP wind-down, at most once per level per agent. Text, or None.
 
     ⛔ THIS IS THE HALF THAT WAS UNREACHABLE. The plugin had two action points - a dispatch
@@ -1823,9 +1831,10 @@ def wind_down_note(payload, root, sdir, cfg):
     `USAGE(` line in any gate log on the machine. The gate received every one of those tool
     calls and returned early.
 
-    ⭐ IT USES level(), NOT verdict(). Measured: 28.99 ms against 0.471 ms, 62x, same word.
-    On a path that runs for every tool call, verdict()'s burn projection is not affordable -
-    and the word does not depend on it.
+    ⭐ IT USES verdict(cheap=True), NOT the full verdict(). Measured: 28.99 ms against 0.471 ms,
+    62x, same word. On a path that runs for every tool call, the full burn projection is not
+    affordable - and the word does not depend on it. ⚠ cheap STILL carries `relaxed_stop` (the
+    relaxation is in the shared path), so the net zone is visible here without the full cost.
 
     ⚠ ONE MARKER PER AGENT, not per session. A sub-agent's hook payload carries the PARENT's
     `session_id` - measured twice - and so does its `transcript_path`, so neither
@@ -1842,29 +1851,57 @@ def wind_down_note(payload, root, sdir, cfg):
     if session_start(sdir, sid) is None:
         return None            # an unstamped session is advisory for everything else too
     try:
-        word = usage.level(sdir, usage.config(sdir))
+        # ⚠ cheap=True keeps the per-tool-call cost at ~0.5 ms (it skips the burn projection),
+        # but STILL carries `relaxed_stop` - that is computed in the shared path, so the net
+        # zone is visible here without paying for the full verdict. See verdict()'s cheap path.
+        v = usage.verdict(sdir, usage.config(sdir), cheap=True)
     except Exception as exc:
         # ⚠ FAIL OPEN AND SAY SO. A wind-down that raises must not take a tool call with it.
         log(root, "WIND-DOWN-FAILED %r" % (exc,))
         return None
-    if word not in ("PACE", "STOP"):
+    word = v["verdict"]
+    relaxed_stop = v.get("relaxed_stop")
+    # ⭐ THE NET ZONE. A STOP was relaxed near the reset, so the word is GO and the brake does
+    # not fire - but the agent must keep its handoff fresh and start no new dispatch, because
+    # the window can still hit the cap. ⚠ A BINDING STOP WINS: if the combined word is still
+    # STOP (the OTHER window is a far STOP), that is the message, not the net. Treated as its
+    # own level for the once-per-level marker.
+    if word == "STOP":
+        level_key = "STOP"
+    elif relaxed_stop:
+        # ⭐ THE NET RE-FIRES ON A ~10-MIN CADENCE, not once. The owner's requirement is to keep
+        # HANDOFF.md fresh WHILE working into the net zone (每 N 分鐘重寫), so the marker is
+        # time-bucketed: each 10-minute bucket is a distinct key, so the reminder returns once
+        # per bucket instead of self-suppressing for the rest of the session. PACE and STOP keep
+        # their once-per-level semantics.
+        now = now if now is not None else time.time()
+        level_key = "NET-%d" % (int(now) // 600)
+    elif word == "PACE":
+        level_key = "PACE"
+    else:
         return None
     agent = payload.get("agent_id")
     mark = state_path(sdir, sid, "warned-tool" + ("-" + str(agent) if agent else ""))
     try:
         with open(mark, encoding="utf-8") as f:
-            if f.read().strip() == word:
+            if f.read().strip() == level_key:
                 return None                     # already said, at this level, to this agent
     except OSError:
         pass
     try:
         os.makedirs(os.path.dirname(mark), exist_ok=True)
         with open(mark, "w", encoding="utf-8") as f:
-            f.write(word)
+            f.write(level_key)
     except OSError:
         pass
-    log(root, "USAGE(%s) tool-path%s" % (word, " agent=" + str(agent) if agent else ""))
-    if word == "PACE":
+    log(root, "USAGE(%s) tool-path%s" % (level_key, " agent=" + str(agent) if agent else ""))
+    if level_key.startswith("NET"):
+        return ("dispatch-guard: usage is in the NET zone - a STOP is relaxed because this "
+                "window resets soon and the remaining budget survives. Keep working, but "
+                "rewrite HANDOFF.md every ~10 min and start NO new dispatch (a sub-agent). A "
+                "resume is armed, so if the window does hit the cap the next run continues from "
+                "your handoff.")
+    if level_key == "PACE":
         return ("dispatch-guard: usage is at PACE. Finish the step you are on and do not "
                 "start anything new or expand scope. There is no need to stop working.")
     return ("dispatch-guard: usage is at STOP - this window is nearly spent and the next "
@@ -2460,6 +2497,9 @@ def stand_down_resume(root, sdir, v):
                  ADR 20260902-142400, decision 6 ⟨R2⟩.
         GO       CANCEL. There is MEASURED headroom, so the work can proceed now, in this
                  session, with its context. The alarm has nothing left to do.
+        GO+relaxed_stop  KEEP. The word is GO only because a STOP was RELAXED near the reset -
+                 the window is still closing and we are working into it on purpose. Cancelling
+                 the backup here would strip the net exactly when it was armed. See usage._relax.
 
     ⭐ A route (A) wake lands here too - the cron wake arrives as a UserPromptSubmit - so
     the backup is retired the moment the preferred route actually works.
@@ -2474,6 +2514,11 @@ def stand_down_resume(root, sdir, v):
     killed and fails open, which is the same outcome as any other gate failure.
     """
     if v["verdict"] != "GO":
+        return ""
+    # ⛔ THE NET ZONE KEEPS THE RESUME. A relaxed STOP reads GO, but it means the window is
+    # still closing and we are knowingly working into it - cancelling the backup here would
+    # strip the safety net exactly when it was armed on purpose. Same KEEP as STOP in the table.
+    if v.get("relaxed_stop"):
         return ""
     state = usage.read_json(os.path.join(sdir, "resume.json"), None)
     if not isinstance(state, dict):
@@ -2731,10 +2776,11 @@ def _wake_hint(v):
 
     ⛔ It does NOT offer a plain background sleep, and the reason is worth writing down.
     The harness caps a command at ten minutes, so a sleep can only cover a short wait -
-    but a short wait never reaches here: the near-reset exemption softens STOP to PACE
-    within near_reset_min (20 minutes by default) of the reset, so any refusal that gets
-    this far has at least that long to wait. A first version branched on the sleep case
-    and the branch was unreachable by construction; measured, not reasoned.
+    but a short wait never reaches here: a STOP that is genuinely near its reset is RELAXED to
+    GO by the near-reset projection (usage._relax), so a refusal that gets this far is one the
+    projection did NOT relax - the window is either far from reset or projected to hit the cap,
+    and in both the wait is far longer than a sleep can cover. A first version branched on the
+    sleep case and the branch was unreachable by construction; measured, not reasoned.
 
     ⚠ THE CRON JOB DIES WITH THE SESSION. It is held in the session's memory and is never
     written to disk, so "the session did not survive" does not make this route fail - it
@@ -2803,6 +2849,30 @@ def on_pre_agent(payload, root, sdir, cfg, wind=None):
                                 "%d%%. Nothing was dispatched. The agent has been told to "
                                 "save the current step and arm a resume."
                                 % (v["verdict"], round(v.get("pct") or 0))))
+            return
+        if v.get("relaxed_stop") and cfg["brake_on_usage"]:
+            # ⭐ THE NET ZONE, THE OWNER'S STRICT 甲. A STOP was relaxed so the MAIN session
+            # keeps working - but a NEW sub-agent dispatch is the most expensive thing it can
+            # do and is NOT covered by the armed resume, so it is refused here. The main
+            # session's own sequential work never reaches this dispatch hook, so it is not
+            # blocked. ⚠ Arm first, like the STOP branch, because this returns before the later
+            # auto-arm.
+            try:
+                maybe_auto_arm(root, sdir, cfg,
+                               plan_for(root, cfg, tool_input.get("prompt") or "")[1],
+                               started, sid, session_cwd(sdir, sid))
+            except Exception as exc:
+                log(root, "AUTO-ARM-FAILED %r" % (exc,))
+            log(root, "DENY(usage-net pct=%s) %s" % (round(v.get("pct") or 0), desc))
+            deny(event, "dispatch gate: %s ⛔ You are in the NET zone - a STOP was relaxed "
+                        "because the window resets soon and the budget survives. Keep doing "
+                        "your OWN work, but dispatching a NEW sub-agent is refused: it can burn "
+                        "the budget the relaxation is counting on, and the armed resume does "
+                        "not cover an in-flight sub-agent. Rewrite HANDOFF.md and continue "
+                        "yourself." % v["text"],
+                 systemMessage=("dispatch-guard: sub-task dispatch REFUSED - NET zone (a STOP "
+                                "relaxed near the reset). Nothing was dispatched; the main "
+                                "session keeps working and a resume is armed."))
             return
         if v["verdict"] == "PACE" and cfg["warn_on_usage"]:
             note = ("Usage is high (%s). Do this unit and report; do NOT expand scope, "
@@ -3624,6 +3694,61 @@ def selftest():
     assert "opus $%g" % price_of(dict(family_latest())["opus"]) in filled, filled[:900]
     assert not re.search(r"haiku \$1, sonnet \$2, opus \$5, fable \$10", PREPEND), \
         "the price list is hard-coded in PREPEND again"
+
+    # ⛔ THE NET ZONE. A relaxed STOP reads GO but carries relaxed_stop=True; the resume must
+    # ARM and must NOT be stood down. Both guards key off relaxed_stop, never the word.
+    assert arm_trigger({"verdict": "GO", "relaxed_stop": True}) is True, "net zone must arm"
+    assert arm_trigger({"verdict": "GO"}) is False, "a plain GO must not arm"
+    assert arm_trigger({"verdict": "PACE"}) is True
+    assert arm_trigger({"verdict": "STOP"}) is True
+    # stand_down: a relaxed GO must return "" WITHOUT reaching do_cancel, a plain GO with a
+    # future alarm must reach it. Inject a fake `resume` so no schtasks runs and the call is
+    # observable. ⚠ stand_down imports `resume` inside the function, so sys.modules is the hook.
+    import types as _types
+    _ndir = tempfile.mkdtemp(prefix="dg-net-")
+    with open(os.path.join(_ndir, "resume.json"), "w", encoding="utf-8") as _f:
+        json.dump({"at": time.time() + 3600}, _f)          # a FUTURE alarm, ours to cancel
+    _cc = []
+    _fake = _types.ModuleType("resume")
+    _fake.do_cancel = lambda sdir, quiet=True: (_cc.append(sdir), 0)[1]
+    _saved = sys.modules.get("resume")
+    sys.modules["resume"] = _fake
+    try:
+        assert stand_down_resume(_ndir, _ndir, {"verdict": "GO", "relaxed_stop": True}) == "", \
+            "net zone must not stand down"
+        assert _cc == [], "the net zone reached do_cancel - the resume was cancelled"
+        _msg = stand_down_resume(_ndir, _ndir, {"verdict": "GO"})
+        assert _cc == [_ndir], "a plain GO with a future alarm must cancel: %r" % (_cc,)
+    finally:
+        if _saved is not None:
+            sys.modules["resume"] = _saved
+        else:
+            sys.modules.pop("resume", None)
+    shutil.rmtree(_ndir, ignore_errors=True)
+
+    # ⛔ THE NET ADVISORY RE-FIRES ON A ~10-MIN CADENCE, not once - the owner's "每 N 分鐘重寫
+    # handoff". The marker is time-bucketed: two calls in the same 10-min bucket emit once, a
+    # call in the next bucket emits again. Real relaxed-STOP scenario: 5h 90%, resets in 12 min.
+    _wdir = tempfile.mkdtemp(prefix="dg-wind-")
+    os.makedirs(os.path.join(_wdir, "state"), exist_ok=True)
+    _wsid = "sess-net"
+    with open(state_path(_wdir, _wsid, "start"), "w", encoding="utf-8") as _f:
+        _f.write("x")                                       # stamp the session
+    _rt = time.time()
+    with open(os.path.join(_wdir, "token_usage.json"), "w", encoding="utf-8") as _f:
+        json.dump({"ts": int(_rt * 1000),
+                   "five_hour": {"used_percentage": 90, "resets_at": int(_rt + 12 * 60)}}, _f)
+    _wpayload = {"session_id": _wsid}
+    _wv = usage.verdict(_wdir, usage.config(_wdir), now=_rt)
+    assert _wv["verdict"] == "GO" and _wv["relaxed_stop"] is True, ("not the net zone: %r" % _wv)
+    _base = (int(_rt) // 600) * 600                          # bucket-aligned, no boundary flake
+    _m1 = wind_down_note(_wpayload, _wdir, _wdir, {}, now=_base + 5)
+    assert _m1 and "NET zone" in _m1, ("the net advisory did not fire: %r" % (_m1,))
+    _m2 = wind_down_note(_wpayload, _wdir, _wdir, {}, now=_base + 65)      # same 10-min bucket
+    assert _m2 is None, ("the net advisory repeated inside one bucket: %r" % (_m2,))
+    _m3 = wind_down_note(_wpayload, _wdir, _wdir, {}, now=_base + 665)     # next bucket
+    assert _m3 and "NET zone" in _m3, ("the net advisory did not re-fire after ~10 min: %r" % (_m3,))
+    shutil.rmtree(_wdir, ignore_errors=True)
 
     print("selftest OK")
     return 0

@@ -82,10 +82,24 @@ DEFAULTS = {
     # told GO and dispatched until the server refused - the 5h number was true and the
     # answer was wrong. ⚠ The 7d pair sits high on purpose: that window is usually NOT the
     # constraint, and pacing on it at 70% would throttle a week of work for nothing.
-    "soft_pct_5h": 70,       # PACE  - finish what is in flight, start nothing heavy
+    "soft_pct_5h": 75,       # PACE  - finish what is in flight, start nothing heavy
     "hard_pct_5h": 85,       # STOP  - wrap up and schedule a resume
     "soft_pct_7d": 95,
     "hard_pct_7d": 97,
+    # ⭐ THE NEAR-RESET RELAXATION (projection). Near a reset, a PACE/STOP is RELAXED to GO
+    # when the whole-window burn rate says the remaining headroom survives to the reset. It
+    # NEVER tightens - a burn rate may only loosen the word, never add caution (the inverted
+    # SHELVED §2 invariant). See _relax() and Memory/tasks/20260916-143157-projection-stop-rule/.
+    # ⚠ THE RATE IS WHOLE-ANCHORED (pct / minutes since the window opened), NOT a trailing
+    # rate: it must be computed in the SHARED verdict path so verdict(cheap=True) (the brake)
+    # and verdict() produce the SAME word - a trailing rate needs _burn_rate's history parse,
+    # which the cheap path cannot afford. Whole-anchored is never None and is account-safe by
+    # construction. Data (ab_rate.py): recovers one MORE wasted pause than max(whole,trailing)
+    # at zero added danger.
+    "relax_margin": 1.5,        # require headroom >= margin * rate * minutes_to_reset
+    "relax_horizon_min": 60,    # 5h: do not trust a projection more than this far from reset
+    "relax_ceiling_5h": 95,     # never relax the 5h window at or above this pct
+    "relax_ceiling_7d": 99,     # never relax the 7d window at or above this pct (owner's 98% case)
     # ⭐ HOW FAR BACK THE BURN GAUGE LOOKS. The gauge answers "how fast am I burning NOW",
     # so it reads the last `burn_window_min` minutes rather than the whole five-hour window.
     # ⚠ 0 means the WHOLE WINDOW - steady, and roughly `pct / minutes elapsed`, but it takes
@@ -116,7 +130,6 @@ DEFAULTS = {
     "burn_x_orange": 1.75,   # ...orange
     "burn_x_red": 2.25,      # ...red
     "stale_min": 15,         # data older than this is not trusted
-    "near_reset_min": 20,    # within this long of the reset, soften by one level
     "colour_warn_pct": 70,   # bar turns orange at or above this
     "colour_alarm_pct": 85,  # bar turns red at or above this
     # ⛔ HOW FAR PAST ITS OWN ┃ MARKER A BAR MUST BE BEFORE IT TURNS YELLOW, in percentage
@@ -1517,6 +1530,12 @@ def display_state(v, record, cfg, now=None):
 # the literal is what stops the colour, the bars and the rate drifting onto different ideas
 # of how long the window is.
 FIVE_HOUR_SECONDS = 5 * 3600
+# ⭐ THE SEVEN-DAY WINDOW SPAN. The bars inline `7 * 86400` (they take the span as an
+# argument), but the near-reset relaxation needs it NAMED: it anchors the 7d whole-window burn
+# rate at `opened = resets_7d - SEVEN_DAY_SECONDS`. ⛔ Get this wrong (e.g. reuse the 5h span)
+# and the 7d rate reads ~60x too high, `survives` never holds, and the owner's near-empty-7d
+# case is refused SILENTLY. See _relax().
+SEVEN_DAY_SECONDS = 7 * 86400
 
 BAR_MARK = "┃"    # the elapsed-time marker
 
@@ -2356,25 +2375,6 @@ def _line(record, stale_note=None, cfg=None, payload=None, stale=None, burn=None
 
 # --------------------------------------------------------------------------- verdict
 
-def level(sdir, cfg, now=None):
-    """The verdict WORD only - GO / PACE / STOP / NO-DATA - and cheaply.
-
-    ⭐ FOR A CALLER ON A PER-TOOL-CALL PATH, where verdict()'s cost is not affordable.
-    Measured across three reviewers on two machines: `verdict()` runs `_burn_rate` TWICE
-    (once through `_projection`, once through `burnout_min`), costs tens of milliseconds, and
-    grows with the number of history rows. The word does not depend on any of it.
-
-    ⛔ IT IS A PARAMETER, NOT A SECOND IMPLEMENTATION, and that is the whole point. The
-    thresholds, the reset arithmetic and the seven-day rule are subtle enough that two copies
-    would be two chances to disagree - and a display that disagreed with the brake is the
-    defect this module has already been bitten by. ⇒ Same function, projection skipped.
-
-    ⚠ The check asserts these two agree over a grid; if they ever diverge, the divergence is
-    the bug, not the assertion.
-    """
-    return verdict(sdir, cfg, now=now, cheap=True)["verdict"]
-
-
 def verdict(sdir, cfg, now=None, data=None, cheap=False):
     """GO / PACE / STOP / NO-DATA, with the reasoning that makes each one correct.
 
@@ -2382,9 +2382,16 @@ def verdict(sdir, cfg, now=None, data=None, cheap=False):
     wrong when an agent reads token_usage.json directly, and all three are handled here:
     reset arithmetic, seven-day false alarms, and burn projection.
 
-    ⚠ `cheap` skips the burn projection and returns the same WORD - see level(), which is
-    the only caller that should pass it. The `text` it produces then carries no burn note,
-    so a caller that shows text to a human must not use it.
+    ⭐ `cheap=True` IS THE PER-TOOL-CALL BRAKE PATH, where the full cost is not affordable.
+    Measured across three reviewers on two machines: the full `verdict()` runs `_burn_rate`
+    TWICE (through `_projection` and `burnout_min`), costs tens of milliseconds, and grows with
+    the history; `cheap` skips both. ⛔ IT SKIPS THE PROJECTION, NOT A SECOND IMPLEMENTATION:
+    the WORD - thresholds, reset arithmetic, the seven-day rule, AND the near-reset relaxation
+    (`_relax`, whole-anchored so it needs no history) - is computed in the shared path, so
+    cheap and full return the SAME word. A display that disagreed with the brake is the defect
+    this module was already bitten by. ⚠ The selftest grid asserts cheap == full over a grid of
+    inputs; if they ever diverge, the divergence is the bug, not the assertion. The `text`
+    under `cheap` carries no burn note, so a caller showing text to a human must not pass it.
     """
     now = now if now is not None else time.time()
     # ⚠ `data` is an INTERNAL shortcut for a caller in this file that has just read or
@@ -2433,6 +2440,7 @@ def verdict(sdir, cfg, now=None, data=None, cheap=False):
     proj = burn = None
     early = False
     five_level = None
+    five_relaxed_stop = seven_relaxed_stop = False
     if not five_over:
         # ⛔ ONLY THE TWO EXPENSIVE CALLS ARE SKIPPED, never the level computation
         # below them. Gating the whole block was the first attempt and it made `cheap`
@@ -2474,7 +2482,11 @@ def verdict(sdir, cfg, now=None, data=None, cheap=False):
         #
         # if five_level is None and proj is not None and proj >= 100:
         #     five_level = "PACE"
-        five_level = _soften_near_reset(five_level, remain_min, cfg)
+        # ⭐ NEAR-RESET RELAXATION replaces the old one-level soften. A PACE/STOP within
+        # `relax_horizon_min` of the reset becomes GO when the whole-window burn survives to
+        # the reset. It never tightens. See _relax().
+        five_level, five_relaxed_stop = _relax(
+            five_level, pct, remain_min, resets, now, FIVE_HOUR_SECONDS, cfg, "5h")
     burn_note = ("" if not early else
                  " ⛔ At the current rate the 5h window is SPENT in ~%d min - %d min BEFORE "
                  "it resets. Plan for the gap, not for the reset."
@@ -2489,7 +2501,10 @@ def verdict(sdir, cfg, now=None, data=None, cheap=False):
     if _seven_day_binds(seven, now):
         remain7 = int((resets7 - now) / 60)
         seven_level = _window_level(pct7, cfg["soft_pct_7d"], cfg["hard_pct_7d"])
-        seven_level = _soften_near_reset(seven_level, remain7, cfg)
+        # ⚠ NO horizon cap for 7d: the whole-window 7d rate self-scales, so a near-empty 7d
+        # only satisfies `survives` within hours of its own reset. See _relax() and the ADR.
+        seven_level, seven_relaxed_stop = _relax(
+            seven_level, pct7, remain7, resets7, now, SEVEN_DAY_SECONDS, cfg, "7d")
 
     # ⭐ THE STRICTER OF THE TWO WINS, and ties go to the five-hour window because it is the
     # nearer and more actionable one to name.
@@ -2532,12 +2547,27 @@ def verdict(sdir, cfg, now=None, data=None, cheap=False):
         text = ("GO - 5h at %d%%, %d min left (resets %s). Headroom available."
                 % (round(pct), remain_min, clock))
 
+    # ⭐ THE NET arms whenever a STOP was RELAXED in either window, independent of which window
+    # wins the display word. A 5h STOP relaxed to GO while the 7d is only PACE still needs the
+    # resume armed and the handoff kept fresh - the net is about "a STOP was overridden here".
+    relaxed_stop = five_relaxed_stop or seven_relaxed_stop
+    # ⛔ WHICH WINDOW WAS RELAXED, for the resume to arm against. `driver` is None whenever the
+    # combined word is GO - which is exactly the relaxed case - so a resume armed off `driver`
+    # alone falls back to the 5h reset and, for a relaxed 7d STOP, wakes hours before the 7d
+    # window reopens, defers, and announces failure (the exact case reset_for_driver exists to
+    # prevent). ⚠ Prefer 7d when BOTH relaxed: a 7d cap-hit costs longer to recover.
+    relaxed_driver = "7d" if seven_relaxed_stop else "5h" if five_relaxed_stop else None
+    net_note = ("" if not relaxed_stop else
+                " ⛔ NET: a STOP is relaxed near the reset - keep working, but rewrite "
+                "HANDOFF.md every ~10 min and start NO new dispatch. A resume is armed, so if "
+                "the window does hit the cap the next run continues from your handoff.")
     return {"verdict": level or "GO", "exit": {"STOP": 2, "PACE": 1}.get(level, 0),
             "pct": pct, "pct_7d": pct7, "driver": driver if level else None,
             "remain_min": remain_min, "resets_clock": clock,
             "age_min": age_min, "projected_pct": proj, "seven_day": sd,
-            "burnout_min": burn, "burns_out_early": early,
-            "text": text + burn_note + stale + (" [%s]" % sd if sd else "")}
+            "burnout_min": burn, "burns_out_early": early, "relaxed_stop": relaxed_stop,
+            "relaxed_driver": relaxed_driver,
+            "text": text + net_note + burn_note + stale + (" [%s]" % sd if sd else "")}
 
 
 _STRICTNESS = {None: 0, "PACE": 1, "STOP": 2}
@@ -2554,17 +2584,47 @@ def _window_level(pct, soft, hard):
     return None
 
 
-def _soften_near_reset(level, remain_min, cfg):
-    """⭐ Near a reset the stakes shrink: hitting the cap costs a pause of a few minutes,
-    not lost work. Softening by one level is deliberate, and it is why a caller must act on
-    the VERDICT and never on the percentage.
+def _relax(base, pct, remain_min, resets, now, span_secs, cfg, window):
+    """Near a reset, RELAX a PACE/STOP to GO when the whole-window burn survives to the reset.
+    Returns (level_or_None, relaxed_a_stop). None in the level vocabulary means GO.
+    `window` is "5h" or "7d"; the ceiling and horizon are read from cfg by window - and ONLY
+    after the base guard, so a below-soft window never touches the relax keys.
 
-    ⚠ It is applied PER WINDOW. A 5h STOP twelve minutes from its reset is worth softening; a
-    7d STOP three days from its reset is not, and one shared test would have softened both.
+    ⛔ ONE-DIRECTIONAL - the inverted SHELVED §2 invariant. It only ever LOOSENS: a base of
+    None/GO is returned unchanged, and a burn rate can never turn GO into PACE/STOP. The
+    2026-08-29 pin said no burn figure may reach the word; this reopens it for RELAXATION ONLY,
+    with the owner's approval (see Memory/tasks/20260916-143157-projection-stop-rule/ADR.md).
+    The `_projection`/`burnout_min` display figures stay display-only - this uses its OWN rate.
+
+    ⚠ WHOLE-ANCHORED RATE, computed HERE and nowhere else, because this runs in the SHARED
+    verdict path that verdict(cheap=True) (the per-tool-call brake) also runs. It must NOT call
+    _burn_rate: a
+    history parse is too slow for the per-tool-call brake, and a word the brake and the display
+    disagree on is the defect this module was already bitten by. rate = pct / minutes since the
+    window opened - never None, account-safe (the stored pct is the live account's).
+
+    ⚠ Early in a window `elapsed` is small, the rate is high, and nothing relaxes - CORRECT:
+    the dangerous case is fast-EARLY burn, and relaxation only fires near the reset where
+    `elapsed` is large and the whole-window rate is steady. `horizon_min` None disables the
+    near-reset cap (the 7d rate self-scales; a near-empty 7d satisfies `survives` only within
+    hours of its reset anyway).
     """
-    if not level or remain_min > cfg["near_reset_min"]:
-        return level
-    return "PACE" if level == "STOP" else None
+    if base not in ("PACE", "STOP"):
+        return base, False
+    ceiling = cfg["relax_ceiling_5h"] if window == "5h" else cfg["relax_ceiling_7d"]
+    horizon_min = cfg["relax_horizon_min"] if window == "5h" else None  # 7d self-scales
+    if pct >= ceiling:
+        return base, False                         # absolute backstop for the blind spot
+    if horizon_min is not None and remain_min > horizon_min:
+        return base, False                         # too far out to trust a 5h projection
+    elapsed_min = (now - (resets - span_secs)) / 60.0
+    if elapsed_min <= 0:
+        return base, False                         # cannot anchor a rate - fail closed
+    rate = pct / elapsed_min                        # whole-window %/min, never None
+    survives = rate <= 0 or (100 - pct) >= cfg["relax_margin"] * rate * remain_min
+    if not survives:
+        return base, False
+    return None, (base == "STOP")                   # relaxed to GO; net arms iff a STOP
 
 
 def _seven_day_binds(seven, now):
@@ -2579,17 +2639,17 @@ def _seven_day_binds(seven, now):
     that could stop the work.
 
     ⛔ AND THE OLD TEST WAS A SECOND, CRUDER COPY OF SOMETHING THAT ALREADY EXISTS.
-    "This number is about to be wiped, so forgive it" is exactly _soften_near_reset(), which
-    weighs the same idea per window and by how close the reset really is. Two implementations
-    of one rule, and the crude one ignored both magnitude and rate. ⇒ Deleted, not repaired:
-    the window binds whenever it has not already turned over, `_window_level()` decides
-    whether it is high enough to matter, and `_soften_near_reset()` decides whether an
-    imminent reset makes it forgivable.
+    "This number is about to be wiped, so forgive it" is exactly what the near-reset relaxation
+    does (`_relax()`), which weighs the same idea per window and by how close the reset really
+    is. Two implementations of one rule, and the crude one ignored both magnitude and rate. ⇒
+    Deleted, not repaired: the window binds whenever it has not already turned over,
+    `_window_level()` decides whether it is high enough to matter, and `_relax()` decides
+    whether an imminent reset with surviving headroom makes it forgivable.
 
-    ⚠ THE RESIDUAL EDGE, stated rather than hidden: softening is a threshold on TIME
-    (`near_reset_min`, 20) and not on arithmetic, so a window inside that window which would
-    still be exhausted first is softened by one level. That errs by one level, where the old
-    test erred by ignoring the window entirely.
+    ⚠ THE RELAXATION IS ARITHMETIC, NOT A TIME THRESHOLD (this replaced the old 20-minute
+    `_soften_near_reset`): `_relax()` projects the whole-window burn to the reset, so a window
+    that really would be exhausted first is NOT forgiven - the residual one-level error of the
+    old time-only soften is gone.
 
     ⚠ It is not "is it high": how high is the threshold's business.
 
@@ -3942,7 +4002,7 @@ def selftest():
     # against. The trailing baseline gets its own block below rather than silently changing
     # what every case here means.
     _bcfg = {"history_dir": _blogs, "soft_pct_5h": 70, "hard_pct_5h": 85, "stale_min": 15,
-             "near_reset_min": 10, "soft_pct_7d": 95, "hard_pct_7d": 97,
+             "soft_pct_7d": 95, "hard_pct_7d": 97,
              "burn_window_min": 0, "debug": {"token_usage": True}}
     _bnow = time.time()
 
@@ -4434,7 +4494,8 @@ def selftest():
     # were true and the answer was wrong, which is the shape of every defect in this file.
     _bnow2 = time.time()
     _bc = {"soft_pct_5h": 70, "hard_pct_5h": 85, "soft_pct_7d": 95, "hard_pct_7d": 97,
-           "near_reset_min": 20, "stale_min": 15, "debug": {"token_usage": False}}
+           "relax_margin": 1.5, "relax_horizon_min": 60, "relax_ceiling_5h": 95,
+           "relax_ceiling_7d": 99, "stale_min": 15, "debug": {"token_usage": False}}
     _bdir = tempfile.mkdtemp(prefix="dg-brake-")
 
     def _verdict(p5, p7, r5=None, r7=None):
@@ -4479,16 +4540,53 @@ def selftest():
     _v = _verdict(0, 10, r5=_bnow2 - 60)
     assert _v["verdict"] == "GO" and "already reset" in _v["text"], _v
 
-    # ⚠ NEAR-RESET SOFTENING IS PER WINDOW. A 5h STOP twelve minutes from its reset softens;
-    # a 7d STOP three days out does not, and one shared test would have softened both.
-    assert _verdict(90, 10, r5=_bnow2 + 12 * 60)["verdict"] == "PACE"
-    assert _verdict(0, 99)["verdict"] == "STOP"
-    # ⭐ SOFTENING IS NOW THE ONLY THING THAT FORGIVES AN IMMINENT RESET, and it does the job
-    # the deleted `resets > five_resets` test was pretending to do - by how CLOSE the reset
-    # is, per window, rather than by which window resets first. Twelve minutes out, a 7d STOP
-    # softens to PACE; seventy-one minutes out it does not.
-    assert _verdict(0, 99, r7=_bnow2 + 12 * 60)["verdict"] == "PACE", "near-reset softening"
-    assert _verdict(0, 99, r7=_bnow2 + 71 * 60)["verdict"] == "STOP", "71 min is not near"
+    # ⭐ NEAR-RESET RELAXATION (replaces _soften_near_reset). A PACE/STOP near the reset
+    # becomes GO when the whole-window burn survives; far from reset it does not. Per window.
+    # ⚠ THE SAME 90% GIVES OPPOSITE ANSWERS BY DISTANCE, which no percentage threshold can:
+    # 12 min out the 10% headroom survives a 0.31%/min burn (need 5.6%), so GO; 40 min out it
+    # does not (need 20.8%), so STOP. This is the projection, not a softened level.
+    _r5 = _verdict(90, 10, r5=_bnow2 + 12 * 60)
+    assert _r5["verdict"] == "GO" and _r5["relaxed_stop"] is True, _r5
+    assert "NET" in _r5["text"], _r5["text"]
+    assert _r5["relaxed_driver"] == "5h", "a relaxed 5h STOP must arm for the 5h reset: %r" % _r5
+    assert _verdict(90, 10, r5=_bnow2 + 40 * 60)["verdict"] == "STOP", "survives must fail"
+    # ...and FAR from reset the same STOP stands (horizon 60): default r5 is 180 min out.
+    assert _verdict(90, 10)["verdict"] == "STOP", "beyond the horizon, no relaxation"
+    # ⛔ THE 5h CEILING (95) IS AN ABSOLUTE BACKSTOP - the projection's blind spot. At 96%,
+    # even 12 min from reset, no relaxation.
+    assert _verdict(96, 10, r5=_bnow2 + 12 * 60)["verdict"] == "STOP", "5h ceiling 95"
+    # ⛔ THE 5h HORIZON (60) IS A DORMANT BACKSTOP. At the shipped margin 1.5 and soft>=75,
+    # `survives` is always stricter than the horizon, so it never bites - UNTIL the owner lowers
+    # the margin (the reconsideration loop). Isolated here with a tiny margin so `survives`
+    # passes far out and the HORIZON is the only thing holding STOP: 80% at 90 min (beyond 60)
+    # stays STOP, at 55 min (within 60) relaxes. Removing the horizon guard flips the 90-min case.
+    _hc = dict(_bc, relax_margin=0.05)
+    def _hv(p5, r5):
+        return verdict(_bdir, _hc, data={"ts": int(_bnow2 * 1000),
+                       "five_hour": {"used_percentage": p5, "resets_at": int(r5)},
+                       "seven_day": {"used_percentage": 0, "resets_at": int(_bnow2 + 3 * 86400)}})
+    assert _hv(88, _bnow2 + 90 * 60)["verdict"] == "STOP", "horizon must hold STOP beyond 60 min"
+    assert _hv(88, _bnow2 + 55 * 60)["verdict"] == "GO", "within the horizon it relaxes"
+    # ⭐ A relaxed PACE (not STOP) is GO but arms NO net - the owner's 快速早燒不需 handoff.
+    _rp = _verdict(78, 10, r5=_bnow2 + 12 * 60)
+    assert _rp["verdict"] == "GO" and _rp["relaxed_stop"] is False and "NET" not in _rp["text"], _rp
+    # ⛔ 7d SELF-SCALES ITS HORIZON from the whole-window rate - NO horizon constant. The
+    # owner's approved case: 98% left, 30 min from the 7d reset -> GO. The same 98% three days
+    # out -> STOP. A 0.0097%/min 7d rate only threatens the last 2% within hours of reset.
+    _r7 = _verdict(0, 98, r7=_bnow2 + 30 * 60)
+    assert _r7["verdict"] == "GO", "owner's 7d near-reset case"
+    # ⛔ A RELAXED 7d STOP MUST ARM FOR THE 7d RESET, not the 5h one. The combined word is GO so
+    # `driver` is None; `relaxed_driver` is what carries the window to resume.reset_for_driver.
+    assert _r7["relaxed_stop"] is True and _r7["relaxed_driver"] == "7d", _r7
+    assert _verdict(0, 98, r7=_bnow2 + 3 * 86400)["verdict"] == "STOP", "7d far out stands"
+    # ...and the 7d ceiling (99) backstops even near reset.
+    assert _verdict(0, 99, r7=_bnow2 + 30 * 60)["verdict"] == "STOP", "7d ceiling 99"
+    # ⭐ C2: the net arms when a STOP is relaxed in EITHER window, even if the OTHER window
+    # makes the combined word PACE. 5h 90% relaxes to GO near reset; 7d 96% is a far PACE. The
+    # display word is the stricter PACE, but relaxed_stop is still True.
+    _c2 = _verdict(90, 96, r5=_bnow2 + 12 * 60)
+    assert _c2["verdict"] == "PACE" and _c2["relaxed_stop"] is True, _c2
+    assert _c2["relaxed_driver"] == "5h", "the 5h window was the relaxed STOP here: %r" % _c2
     shutil.rmtree(_bdir, ignore_errors=True)
 
     # ⛔ THE BURN GAUGE. It answers ONE forward-looking question - can I keep spending - by
@@ -4632,7 +4730,7 @@ def selftest():
     _plogs = os.path.join(_pdir, "logs")
     os.makedirs(_plogs)
     _pcfg = {"history_dir": _plogs, "soft_pct_5h": 70, "hard_pct_5h": 85,
-             "soft_pct_7d": 95, "hard_pct_7d": 97, "near_reset_min": 20, "stale_min": 15,
+             "soft_pct_7d": 95, "hard_pct_7d": 97, "stale_min": 15,
              "burn_window_min": 0, "debug": {"token_usage": True}}
     _pnow = time.time()
     # ⚠ 47% SPENT IN THE FIRST HOUR OF THE WINDOW, which is what a projection over 100% takes
@@ -4784,6 +4882,44 @@ def selftest():
                       (180, "3h"), (188, "3h8m"), (1439, "23h59m"), (1440, "1d"),
                       (1500, "1d1h"), (5760, "4d")):
         assert duration(_m) == _want, (_m, duration(_m), _want)
+
+    # ⛔ CHEAP AND FULL MUST PRODUCE THE SAME WORD - the load-bearing invariant verdict()'s cheap
+    # docstring names, now that the relaxation moves the word (PACE/STOP->GO). The brake runs
+    # verdict(cheap=True) on every tool call while the display runs the full verdict, and a word
+    # they disagree on is the defect this module was already bitten by. The
+    # relaxation lives in the SHARED path and uses a whole-anchored rate (no history parse)
+    # PRECISELY so this holds. This grid is the check the docstring promised and grep could not
+    # find. ⚠ It ALSO pins the ONE-DIRECTIONAL invariant (the inverted SHELVED §2): the word is
+    # NEVER stricter than the threshold base - the projection only relaxes, never adds caution.
+    _gdir = tempfile.mkdtemp(prefix="dg-grid-")
+    _gcfg = dict(DEFAULTS)
+    _gnow = time.time()
+    _WS = {None: 0, "GO": 0, "PACE": 1, "STOP": 2, "NO-DATA": 0}
+    _seen_relax = False
+    for _p5 in (0, 50, 72, 80, 90, 96, 100):
+        for _rm5 in (5, 30, 55, 90, 180):
+            for _p7, _rm7 in ((0, 120), (90, 120), (96, 120), (98, 30), (98, 4320), (99, 30)):
+                _gdata = {"ts": int(_gnow * 1000),
+                          "five_hour": {"used_percentage": _p5,
+                                        "resets_at": int(_gnow + _rm5 * 60)},
+                          "seven_day": {"used_percentage": _p7,
+                                        "resets_at": int(_gnow + _rm7 * 60)}}
+                _wc = verdict(_gdir, _gcfg, now=_gnow, data=_gdata, cheap=True)["verdict"]
+                _wf = verdict(_gdir, _gcfg, now=_gnow, data=_gdata, cheap=False)["verdict"]
+                assert _wc == _wf, ("cheap/full disagree at 5h=%d/%dm 7d=%d/%dm: %s vs %s"
+                                    % (_p5, _rm5, _p7, _rm7, _wc, _wf))
+                _b5 = _window_level(_p5, _gcfg["soft_pct_5h"], _gcfg["hard_pct_5h"])
+                _b7 = _window_level(_p7, _gcfg["soft_pct_7d"], _gcfg["hard_pct_7d"])
+                _base = _b5 if _STRICTNESS[_b5] >= _STRICTNESS[_b7] else _b7
+                assert _WS[_wf] <= _STRICTNESS[_base], (
+                    "projection TIGHTENED at 5h=%d/%dm 7d=%d/%dm: base=%s word=%s"
+                    % (_p5, _rm5, _p7, _rm7, _base, _wf))
+                if _base in ("PACE", "STOP") and _WS[_wf] < _STRICTNESS[_base]:
+                    _seen_relax = True
+    # ⛔ The grid must actually EXERCISE a relaxation, or it proves the invariant over a set of
+    # inputs none of which relax - green while guarding nothing.
+    assert _seen_relax, "the agreement grid never relaxed a single case - it is not testing the path"
+    shutil.rmtree(_gdir, ignore_errors=True)
 
     print("selftest OK")
     return 0

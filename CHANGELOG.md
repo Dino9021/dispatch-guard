@@ -33,6 +33,34 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.59.0
+
+**接近 reset 窗口、剩餘額度撐得過時,不再 PACE/STOP。** 舊規則只看固定門檻,所以一個馬上要重置、又還有餘裕的
+視窗照樣被暫停 —— 資料上 89% 的暫停是白費的,接近重置（≤60 分）的暫停 100% 都撐過了。現在多一層「投影放寬」:
+接近重置時,若整窗燃燒速度顯示剩餘額度撐得到重置,就把 PACE/STOP 放寬成 GO。它「只放寬、永不收緊」。
+
+- **判斷用「整窗錨定」速度,不是短時間尾段速度**(`pct ÷ 視窗開啟至今分鐘數`)。理由是硬性的:每次工具呼叫的煞車
+  走 `level()`＝`verdict(cheap=True)`,顯示走完整 `verdict()`,兩者「必須算出同一個詞」—— 尾段速度要 parse 歷史,
+  cheap 路徑付不起。整窗速度不需要歷史、永不為 None、對帳戶天生安全。實測(`ab_rate.py`)它比 max(整窗,尾段) 還
+  多救回一次白費暫停,危險數同為 0。這偏離了 ADR 的 max(整窗,尾段);見
+  `Memory/tasks/20260916-143157-projection-stop-rule/REVISION-whole-anchored.md`。
+- **兩個視窗各自的天花板與 horizon。** 5h:距重置超過 60 分不信投影;95% 以上絕不放寬。7d:沒有 horizon 常數
+  (整窗速度自動縮放),99% 以上絕不放寬 —— 99 是讓「7d 剩 98%、接近重置 → GO」這個擁有者核可情況成立的最小防線。
+- **STOP 被放寬時的 NET 區。** 主 session 繼續做事,但:自動設好續跑、提示每約 10 分重寫 HANDOFF.md、並「拒絕新派工
+  (派子代理)」。主 session 自己把一串循序工作做完不算新派工。派子代理會燒掉放寬所仰賴的額度,而續跑不涵蓋進行中的子
+  代理 —— 所以擋掉。
+- **預設 `soft_pct_5h` 由 70 改為 75。** 每個安裝的 PACE 起點會跟著上移。
+- 退休 `_soften_near_reset` 與 `near_reset_min`(舊的 20 分一級軟化,是這個投影的粗略特例);新增 `SEVEN_DAY_SECONDS`
+  常數與 `relax_margin`(1.5)、`relax_horizon_min`(60,只限 5h)、`relax_ceiling_5h`(95)、`relax_ceiling_7d`(99)。
+- `usage.py --selftest` 新增「cheap/full 同詞」的網格檢查(`level()` 的 docstring 一直承諾、實際卻不存在的那個),
+  外加「投影永不收緊」不變式。五個 fail-open 守衛全部以突變殺過(天花板、horizon、survives、cheap/full 分歧、收緊)。
+  gate 的 NET 守衛(續跑會設、不會被撤)另以兩個突變殺過。
+- ⚠ 可證偽的重新檢討:放寬後若「撞牆」(視窗在重置前真的到頂)會記 log;有撞牆 → 收緊(調高 margin、調低天花板);
+  一段時間乾淨 → 放鬆(調低 margin)。先以保守的 margin 1.5 出貨。ADR(兩輪對抗審查)在
+  `Memory/tasks/20260916-143157-projection-stop-rule/`。
+
+---
+
 ## 0.58.4
 
 **前景長代理期間，用量會凍住,而煞車會 fail open。** 一個監督者派了「一個」跑很久的子代理然後在等,
@@ -2184,6 +2212,46 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.59.0
+
+**Near a reset with the budget surviving, the brake no longer PACE/STOPs.** The old rule read
+only the fixed thresholds, so a window about to reset with headroom to spare was paused anyway -
+in the data, 89% of pauses were wasted, and near the reset (<=60 min) 100% of paused rows
+survived. A projection layer now RELAXES a PACE/STOP to GO near a reset when the whole-window
+burn rate says the remaining budget survives to the reset. It only ever loosens; it never adds
+caution.
+
+- **The rate is WHOLE-ANCHORED (`pct / minutes since the window opened`), not a short trailing
+  rate.** The reason is hard: the per-tool-call brake runs `level()` = `verdict(cheap=True)` while
+  the display runs the full `verdict()`, and the two MUST produce the same word - a trailing rate
+  needs a history parse the cheap path cannot afford. Whole-anchored needs no history, is never
+  None, and is account-safe by construction. Measured (`ab_rate.py`) it recovers one MORE wasted
+  pause than `max(whole, trailing)` at zero added danger. This deviates from the ADR's
+  `max(whole, trailing)`; see `Memory/tasks/20260916-143157-projection-stop-rule/REVISION-whole-anchored.md`.
+- **Per-window ceiling and horizon.** 5h: do not trust a projection beyond 60 min from reset;
+  never relax at or above 95%. 7d: NO horizon constant (the whole-window rate self-scales); never
+  relax at or above 99% - 99 is the minimal backstop that lets the owner's approved case (7d 98%
+  left, near reset -> GO) fire.
+- **The NET zone when a STOP is relaxed.** The main session keeps working, but: a resume is armed
+  automatically, the agent is asked to rewrite HANDOFF.md every ~10 min, and a NEW dispatch (a
+  sub-agent) is REFUSED. The main session finishing its own sequential list is not a new dispatch.
+  A sub-agent would burn the budget the relaxation counts on and is not covered by the armed
+  resume, so it is blocked.
+- **Default `soft_pct_5h` changes 70 -> 75.** Every install's PACE point moves up with it.
+- Retires `_soften_near_reset` and `near_reset_min` (the old 20-min one-level soften, a cruder
+  special case of this projection); adds a `SEVEN_DAY_SECONDS` constant and the keys `relax_margin`
+  (1.5), `relax_horizon_min` (60, 5h only), `relax_ceiling_5h` (95), `relax_ceiling_7d` (99).
+- `usage.py --selftest` gains a cheap/full word-AGREEMENT grid (the check `level()`'s docstring
+  promised but that did not exist) plus a "the projection never TIGHTENS" invariant. All five
+  fail-open guards are mutation-killed (ceiling, horizon, survives, cheap/full divergence,
+  tighten). The gate's NET guards (resume arms, resume not stood down) are mutation-killed too.
+- ⚠ Falsifiable reconsideration: a WALL-HIT (a relaxed window that then reached the cap before
+  reset) is logged; any hit -> tighten (raise margin, lower a ceiling); a clean period -> loosen
+  (lower margin). Ships at a conservative margin 1.5 first. The ADR (two adversarial review
+  rounds) is in `Memory/tasks/20260916-143157-projection-stop-rule/`.
 
 ---
 

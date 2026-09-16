@@ -11,7 +11,7 @@
 
   "_soft_pct_5h": "PACE at or above this, on the FIVE-HOUR window. Dispatch is still allowed; the sub-task is told to finish its unit and not expand scope.",
   "_soft_pct_5h_zh": "「五小時」視窗到這個百分比以上就是 PACE。派工還是允許的；子任務會被告知把手上這個單位做完、不要擴大範圍。",
-  "soft_pct_5h": 70,
+  "soft_pct_5h": 75,
 
   "_hard_pct_5h": "STOP at or above this, on the FIVE-HOUR window. A dispatch is REFUSED. Dispatching a sub-task is the most expensive thing an agent does, so it is the thing worth gating.",
   "_hard_pct_5h_zh": "「五小時」視窗到這個百分比以上就是 STOP，派工會被「拒絕」。派出一個子任務是 agent 做的最貴的一件事，所以那才是值得設閘門的地方。",
@@ -37,9 +37,20 @@
   "burn_x_red": 2.25,
   "stale_min": 15,
 
-  "_near_reset_min": "Within this long of a reset, thresholds soften by one level, so 95% can read PACE rather than STOP. Deliberate: hitting the cap there costs a pause of a few minutes, not lost work. It is also why a caller must act on the VERDICT WORD and never on the percentage.",
-  "_near_reset_min_zh": "距離重置這麼久之內，門檻會軟化一級，所以 95% 可能讀成 PACE 而不是 STOP。這是刻意的：那個時候撞到上限的代價是暫停幾分鐘，不是丟掉工作。這也是為什麼呼叫者一定要看「判定的那個詞」，永遠不要看百分比。",
-  "near_reset_min": 20,
+  "_relax": "NEAR-RESET RELAXATION (replaces the old near_reset_min soften). Near a reset, a PACE/STOP is RELAXED to GO when the whole-window burn rate says the remaining budget survives to the reset. It NEVER tightens - a burn rate may only loosen the word. The rate is WHOLE-ANCHORED (percentage / minutes since the window opened), not a short trailing rate: it must be cheap enough to run on every tool call, and it is account-safe and never blank. A relaxed STOP arms a resume, keeps refusing NEW dispatch, and asks the agent to keep HANDOFF.md fresh (the NET zone). Reconsideration: a WALL-HIT after a relaxation is logged; any hit -> tighten (raise relax_margin, lower a ceiling); a clean period -> loosen (lower relax_margin).",
+  "_relax_zh": "接近重置時的「放寬」（取代舊的 near_reset_min 軟化）。接近重置時，如果整窗燃燒速度顯示剩餘額度撐得到重置，PACE/STOP 就放寬成 GO。它「只會放寬、永不收緊」—— 燃燒速度只能讓判定變鬆。速度是「整窗錨定」的（百分比 ÷ 視窗開啟至今的分鐘數），不是短時間的尾段速度：它必須便宜到每次工具呼叫都能算，而且對帳戶安全、永不空白。被放寬的 STOP 會設好續跑、繼續拒絕「新派工」，並要求代理持續更新 HANDOFF.md（NET 區）。重新檢討：放寬後若「撞牆」會記錄下來；有撞牆就收緊（調高 relax_margin、調低天花板），一段時間乾淨就放鬆（調低 relax_margin）。",
+  "_relax_margin": "The safety factor on the projection. survives when remaining% >= relax_margin * rate * minutes_to_reset. 1.5 = require 50% more headroom than the straight-line projection needs.",
+  "_relax_margin_zh": "投影上的安全係數。當 剩餘% >= relax_margin × 速度 × 距重置分鐘數 就視為撐得過。1.5 = 要求比直線投影所需再多 50% 的餘裕。",
+  "relax_margin": 1.5,
+  "_relax_horizon_min": "5h ONLY: do not trust a five-hour projection more than this many minutes from the reset, even if it clears. The 7d window has NO horizon constant - its whole-window rate self-scales, so a near-empty 7d only satisfies survives within hours of its own reset.",
+  "_relax_horizon_min_zh": "「只限 5h」：距離重置超過這麼多分鐘時，就算投影過關也不信任五小時的投影。7d 視窗「沒有」horizon 常數 —— 它的整窗速度會自動縮放，所以快用完的 7d 只有在距離自己重置幾小時內才會滿足 survives。",
+  "relax_horizon_min": 60,
+  "_relax_ceiling_5h": "Never relax the FIVE-HOUR window at or above this percentage - an absolute backstop for the projection's blind spot (an idle under-estimate). Sits above hard_pct_5h, so 85-95% is the 5h net zone.",
+  "_relax_ceiling_5h_zh": "「五小時」視窗到這個百分比以上就絕不放寬 —— 投影盲點（閒置時低估）的絕對防線。它在 hard_pct_5h 之上，所以 85-95% 是 5h 的 NET 區。",
+  "relax_ceiling_5h": 95,
+  "_relax_ceiling_7d": "Never relax the SEVEN-DAY window at or above this percentage. 99 is the minimal 1% backstop above hard_pct_7d (97), and it is what lets the owner's approved case (7d 98% left, near reset -> GO) fire; a ceiling of 98 or lower would forbid the very percentage it was meant to relax.",
+  "_relax_ceiling_7d_zh": "「七天」視窗到這個百分比以上就絕不放寬。99 是 hard_pct_7d（97）之上最小的 1% 防線，也是讓擁有者核可的情況（7d 剩 98%、接近重置 -> GO）能成立的門檻；設 98 或更低會擋掉它本來要放寬的那個百分比。",
+  "relax_ceiling_7d": 99,
 
 
 

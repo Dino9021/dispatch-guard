@@ -234,6 +234,14 @@ def case_arms_against_the_blocking_window():
     when, which = armed_for(0, 99, now + 1800)
     assert which == "7d" and abs(when - (now + 1800)) < 2, (
         "the resume slept through the reset that actually unblocked it: %r" % ((when, which),))
+    # ⛔ A RELAXED 7d STOP MUST ARM FOR THE 7d RESET (0.59.0). 7d 98% within half an hour of its
+    # reset RELAXES to GO, so the combined verdict word is GO and `driver` is None - but the
+    # window that can still hit the cap is the 7d one, in thirty minutes, not the 5h one two
+    # hours out. reset_time reads `relaxed_driver` for exactly this. Without it the resume wakes
+    # at the 5h reset and finds the 7d still the blocker - the failure this whole case guards.
+    when, which = armed_for(0, 98, now + 1800)
+    assert which == "7d" and abs(when - (now + 1800)) < 2, (
+        "a relaxed 7d STOP armed for the wrong (5h) reset: %r" % ((when, which),))
     # Nothing blocking at all still answers with the near window, so arming early works.
     when, which = armed_for(10, 10, r7)
     assert which == "5h" and abs(when - r5) < 2, (when, which)
