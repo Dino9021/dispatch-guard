@@ -33,6 +33,35 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.60.3
+
+**0.60.2 那個新篩選器會把多行指令的續行誤標成污染。** 換句話說，它把它剛修掉的那個毛病
+搬了個位置：⛔ **一個因為無關原因而紅的檢查，還是一個因為無關原因而紅的檢查。**
+
+`log()` 寫的一筆記錄是「時間戳 + 訊息」，而訊息就是指令原文 —— 它是按**字元數**截斷的，
+不是按第一個換行截斷。所以 heredoc 或任何多行指令，會在日誌裡留下**沒有時間戳前綴**的續行。
+2026-09-18 在真實日誌量到：沒有前綴的 1383 行，對有前綴的 10145 行。⇒ 按**行**判斷的篩選器
+會把每一個續行都標起來。
+
+⚠ **0.60.2 那三次全綠沒有涵蓋這一點**，而這正是它為什麼出得去：那三次是同一個 Bash 呼叫，
+它的 `CMD-ALLOW` 在視窗**打開之前**就寫好了，所以三個視窗期間都是零新行。篩選器自己的兩個
+對照也沒涵蓋 —— 兩個樣本都是帶時間戳的單行。
+
+- **改成按記錄判斷，不按行。** 沒有時間戳前綴的行，算前一筆記錄的續行，繼承前一筆的分類，
+  不自己算一筆。
+- ⚠ **`_new` 開頭的續行永不標記**：它屬於一筆在視窗**之前**就開始的記錄，所以它不是新的。
+  所以 `live` 的初值是 True。
+- ⭐ **對照補到五個，而且涵蓋多行記錄**：`CMD-ALLOW` 後面接兩行續行 → 三行都不標；
+  `USAGE(...)` 後面接一行續行 → **兩行都標**（一筆可疑的記錄要把它的續行一起帶走）；
+  單獨一行沒有記錄開頭的續行 → 不標。
+- **五個突變被預期的斷言殺掉。** ⚠ 其中那個「退回按行判斷」的突變，第一版把 `if head:` 改成
+  `if True:`，讓 `head.end()` 在 None 上炸掉 —— 紅了，但紅在崩潰而不是受測的斷言上，等於
+  什麼都沒證明。突變本身也必須是合法的程式。
+- ⛔ **為什麼是 0.60.3 而不是改寫 0.60.2：** 0.60.2 已經發佈出去了。用同一個版號換掉內容，
+  就是對那個版號說謊，而且有人可能已經拉過它。
+
+---
+
 ## 0.60.2
 
 **七天視窗觸發判定時,那一行印的是五小時視窗的數字。** agent 被要求原封不動印的那一句用
@@ -2419,6 +2448,41 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.60.3
+
+**0.60.2's new filter flagged the continuation lines of a multi-line command as pollution** -
+which is the fault it had just removed, moved one step over. ⛔ **A check that is red for an
+unrelated reason is still a check that is red for an unrelated reason.**
+
+`log()` writes a record as `timestamp + message`, and the message is the command text,
+truncated by CHARACTER COUNT rather than at the first newline. So a heredoc - or any
+multi-line command - leaves continuation lines in the log with NO timestamp prefix. Measured
+2026-09-18 in the real log: 1383 lines without a prefix against 10145 with one. ⇒ A per-LINE
+filter flags every one of them.
+
+⚠ **0.60.2's three green runs did not cover this, and that is why it shipped.** Those three
+runs were one Bash call, whose `CMD-ALLOW` was logged at `PreToolUse` BEFORE the window
+opened - so zero new lines appeared inside any of the three windows. The filter's own two
+controls did not cover it either: both fixtures were single lines carrying timestamps.
+
+- **Per RECORD, not per line.** A line with no timestamp prefix is a continuation of the
+  previous record and inherits its classification instead of being judged on its own.
+- ⚠ **A leading continuation line is never flagged**: its record began BEFORE the window, so
+  it is not new. Hence `live` starts True.
+- ⭐ **Five controls now, and they cover multi-line records**: a `CMD-ALLOW` followed by two
+  continuation lines flags none of the three; a `USAGE(...)` followed by a continuation flags
+  BOTH (a suspect record must carry its continuation lines with it); a bare continuation line
+  with no record start flags nothing.
+- **Five mutations killed by the intended assertion.** ⚠ The per-line regression needed two
+  attempts: turning `if head:` into `if True:` made `head.end()` raise on a continuation line,
+  which is red by a crash rather than by the assertion under test and proves nothing. A
+  mutation has to be valid code too.
+- ⛔ **Why 0.60.3 and not a rewritten 0.60.2:** 0.60.2 is already published. Swapping the
+  contents under a released version number is a lie about that number, and somebody may
+  already have pulled it.
 
 ---
 

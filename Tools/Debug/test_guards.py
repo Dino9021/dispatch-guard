@@ -1880,20 +1880,45 @@ def case_selftests_never_read_the_terminal():
             return []
 
     def _suspect(rows):
-        """The new lines that a LIVE session's tool traffic cannot account for."""
-        out = []
+        """The new lines that a LIVE session's tool traffic cannot account for.
+
+        ⛔ RECORDS, NOT LINES, and that distinction is the whole correctness of this filter.
+        `log()` writes one record as `timestamp + message`, but the message is the COMMAND
+        TEXT and it is truncated by character count, not at the first newline - so a heredoc
+        or any multi-line command leaves continuation lines with NO timestamp prefix.
+        Measured 2026-09-18 in the real log: 1383 such lines against 10145 timestamped ones.
+        ⇒ A per-line filter flags every one of them, which is a red for an unrelated reason -
+        the exact failure the size comparison was replaced to remove.
+
+        ⚠ A leading continuation line belongs to a record that started BEFORE the window, so
+        it is not new and is never flagged - hence `live` starts True.
+        """
+        out, live = [], True
         for row in rows:
-            msg = re.sub(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d ", "", row)
-            if msg and not msg.startswith(LIVE_TRAFFIC):
+            head = re.match(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d ", row)
+            if head:
+                msg = row[head.end():]
+                live = (not msg) or msg.startswith(LIVE_TRAFFIC)
+            if not live:
                 out.append(row)
         return out
 
-    # ⭐ THE FILTER GETS A CONTROL IN THIS RUN. A `_suspect` that matched nothing - a typo in
-    # the prefix, a regex that eats the whole line - would report a clean pass for ever.
+    # ⭐ THE FILTER GETS ITS CONTROLS IN THIS RUN. A `_suspect` that matched nothing - a typo
+    # in the prefix, a regex that eats the whole line - would report a clean pass for ever;
+    # one that matched everything would be red for ever. Both directions, and both of them
+    # for a multi-line record too, because that is the case three green runs did not cover.
     assert _suspect(["2026-09-18 14:00:00 USAGE(STOP) pct=99"]), \
         "the filter no longer flags a line only a selftest could have written"
     assert not _suspect(["2026-09-18 14:00:00 CMD-ALLOW(checked=5 off=-) ls"]), \
         "the filter flags another live session's ordinary tool traffic"
+    assert not _suspect(["2026-09-18 14:00:00 CMD-ALLOW(checked=5 off=-) python - <<'PY'",
+                         "import io", "PY"]), \
+        "the filter flags the continuation lines of a live session's multi-line command"
+    assert _suspect(["2026-09-18 14:00:00 USAGE(STOP) pct=99", "and its second line"]) == \
+        ["2026-09-18 14:00:00 USAGE(STOP) pct=99", "and its second line"], \
+        "a suspect record must carry its continuation lines with it"
+    assert not _suspect(["a continuation of a record that started before the window"]), \
+        "a leading continuation line was flagged - its record is not new"
 
     _state_before = _real_state_lines()
     for script, expect_ok in (("dispatch_gate.py", True), ("usage.py", True),
