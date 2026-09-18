@@ -462,9 +462,20 @@ def ensure_task_root(root, cfg):
         return None                     # read-only tree; the gate must not break over it
 
 
+def safe_session(session_id):
+    """A session id as ONE filename component. The single definition of that rule.
+
+    ⛔ IT IS NOT ONLY `state/`'s ANY MORE. resume.py names its per-session record and its OS
+    task with the same key (ADR 20260917-132015, D1/D2), and two copies of a sanitising rule
+    are two chances for a record and the task that fires it to disagree about their own name.
+    ⚠ `"nosession"` on an empty id is deliberate and is the pre-existing behaviour: sessions
+    without an id share one slot, exactly as they always did.
+    """
+    return "".join(c for c in str(session_id) if c.isalnum() or c in "-_")[:64] or "nosession"
+
+
 def state_path(sdir, session_id, suffix):
-    safe = "".join(c for c in str(session_id) if c.isalnum() or c in "-_")[:64] or "nosession"
-    return os.path.join(sdir, "state", "%s.%s" % (safe, suffix))
+    return os.path.join(sdir, "state", "%s.%s" % (safe_session(session_id), suffix))
 
 
 def log(root, message):
@@ -1650,7 +1661,13 @@ def demanded_files(root, cfg, prompt_text, folder=None):
     return out[:8], verbs              # bounded: this gets stashed in a slot file
 
 
-ARM_MARK = "auto-arm.spawn"
+# ⛔ THE SPAWN FLOOR IS PER SESSION, and until 0.60 it was not - which on its own kept
+# arming serialised however many records existed. One session arming set a machine-wide
+# 300-second floor, so a second session's arm inside that window returned False and got NO
+# resume at all. ⇒ `state/<session>.auto-arm`, through state_path(). ADR 20260917-132015, D3.
+# ⚠ It BELONGS in state/, unlike the record: losing it only permits an arm, so prune_state's
+# age sweep is harmless to it.
+ARM_MARK = "auto-arm"                  # suffix; state_path() builds the rest
 HANDOFF = "HANDOFF.md"
 # ⛔ Below this it is a placeholder, not a work order. ⚠ ONE definition, here rather than in
 # resume.py, because resume.py imports this module and not the other way round - and two
@@ -1990,7 +2007,10 @@ def maybe_auto_arm(root, sdir, cfg, folder, started, session_id=None, cwd=None):
         return False
     if not want:
         return False
-    state = usage.read_json(os.path.join(sdir, "resume.json"), {}) or {}
+    # ⭐ THIS SESSION'S record, not "the" record. While there was one file per machine this
+    # de-dup also silently suppressed a SECOND session's arm whenever the first had armed
+    # for the same folder and reset. ADR 20260917-132015, D1.
+    state = usage.read_json(_resume.record_path(sdir, session_id), {}) or {}
     if (state.get("task") == folder
             and isinstance(state.get("armed_for_reset"), (int, float))
             and abs(state["armed_for_reset"] - want) <= 1):
@@ -1998,7 +2018,7 @@ def maybe_auto_arm(root, sdir, cfg, folder, started, session_id=None, cwd=None):
     # ⚠ AND A SPAWN FLOOR, like every other fork in this file. Without it a run that cannot
     # arm - no scheduler, no permission - would start a subprocess on every tool call for
     # the rest of the session.
-    mark = os.path.join(sdir, ARM_MARK)
+    mark = state_path(sdir, session_id, ARM_MARK)
     now = time.time()
     try:
         if now - os.path.getmtime(mark) < 300:
@@ -2006,7 +2026,7 @@ def maybe_auto_arm(root, sdir, cfg, folder, started, session_id=None, cwd=None):
     except OSError:
         pass
     try:
-        os.makedirs(sdir, exist_ok=True)
+        os.makedirs(os.path.dirname(mark), exist_ok=True)   # the mark lives in state/ now
         with open(mark, "w") as f:
             f.write(str(now))
         kw = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
@@ -2016,13 +2036,24 @@ def maybe_auto_arm(root, sdir, cfg, folder, started, session_id=None, cwd=None):
                                    | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200))
         else:
             kw["start_new_session"] = True
-        subprocess.Popen([sys.executable, os.path.join(HERE, "resume.py"),
-                          "--arm", "--task", folder, "--dir", sdir], **kw)
+        # ⛔ THE SESSION ID IS PASSED, NEVER LEFT TO BE GUESSED. Without it do_arm falls back
+        # to arming_session()'s "newest state/*.alive", whose own docstring says it picks the
+        # WRONG id when two sessions are live - which is precisely when a per-session resume
+        # matters. ADR 20260917-132015, D12.
+        argv = ["--arm", "--task", folder, "--dir", sdir]
+        if session_id:
+            argv += ["--session", str(session_id)]
+        subprocess.Popen([sys.executable, os.path.join(HERE, "resume.py")] + argv, **kw)
     except Exception as exc:
         log(root, "AUTO-ARM-FAILED %r" % (exc,))
         return False
-    log(root, "AUTO-ARM %s for %s" % (folder, time.strftime("%Y-%m-%d %H:%M",
-                                                            time.localtime(want))))
+    # ⭐ THE SESSION ID IS PART OF THE LINE, not decoration. "did two sessions arm inside one
+    # window?" is the question that says whether per-session resume was worth building, and
+    # this line - the auto-arm path, which is where the single-slot clobbering happened - could
+    # not answer it. ADR 20260917-132015, D11.
+    log(root, "AUTO-ARM %s for %s (session=%s)"
+              % (folder, time.strftime("%Y-%m-%d %H:%M", time.localtime(want)),
+                 str(session_id or "")[:8] or "?"))
     return True
 
 
@@ -2392,18 +2423,35 @@ def failed_resume_note(sdir):
     "the work turned out not to be needed" all look identical the next morning. The
     marker is consumed here so it is announced exactly once.
     """
-    path = os.path.join(sdir, "resume_failed.json")
-    data = usage.read_json(path, None)
-    if not data:
-        return ""
-    try:
-        os.remove(path)
-    except OSError:
-        pass
-    return (" ⛔ TELL THE USER FIRST, BEFORE ANYTHING ELSE: a scheduled resume gave up at "
-            "%s and the work did NOT continue - %s"
-            % (time.strftime("%Y-%m-%d %H:%M", time.localtime(data.get("at", 0))),
-               data.get("why", "no reason recorded")))
+    # ⛔ EVERY MARKER, NOT ONE. There was a single `resume_failed.json`: two resumes failing
+    # overnight left one announcement, because the second write overwrote the first and this
+    # reader deleted it. The owner heard about one failure and never learnt of the other.
+    # ⚠ The legacy path is still read, so an upgrade does not swallow a marker written by
+    # the previous version. ADR 20260917-132015, D9.
+    paths = sorted(glob.glob(os.path.join(sdir, "resume", "*.failed")))
+    legacy = os.path.join(sdir, "resume_failed.json")
+    if os.path.exists(legacy):
+        paths.append(legacy)
+    out = []
+    for path in paths:
+        data = usage.read_json(path, None)
+        if not data:
+            continue
+        try:
+            os.remove(path)             # consumed here, so it is announced exactly once
+        except OSError:
+            pass
+        # ⭐ WHICH WORK STOPPED. The old message named neither the session nor the task, so
+        # even the one announcement that survived did not say what had been abandoned.
+        who = str(data.get("session_id") or "")[:8]
+        what = data.get("task")
+        out.append(" ⛔ TELL THE USER FIRST, BEFORE ANYTHING ELSE: a scheduled resume gave "
+                   "up at %s and the work did NOT continue%s%s - %s"
+                   % (time.strftime("%Y-%m-%d %H:%M", time.localtime(data.get("at", 0))),
+                      (" (task %s)" % what) if what else "",
+                      (" (session %s)" % who) if who else "",
+                      data.get("why", "no reason recorded")))
+    return "".join(out)
 
 
 # ⚠ THE TWO MARKER KINDS ARE PRUNED BY DIFFERENT RULES, AND THE ASYMMETRY IS THE POINT.
@@ -2485,7 +2533,7 @@ def prune_state(sdir, cfg=None):
     return removed
 
 
-def stand_down_resume(root, sdir, v):
+def stand_down_resume(root, sdir, v, session_id=None):
     """Kill a pending OS alarm as soon as the wait it was armed for is demonstrably over.
 
     ⛔ THE PROBLEM THIS SOLVES, and it is not only about switching accounts. A window can
@@ -2540,7 +2588,14 @@ def stand_down_resume(root, sdir, v):
     # strip the safety net exactly when it was armed on purpose. Same KEEP as STOP in the table.
     if v.get("relaxed_stop"):
         return ""
-    state = usage.read_json(os.path.join(sdir, "resume.json"), None)
+    # ⛔ ONLY THIS SESSION'S ALARM. It used to cancel whatever the one shared record held,
+    # so a session reaching GO retired a DIFFERENT session's still-needed resume.
+    # ⚠ What this does NOT yet cover is the case the docstring above is about - the work
+    # carried on in a different session from the one that armed. ADR 20260917-132015, D4
+    # adds that half (cancel the alarms of task folders THIS session wrote a handoff to);
+    # until it lands, `--cancel` is the bound.
+    import resume as _resume_mod          # cycle-safe here, as below
+    state = usage.read_json(_resume_mod.record_path(sdir, session_id), None)
     if not isinstance(state, dict):
         return ""
     at = state.get("at")
@@ -2552,7 +2607,7 @@ def stand_down_resume(root, sdir, v):
     when = time.strftime("%H:%M", time.localtime(at))
     try:
         import resume                      # see the docstring: cycle-safe here, not above
-        cancelled = resume.do_cancel(sdir, quiet=True) == 0
+        cancelled = resume.do_cancel(sdir, quiet=True, session_id=session_id) == 0
     except Exception as exc:
         log(root, "STAND-DOWN-FAILED %r" % (exc,))
         return (" ⚠ A scheduled resume is still armed for %s but the usage window has "
@@ -2568,7 +2623,7 @@ def stand_down_resume(root, sdir, v):
         # inside five minutes. The floor exists for a machine that CANNOT arm; a cancel is
         # proof this one can. ADR 20260902-142400, decision 6 (PACE itself keeps the alarm).
         try:
-            os.remove(os.path.join(sdir, ARM_MARK))
+            os.remove(state_path(sdir, session_id, ARM_MARK))
         except OSError:
             pass
     if not cancelled:
@@ -2600,6 +2655,18 @@ def on_session_start(payload, root, sdir, cfg):
         prune_state(sdir, cfg)
     except OSError:
         pass
+    # ⭐ AND THE RESUME RECORDS, which prune_state deliberately cannot see: they live OUTSIDE
+    # `state/` so its age sweep can never delete a live alarm's record. Their own reaper asks
+    # the scheduler about names it already holds, one probe per record. ⚠ Wrapped and
+    # separate from the block above: housekeeping must never take enforcement down, and this
+    # one spawns subprocesses. ADR 20260917-132015, D6.
+    try:
+        sys.path.insert(0, HERE)
+        import resume as _resume_reap
+        _resume_reap.migrate_legacy(sdir)
+        _resume_reap.reap_records(sdir)
+    except Exception as exc:
+        log(root, "REAP-FAILED %r" % (exc,))
     # ⚠ The message below tells the agent the task root "already exists". Say that only
     # when it is TRUE - a read-only tree makes this None, and asserting a folder that is
     # not there is the same class of lie as a brake that reports active while dead.
@@ -2667,7 +2734,8 @@ def on_session_start(payload, root, sdir, cfg):
     pairs = [maybe_install_vscode_task(root, cfg, sdir),
              maybe_repoint_statusline(),
              maybe_adopt_statusline(cfg)]
-    notes = [failed_resume_note(sdir), stand_down_resume(root, sdir, v)]
+    notes = [failed_resume_note(sdir),
+             stand_down_resume(root, sdir, v, payload.get("session_id"))]
     notes += [c or "" for c, _s in pairs]
 
     text = ("Sub-task dispatch is governed by %s and enforced by a hook: one sub-task at "
@@ -2710,10 +2778,11 @@ def on_user_prompt(payload, root, sdir, cfg):
     autonomous run hears it more than once without being nagged every turn.
     """
     v = usage.verdict(sdir, usage.config(sdir))
+    sid = payload.get("session_id")
     # ⛔ BEFORE the early return, because GO is precisely the path a reopened window
     # arrives on. The old code returned silently here, which is why an alarm could outlive
     # the wait it was armed for. See stand_down_resume().
-    note = stand_down_resume(root, sdir, v)
+    note = stand_down_resume(root, sdir, v, sid)
     if v["verdict"] not in ("PACE", "STOP"):
         if note:
             # ⭐ ON THE SCREEN TOO. A cancelled alarm is a fact the PERSON needs - "nothing
@@ -2722,7 +2791,6 @@ def on_user_prompt(payload, root, sdir, cfg):
             context_note(payload.get("hook_event_name", "UserPromptSubmit"),
                          "[usage]" + note, systemMessage=note.strip())
         return
-    sid = payload.get("session_id")
     # ⭐ ARM HERE TOO, on every PACE/STOP prompt and BEFORE the once-per-level return: a handoff
     # written after the warning still gets its resume on the next prompt, and the arm runs after
     # stand_down_resume() so the two never race inside one hook. See arm_from_handoff().
@@ -3726,19 +3794,31 @@ def selftest():
     # observable. ⚠ stand_down imports `resume` inside the function, so sys.modules is the hook.
     import types as _types
     _ndir = tempfile.mkdtemp(prefix="dg-net-")
-    with open(os.path.join(_ndir, "resume.json"), "w", encoding="utf-8") as _f:
+    # ⭐ Per-session record since 0.60: `<sdir>/resume/<session>.json`, not one shared file.
+    _sid = "SELFTEST-SID"
+    os.makedirs(os.path.join(_ndir, "resume"), exist_ok=True)
+    with open(os.path.join(_ndir, "resume", _sid + ".json"), "w", encoding="utf-8") as _f:
         json.dump({"at": time.time() + 3600}, _f)          # a FUTURE alarm, ours to cancel
     _cc = []
     _fake = _types.ModuleType("resume")
-    _fake.do_cancel = lambda sdir, quiet=True: (_cc.append(sdir), 0)[1]
+    _fake.do_cancel = lambda sdir, quiet=True, session_id=None: (_cc.append(sdir), 0)[1]
+    _fake.record_path = lambda sdir, session_id: os.path.join(
+        sdir, "resume", safe_session(session_id) + ".json")
     _saved = sys.modules.get("resume")
     sys.modules["resume"] = _fake
     try:
-        assert stand_down_resume(_ndir, _ndir, {"verdict": "GO", "relaxed_stop": True}) == "", \
-            "net zone must not stand down"
+        assert stand_down_resume(_ndir, _ndir, {"verdict": "GO", "relaxed_stop": True},
+                                 _sid) == "", "net zone must not stand down"
         assert _cc == [], "the net zone reached do_cancel - the resume was cancelled"
-        _msg = stand_down_resume(_ndir, _ndir, {"verdict": "GO"})
+        _msg = stand_down_resume(_ndir, _ndir, {"verdict": "GO"}, _sid)
         assert _cc == [_ndir], "a plain GO with a future alarm must cancel: %r" % (_cc,)
+        # ⛔ AND ANOTHER SESSION'S ALARM IS NOT TOUCHED. This is the whole point of the
+        # per-session record: a session reaching GO used to cancel whatever the single
+        # shared file held, which was often another session's still-needed resume.
+        del _cc[:]
+        assert stand_down_resume(_ndir, _ndir, {"verdict": "GO"}, "SOMEBODY-ELSE") == "", \
+            "a GO cancelled another session's alarm"
+        assert _cc == [], "another session's resume was cancelled: %r" % (_cc,)
     finally:
         if _saved is not None:
             sys.modules["resume"] = _saved

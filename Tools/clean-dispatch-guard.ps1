@@ -49,6 +49,10 @@ $MARKER  = 'dispatch-guard'
 # ever, with nothing left on disk that names it. Renaming again means APPENDING here.
 $TASKDEFS = @('Claude Usage Watcher', 'Claude usage watch')
 $TASKDEF  = $TASKDEFS[0]
+# ⛔ A PREFIX, NOT A NAME. Since 0.60 each session's resume is registered as
+# `ClaudeDispatchGuardResume-<state-dir fingerprint>-<session>`, so there can be SEVERAL and
+# none of them is called just this. Querying the bare name found nothing and left every one
+# of them behind - the exact hazard the header of this file names. ADR 20260917-132015, D13.
 $SCHED   = 'ClaudeDispatchGuardResume'
 $plan     = [System.Collections.Generic.List[hashtable]]::new()
 $skipped  = [System.Collections.Generic.List[string]]::new()
@@ -237,8 +241,22 @@ foreach ($userDir in $userDirs) {
 Write-Host ""
 Write-Host "5. the OS scheduled task - an armed resume outlives every uninstall" -ForegroundColor White
 if ($IsWindows -or $env:OS -eq 'Windows_NT') {
+    # The bare pre-0.60 name, if an upgrade never re-armed it.
     & schtasks /Query /TN $SCHED *> $null
     if ($LASTEXITCODE -eq 0) { $plan.Add(@{ Kind = 'schtask'; Path = $SCHED }); Note 'DELETE' "scheduled task $SCHED" }
+    # ⭐ ...and every per-session one. A full /Query costs seconds on a machine with many
+    # tasks; that is acceptable here, in a command a person runs once, and is why the hooks
+    # never do it.
+    $csv = & schtasks /Query /FO CSV /NH 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        foreach ($line in $csv) {
+            $name = ($line -split '","')[0].Trim('"').TrimStart('\')
+            if ($name -like "$SCHED-*") {
+                $plan.Add(@{ Kind = 'schtask'; Path = $name })
+                Note 'DELETE' "scheduled task $name"
+            }
+        }
+    }
 } else {
     Note 'INFO' 'on macOS/Linux the resume uses `at`' 'list with `atq`, remove with `atrm <id>`'
 }

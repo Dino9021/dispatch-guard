@@ -448,7 +448,13 @@ def wired_paths_health(settings):
     return True
 
 
-RESUME_TASK_NAME = "ClaudeDispatchGuardResume"
+# ⚠ The PREFIX, not a whole task name. Since 0.60 each session's resume is registered as
+# `<prefix>-<state-dir fingerprint>-<session>` (ADR 20260917-132015, D2), so there can be
+# several and none of them is called just this. ⛔ install.py deliberately does NOT read
+# $CLAUDE_DISPATCH_DIR - see usage.state_dir's docstring - so the fingerprint it computes
+# is the DEFAULT directory's, and the line below says so rather than reporting a silent
+# miss as "no orphans" ⟨round 2, I-N11⟩.
+RESUME_TASK_PREFIX = "ClaudeDispatchGuardResume"
 
 
 def resume_status():
@@ -464,12 +470,31 @@ def resume_status():
     cancel it, and when it fires, do_run finds no handoff and aborts - so it is harmless but
     permanent, and worth naming so somebody removes it.
     """
+    import glob as _glob
+    import json as _json
     import time
-    state = load(os.path.join(STATE_DIR, "resume.json"), None)
+    # ⭐ EVERY session's record, and the pre-0.60 single slot if it is still there.
+    records = sorted(_glob.glob(os.path.join(STATE_DIR, "resume", "*.json")))
+    legacy = os.path.join(STATE_DIR, "resume.json")
+    if os.path.exists(legacy):
+        records.append(legacy)
+    states = []
+    for rec in records:
+        one = load(rec, None)
+        if isinstance(one, dict):
+            states.append(one)
+    state = states[0] if states else None
     if os.name == "nt":
-        probe = subprocess.run(["schtasks", "/Query", "/TN", RESUME_TASK_NAME],
-                               capture_output=True, timeout=30)
-        registered = probe.returncode == 0
+        # ⛔ A PREFIX MATCH, because the names now carry a session. `/Query /FO CSV` with no
+        # `/TN` lists every task on the machine and costs SECONDS (measured: 3.7-6.8 s
+        # against 489 tasks), which is fine HERE - this is a command a person runs - and is
+        # exactly why the hook path does not do it.
+        probe = subprocess.run(["schtasks", "/Query", "/FO", "CSV", "/NH"],
+                               capture_output=True, timeout=60)
+        names = [ln.strip().strip('"').lstrip("\\").split('","')[0].strip('"')
+                 for ln in (probe.stdout or b"").decode("utf-8", "replace").splitlines()]
+        ours = [n for n in names if RESUME_TASK_PREFIX in n]
+        registered = bool(ours) if probe.returncode == 0 else False
     else:
         # `at` has no named jobs, so presence cannot be probed the same way. Say so rather
         # than reporting a guess as a measurement.
@@ -477,10 +502,10 @@ def resume_status():
 
     if not state:
         if registered:
-            print("resume armed        : ⚠ NO record, but the OS still holds a task named")
-            print("                      %s - an ORPHAN. It will" % RESUME_TASK_NAME)
-            print("                      abort harmlessly when it fires, but nothing will")
-            print("                      ever remove it. Run `resume.py --cancel`.")
+            print("resume armed        : ⚠ NO record, but the OS still holds %d task(s)" % len(ours))
+            print("                      named %s* - ORPHANS. They will" % RESUME_TASK_PREFIX)
+            print("                      abort harmlessly when they fire, but nothing will")
+            print("                      ever remove them. Run `resume.py --cancel`.")
         else:
             print("resume armed        : no (nothing pending, which is the normal state)")
         return
@@ -488,8 +513,13 @@ def resume_status():
     at = state.get("at")
     when = (time.strftime("%Y-%m-%d %H:%M", time.localtime(at))
             if isinstance(at, (int, float)) else "unknown")
-    print("resume armed        : yes - fires %s" % when)
-    print("                      task: %s" % state.get("task"))
+    print("resume armed        : yes, %d record(s) - the first fires %s" % (len(states), when))
+    for one in states:
+        print("                      task: %s  (session %s)"
+              % (one.get("task"), str(one.get("session_id") or "?")[:8]))
+    if os.name == "nt":
+        print("                      ⚠ orphan probe used the DEFAULT state directory; with")
+        print("                        $CLAUDE_DISPATCH_DIR set, ask `resume.py --status`.")
     if registered is None:
         print("                      ⚠ cannot probe `at` for a named job; check with `atq`")
     elif registered:

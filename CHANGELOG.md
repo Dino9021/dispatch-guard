@@ -33,6 +33,58 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.60.0
+
+**一台機器上只有一個 session 的 resume 活得下來,現在每個 session 各有一份。** 整套機制的每一個
+產物都是綁在「機器」上的 —— 一個 `resume.json`、一個 OS 排程名稱、一個 auto-arm 冷卻檔、一個失敗
+通知,還有「有人活著嗎」這個判斷 —— 所以第二個 session 武裝的時候,會無聲地蓋掉第一個。
+**實測於 2026-09-17:** 同一個欄位在三小時內被三個不同 session 輪流搶走,其中一筆記錄同時帶著
+一個 session 的任務資料夾和**另一個** session 的工作目錄 —— 那個排程醒來會在錯的專案裡跑。
+
+- **記錄改成 `<state>/resume/<session>.json`。** ⛔ **故意不放進 `state/`**:`prune_state()` 依
+  時間清那個資料夾,而 resume 可以對「七天」那個視窗武裝 —— `state_keep_days` 設小一點,記錄就會
+  在 OS 排程還掛著的時候被刪掉,排程醒來只會看到 `RUN-ABORT`。
+- **OS 排程改名為 `ClaudeDispatchGuardResume-<dir8>-<session>`。** `dir8` 是
+  `normcase(realpath(state_dir))` 的雜湊,所以兩個狀態目錄不會撞同一個名字,同一個目錄用不同大小寫
+  拼寫也不會認不得自己的排程。
+- **武裝的 session id 用傳的,不是用猜的。** 之前 `do_arm` 退回去取「最新的 `state/*.alive`」,
+  而那個函式自己的註解就寫著:兩個 session 同時活著的時候會猜錯 —— 正好就是這個功能存在的場景。
+- **冷卻檔(spawn floor)也改成每個 session 一個。** 這是單槽問題的第二半:就算記錄和排程名稱都分開了,
+  一個機器共用的 300 秒冷卻仍然會讓第二個 session 的武裝直接被擋掉。
+- **醒來的判斷改成只問「武裝我的那個 session 還活著嗎」。** 舊的問法是「**任何** session 活著嗎」,
+  而 `heartbeat()` 在任何分支之前就會蓋章,所以只要機器上有任何一個 session 就永遠是「有」——
+  包括 resume 自己開出來的那個 `claude -p`,最長三小時。⛔ **這放棄了一項安全性:** 你在另一個
+  session 工作的時候,背景 resume 可能會跑起來。這是刻意的,由擁有者核准 —— 保留它等於整個功能在
+  單機上不存在。界線是武裝時螢幕上那行字、`resume.py --cancel`,以及 resume 只在自己記錄的
+  任務資料夾和工作目錄裡動。
+- **交接檔裡的「接手」註解可以讓排程不跑。** 接手別人任務的 session 立刻在那份 `HANDOFF.md` 寫
+  `⛔ TAKEN OVER <時間戳記> by ...`;排程醒來讀到比武裝時間新的那一行就站下來。⚠ 時間戳記
+  **寫在文字裡,絕不用檔案 mtime** —— `git checkout/pull/stash/merge` 會把每個檔案的 mtime 變成現在,
+  用 mtime 的話一次 `git pull` 就能讓整台機器的排程全部不跑。⚠ 解析失敗、沒有時間戳記、比武裝時間舊 ——
+  一律**照跑**:重做浪費一個視窗,不跑是把工作整個弄丟。
+- **失敗通知改成每個 session 一份,而且會全部念出來。** 之前兩個 resume 同一晚失敗只會留下一則 ——
+  第二次寫入蓋掉第一次,讀的人再刪掉。訊息現在也會說是**哪一個任務**停了。
+- **清理:** 記錄的鬧鐘時間超過整個重試視窗、而且排程器已經不掛著它,就連記錄帶排程一起清掉。
+  ⛔ 只用自己記錄裡的名字逐一問(每次約 115 ms),**不列舉整台機器的排程** —— 實測 489 個排程要
+  3.7–6.8 秒,而 SessionStart 的 timeout 是 15 秒,**逾時的 hook 是 fail-open**,等於為了打掃把煞車關掉。
+- **解除安裝改成依前綴列舉。** 之前只問一個固定名稱,改名之後會把每一個 per-session 排程留在系統裡 ——
+  正是那個檔案自己標題寫的風險。
+- **交接檔一律要寫「我是誰」。** resume 醒來是全新的 `claude -p`(新的 session id,**不是**
+  `--resume` —— 重送對話記錄是 ~95k token/MB 且 cache 完全不命中),所以繼任者只能沿用這份檔案裡
+  給的名字。`handoff_warnings()` 沒看到 session id 也沒看到角色名稱時會提醒。⚠ 是警告不是拒絕。
+- **兩個先前就存在的缺陷一併修掉:** POSIX 的 `--cancel` 會執行 `atrm -a`,刪掉使用者**全部**的
+  `at` 工作(包括這個外掛從沒建立過的);現在只刪記錄下來的那一個編號,`atrm -a` 移到要明講的
+  `resume.py --cancel --all`。以及排程指令沒有帶 `--dir`,所以用 `$CLAUDE_DISPATCH_DIR` 的人,
+  排程醒來讀的是**預設**目錄。
+- **升級不會弄丟已武裝的排程:** 舊的單槽記錄會依它自己記的 session id 搬家;沒有 session id 的
+  ⛔ **原地保留**並由 `--status` 回報 —— 幫別人的鬧鐘亂取名字比說「這個要你自己清」更糟。
+- ADR:`Memory/tasks/20260917-132015-parallel-per-session-resume/`(兩輪對抗審查,第一輪 REJECT
+  五個致命問題,第二輪判定五個都解決、另外找出四個)。九個突變殺過;一個既有檢查抓到這次改動
+  自己引入的缺陷 —— 搬遷曾經放在 `main()` 最上面,害得 `resume.py --selftest` 去搬動真實目錄裡
+  一筆活的記錄。
+
+---
+
 ## 0.59.1
 
 **state/ 目錄無限累積,現在會清。** 每個 session 在 state/ 留一組 per-session 標記檔(`.start`、
@@ -2231,6 +2283,74 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.60.0
+
+**Only one session's resume survived on a machine; every session now has its own.** Every
+artefact of the mechanism was keyed to the MACHINE - one `resume.json`, one OS task name, one
+auto-arm spawn mark, one failure marker, and the "is anybody alive?" test - so the second
+session to arm silently took the first one's slot. **Measured 2026-09-17:** three different
+sessions held that one slot inside three hours, and one record carried one session's task
+folder together with **another** session's working directory - that alarm would have run in
+the wrong repository.
+
+- **The record is `<state>/resume/<session>.json`.** ⛔ **Deliberately NOT in `state/`:**
+  `prune_state()` sweeps that folder by age, and a resume can be armed against the SEVEN-day
+  window - so with `state_keep_days` set low the record dies while its OS task is still
+  registered, and the alarm wakes to `RUN-ABORT`.
+- **The OS task is `ClaudeDispatchGuardResume-<dir8>-<session>`.** `dir8` hashes
+  `normcase(realpath(state_dir))`, so two state directories cannot collide on one name, and
+  spelling the same directory two ways cannot make it fail to recognise its own tasks.
+- **The arming session id is PASSED, not guessed.** `do_arm` fell back to "the newest
+  `state/*.alive`", and that function's own docstring says the guess is wrong when two
+  sessions are live - precisely the case this feature exists for.
+- **The spawn floor is per session too.** This was the second half of the single-slot bug:
+  even with a record and a task name each, a machine-wide 300 s floor still blocked a second
+  session's arm outright.
+- **The fire-time test asks only whether the session that ARMED it is awake.** It used to ask
+  whether ANY session was, and `heartbeat()` stamps before any branch - so the answer is yes
+  whenever any session exists, including the headless `claude -p` a resume itself spawns, for
+  up to three hours. ⛔ **A safety property is given up:** a resume may now start while you
+  work in a different session. Deliberate, and approved by the owner - keeping it costs the
+  entire feature on a one-machine setup. The bounds are the screen line printed when it arms,
+  `resume.py --cancel`, and the fact that a resumed run works in its OWN recorded task folder
+  and cwd.
+- **A takeover line in the handoff stands a resume down.** A session picking up somebody
+  else's task writes `⛔ TAKEN OVER <timestamp> by ...` into that `HANDOFF.md` immediately;
+  the alarm reads it and stands down if it is newer than the arm. ⚠ The timestamp is IN THE
+  TEXT, never the file's mtime - `git checkout/pull/stash/merge` set mtime=now on every
+  tracked file, so an mtime rule would let one `git pull` stop every armed resume on the
+  machine. ⚠ Unparsable, missing or older than the arm: it RUNS. Redoing work wastes a
+  window; refusing to run loses it.
+- **One failure marker per session, and all of them are announced.** Two resumes failing in
+  one night left ONE message: the second write overwrote the first and the reader deleted it.
+  The message now also names WHICH task stopped.
+- **Reaping:** a record and its task go once the alarm time is past the whole retry window AND
+  the scheduler no longer holds the job. ⛔ It probes only names it already holds (~115 ms
+  each) and **never enumerates the machine's tasks** - measured at 3.7-6.8 s against 489 tasks,
+  under a 15 s SessionStart timeout, and **a hook that times out FAILS OPEN**: housekeeping
+  would have disabled enforcement.
+- **The uninstaller enumerates by prefix.** It queried one fixed name, so after the rename it
+  would have left every per-session task registered - the exact hazard its own header names.
+- **Every handoff must say WHO the session is.** A resume wakes a fresh `claude -p` with a new
+  session id (**never** `--resume`: ~95k tokens/MB at zero cache read), so the successor can
+  only keep a name this file gives it. `handoff_warnings()` says so when neither a session id
+  nor a role appears. ⚠ A warning, never a refusal.
+- **Two pre-existing defects fixed alongside:** a POSIX `--cancel` ran `atrm -a` and deleted
+  EVERY `at` job the user had, including jobs this plugin never created - it now removes only
+  the recorded job number, and `atrm -a` moved behind an explicit `resume.py --cancel --all`.
+  And the scheduled command carried no `--dir`, so anyone using `$CLAUDE_DISPATCH_DIR` had an
+  alarm that fired against the DEFAULT directory.
+- **An upgrade does not lose an armed alarm:** a pre-0.60 record is moved under the session id
+  it already records; one WITHOUT a session id is ⛔ **left alone** and reported by `--status` -
+  inventing a name for somebody's armed alarm is worse than saying it is theirs to clear.
+- ADR: `Memory/tasks/20260917-132015-parallel-per-session-resume/` (two adversarial review
+  rounds; round 1 REJECT with five blockers, round 2 judged all five resolved and found four
+  more). Nine mutations killed, and an existing check caught a defect this change introduced -
+  the migration sat at the top of `main()`, so `resume.py --selftest` migrated a LIVE record in
+  the real state directory.
 
 ---
 

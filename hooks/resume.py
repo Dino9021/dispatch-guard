@@ -3,7 +3,7 @@
 
     resume.py --arm --task <folder> [--at HH:MM] [--dry-run]
     resume.py --status
-    resume.py --cancel
+    resume.py --cancel [--all]     (--all: POSIX only, removes EVERY `at` job you have)
     resume.py --run                 (the scheduler calls this; not for humans)
 
 ⭐ WHAT THIS IS FOR, and why it is not the same as telling an agent to remember.
@@ -65,9 +65,158 @@ RESUME_DEFAULTS = {
     "retry_every_min": 20,       # how often to retry inside that window
 }
 FAILED_MARKER = "resume_failed.json"
+# ⛔ ONE RECORD PER SESSION, AND DELIBERATELY NOT INSIDE `state/`. Every session used to
+# write the SAME `<sdir>/resume.json`, so the second one to arm silently took the first
+# one's slot - measured live on this machine, 2026-09-17, with one record carrying one
+# session's task and another's working directory (see the ADR's MEASURED-live-clobber.md).
+# ⚠ `state/` was the obvious home and is the WRONG one: prune_state() sweeps everything
+# there by age with two carve-outs, and a resume can be armed against the SEVEN-day reset -
+# so with `state_keep_days` set low the record would die while its OS task stayed
+# registered, and the alarm would wake to `RUN-ABORT no handoff recorded`.
+# ADR 20260917-132015, D1.
+RESUME_DIR = "resume"
+LEGACY_RECORD = "resume.json"           # pre-0.60 single slot; migrated by migrate_legacy()
 # A session the gate touched within this many minutes counts as live, so the scheduled
 # route stands down and lets the session-wake route do the work.
 ALIVE_WITHIN_MIN = 30
+
+
+def record_path(sdir, session_id):
+    """Where THIS session's resume record lives: `<sdir>/resume/<session>.json`."""
+    return os.path.join(sdir, RESUME_DIR,
+                        dispatch_gate.safe_session(session_id) + ".json")
+
+
+def record_paths(sdir):
+    """Every resume record in this state directory, oldest name first.
+
+    ⚠ `*.json` ONLY. The per-session failure markers live in the same folder and a sweep
+    that matched everything would delete the announcements they exist to deliver.
+    """
+    return sorted(glob.glob(os.path.join(sdir, RESUME_DIR, "*.json")))
+
+
+def dir8(sdir):
+    """Eight hex characters naming this STATE DIRECTORY, for the OS task name.
+
+    ⛔ WITHOUT IT TWO STATE DIRECTORIES COLLIDE ON ONE TASK NAME. A machine can have more
+    than one (`--dir`, `$CLAUDE_DISPATCH_DIR`), and two of them that see the same session id
+    would otherwise register the same task - the second `/Create /F` silently overwriting
+    the first.
+
+    ⚠ `normcase(realpath(...))` and not the raw path: `state_dir()` only calls `abspath`, so
+    `C:\\Users\\X\\...` and `c:\\users\\x\\...` are the same directory spelled two ways, and
+    hashing them apart would make a directory fail to recognise its own tasks. The failure
+    would be silent and in the safe direction - nothing reaped - which is exactly the kind
+    that survives for months.
+    """
+    import hashlib
+    key = os.path.normcase(os.path.realpath(sdir))
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
+
+
+def task_name(sdir, session_id):
+    """The OS task name for one session's resume in one state directory."""
+    return "%s-%s-%s" % (TASK_NAME, dir8(sdir), dispatch_gate.safe_session(session_id))
+
+
+def write_record(sdir, session_id, state):
+    """Write one session's record, creating `<sdir>/resume/` on the way."""
+    path = record_path(sdir, session_id)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(state, f)
+    return path
+
+
+def reap_records(sdir, now=None):
+    """Remove spent records, and the OS task of each, for THIS state directory.
+
+    ⛔ WITHOUT THIS, EVERY SESSION LEAVES A SCHEDULED TASK BEHIND FOR EVER. One record and
+    one OS task per session is the whole point of 0.60, and it is also how a machine ends up
+    with hundreds of them. ADR 20260917-132015, D6.
+
+    ⭐ IT PROBES ONLY NAMES IT ALREADY HOLDS, and that is the design, not an optimisation.
+    The obvious version enumerates `schtasks /Query /FO CSV` and deletes what looks like
+    ours - but that listing costs SECONDS (measured by the ADR's round 2: 3.7-6.8 s against
+    489 tasks, growing with a task count this plugin does not control), it runs under a 15 s
+    hook timeout, and a hook that times out FAILS OPEN - so housekeeping would disable
+    enforcement. It also cannot attribute a task to a state directory: the CSV carries a
+    name, a next run time and a status, and nothing else. ⇒ One exact-name probe per record
+    we wrote (~115 ms), which is both cheap and exactly attributable.
+
+    ⚠ THE RESIDUE, NAMED: a task whose record somebody deleted by hand can no longer be
+    found this way. `Tools/clean-dispatch-guard.ps1` enumerates by prefix, because an
+    uninstall is interactive and has no hook timeout.
+
+    ⛔ SPENT MEANS FIRED AND FINISHED, not "old". A record is removed only when its alarm
+    time is further in the past than the whole retry window - so a resume that is still
+    retrying is never swept out from under itself - AND its task is no longer registered,
+    which is the scheduler agreeing the job is done. ⚠ Never on a scheduler ERROR: `_run`
+    answers "did it exit 0?", and a `schtasks` that could not be launched at all answers no,
+    which is indistinguishable from "not registered". So the delete needs the record to be
+    old AS WELL, and that is what the two conditions together buy.
+
+    ⚠ `*.json` only - `record_paths()` - or this deletes the per-session failure markers,
+    which have no alarm time and no task and would match every condition by default.
+
+    Returns how many records it removed. NEVER RAISES: it runs inside a hook.
+    """
+    now = time.time() if now is None else now
+    keep_for = rcfg(sdir)["retry_window_min"] * 60
+    removed = 0
+    for rec in record_paths(sdir):
+        try:
+            state = usage.read_json(rec, None)
+            if not isinstance(state, dict):
+                continue
+            at = state.get("at")
+            if not isinstance(at, (int, float)) or (now - at) < keep_for:
+                continue                       # in the future, or still inside its retries
+            sid = state.get("session_id") or os.path.basename(rec)[:-len(".json")]
+            if os.name == "nt" and _run(["schtasks", "/Query", "/TN", task_name(sdir, sid)]):
+                continue                       # the scheduler still holds it; not spent
+            os.remove(rec)
+            removed += 1
+            log_line("REAPED the spent record for session %s" % str(sid)[:8])
+        except Exception:
+            continue                           # housekeeping never breaks a hook
+    return removed
+
+
+def migrate_legacy(sdir):
+    """Move a pre-0.60 `<sdir>/resume.json` to `resume/<its own session>.json`.
+
+    ⛔ AN UPGRADE MUST NOT LOSE AN ARMED ALARM. The record and the OS task are BOTH renamed
+    by this release, so without this an upgrade performed while a resume was armed leaves a
+    task the plugin can no longer name and a record it no longer reads - the alarm fires,
+    finds nothing, and the guarantee is gone with no message. ADR 20260917-132015, D8.
+
+    ⭐ The old record already carries `session_id` (it has since the field was added), so the
+    new name is derivable rather than guessed. ⛔ Without one it is LEFT ALONE and reported
+    by --status: inventing a name for somebody's armed alarm is worse than saying "this one
+    is yours to clear".
+
+    ⚠ The OS task is re-registered under the new name by the next arm, not here. This
+    function moves a FILE and nothing else, so it can run on every start without asking the
+    scheduler anything.
+    """
+    old = os.path.join(sdir, LEGACY_RECORD)
+    if not os.path.exists(old):
+        return None
+    state = usage.read_json(old, None)
+    if not isinstance(state, dict) or not state.get("session_id"):
+        return "unnamed"                  # --status explains; see the docstring
+    new = record_path(sdir, state["session_id"])
+    if os.path.exists(new):
+        return "collision"                # this session already has one; leave both alone
+    try:
+        write_record(sdir, state["session_id"], state)
+        os.remove(old)
+    except OSError:
+        return "failed"
+    log_line("MIGRATED the single-slot record to %s" % os.path.basename(new))
+    return new
 
 
 def _chdir_or_fall_back(state, handoff_path):
@@ -161,7 +310,13 @@ def rcfg(sdir):
     return out
 
 
-def announce_failure(sdir, why):
+def failed_path(sdir, session_id):
+    """Where ONE session's give-up marker lives: `<sdir>/resume/<session>.failed`."""
+    return os.path.join(sdir, RESUME_DIR,
+                        dispatch_gate.safe_session(session_id) + ".failed")
+
+
+def announce_failure(sdir, why, session_id=None, task=None):
     """Leave a marker the next session will READ OUT LOUD.
 
     ⛔ A scheduled task has nowhere to put a message. It runs with no terminal, no
@@ -170,10 +325,20 @@ def announce_failure(sdir, why):
     the work simply not having been needed. This marker is picked up by the plugin's
     SessionStart hook, which tells the agent, which tells the person. ⚠ That is the only
     path from "it failed at 03:40 while you were asleep" to somebody knowing.
+
+    ⛔ ONE MARKER PER SESSION SINCE 0.60, AND IT IS NOT A TIDINESS CHANGE. There was a
+    single `resume_failed.json`, written here and consumed-and-deleted by the gate, so two
+    resumes failing overnight left ONE announcement: the second write overwrote the first,
+    and the reader deleted it. The owner then heard about one failure and never learnt of
+    the other. ⚠ The message also named no session and no task, so even the surviving one
+    did not say WHICH work had stopped. ADR 20260917-132015, D9.
     """
     try:
-        with open(os.path.join(sdir, FAILED_MARKER), "w", encoding="utf-8") as f:
-            json.dump({"at": time.time(), "why": why}, f)
+        path = failed_path(sdir, session_id)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"at": time.time(), "why": why,
+                       "session_id": session_id, "task": task}, f)
     except OSError:
         pass
     log_line("GAVE-UP %s" % why)
@@ -182,13 +347,17 @@ def announce_failure(sdir, why):
 def session_alive_minutes(sdir, session_id=None):
     """How long ago was a session last active, in minutes? None if never seen.
 
-    ⚠ WITHOUT `session_id` THIS MEANS "ANY SESSION", and do_run() deliberately keeps it
-    that way. Standing down because SOMEBODY is at the keyboard is the safe answer even
-    when it is not the session that armed the resume - a headless run starting underneath
-    a working person is worse than a resume they can trigger themselves.
+    ⚠ WITHOUT `session_id` THIS MEANS "ANY SESSION". ⛔ do_run() USED TO CALL IT THAT WAY AND
+    NO LONGER DOES (0.60). The old argument was that standing down because SOMEBODY is at the
+    keyboard is the safe answer even when it is not the session that armed the resume. Two
+    things killed it: the signal cannot carry that meaning - the gate stamps `.alive` before
+    any branch on every hook event, including the headless `claude -p` a resume itself spawns
+    - and with one resume per session the machine-wide answer vetoed every parallel resume,
+    which is the whole feature. ADR 20260917-132015, D5.
 
-    ⭐ WITH one, it answers the narrower question a PERSON asks: is the session I armed
-    this from still there, so can I just carry on in it? Only --status asks that.
+    ⭐ WITH one, it answers the question both callers now ask: is the session that armed this
+    resume still there? --status asks it to tell a person they can just carry on in that
+    conversation; do_run() asks it to decide whether to run headless at all.
 
     ⛔ THIS IS THE CONFLICT RESOLUTION between the two resume routes, and both routes
     genuinely need to exist: waking the live session is better because it keeps all its
@@ -304,12 +473,19 @@ def find_handoff(task, sdir):
     return None, None
 
 
-def arming_session(sdir):
+def arming_session(sdir, session_id=None):
     """(session_id, transcript path or None) for the session arming this resume.
 
-    ⭐ NOTHING NEW IS PLUMBED FOR THIS. The gate already stamps `<session-id>.alive` on
-    every hook event, so the session id is the FILENAME of the newest one - and `--arm` is
-    itself run from inside a session that just fired hooks, so the newest is this one.
+    ⭐ **GIVEN A `session_id`, THERE IS NO GUESS** - and that is how the gate calls it. The
+    gate holds the id on the hook payload that decided to arm, so it passes `--session`
+    (dispatch_gate.maybe_auto_arm) and this function only has to find the transcript.
+    ⛔ It used to have no such parameter, so EVERY automatic arm was keyed by the guess
+    below - including the arms of two sessions racing each other, which is the one case the
+    guess is documented to get wrong. ADR 20260917-132015, D12 ⟨R2 I-B1⟩.
+
+    ⚠ THE GUESS REMAINS, for a `resume.py --arm` a person runs by hand. The gate stamps
+    `<session-id>.alive` on every hook event, so the id is the FILENAME of the newest one,
+    and a hand-run `--arm` is itself inside a session that just fired hooks.
 
     ⚠ "Newest", not "certainly ours". With two sessions live on one machine the wrong id
     could be picked. That is why the transcript is recorded as a POINTER the next run may
@@ -322,15 +498,17 @@ def arming_session(sdir):
     kind of undocumented-internal-layout dependency this plugin refuses elsewhere. A UUID
     is unique, so one glob finds it with no guessing.
     """
-    newest = (None, None)
-    for p in glob.glob(os.path.join(sdir, "state", "*.alive")):
-        try:
-            m = os.path.getmtime(p)
-        except OSError:
-            continue
-        if newest[0] is None or m > newest[0]:
-            newest = (m, os.path.basename(p)[:-len(".alive")])
-    sid = newest[1]
+    sid = session_id
+    if not sid:
+        newest = (None, None)
+        for p in glob.glob(os.path.join(sdir, "state", "*.alive")):
+            try:
+                m = os.path.getmtime(p)
+            except OSError:
+                continue
+            if newest[0] is None or m > newest[0]:
+                newest = (m, os.path.basename(p)[:-len(".alive")])
+        sid = newest[1]
     if not sid:
         return None, None
     hits = glob.glob(os.path.join(os.path.expanduser("~"), ".claude", "projects", "*",
@@ -397,10 +575,83 @@ def handoff_warnings(path):
     if not re.search(r"next step|next action|下一步|接下來|todo|TODO", text, re.I):
         out.append("no next step is marked - state the exact next action, concretely enough "
                    "to act on without deciding anything first.")
+    # ⛔ WHO THIS SESSION IS. A resume wakes a FRESH `claude -p` with a NEW session id - never
+    # `--resume`, because re-sending a transcript costs ~95k tokens/MB at zero cache read - so
+    # the successor cannot know whose work it is continuing unless this file says. do_run
+    # hands it the predecessor's id and tells it to keep the name it finds here; with no name
+    # there is nothing to keep. ⚠ Sharpest with several sessions collaborating - a fleet keyed
+    # on session ids sees one member vanish and a stranger arrive - but it is warned for EVERY
+    # handoff, because a run does not know today whether it will be collaborating tomorrow.
+    # ⭐ A session id OR a stated role satisfies it: the id is what the machine matches on,
+    # the role is what a person reads.
+    if not re.search(r"session[ _-]?id|session\s*[:：]|我是|call sign|role\s*[:：]|"
+                     r"身分|代號|[0-9a-f]{8}-[0-9a-f]{4}", text, re.I):
+        out.append("it does not say WHO this session is - name the role or call sign and the "
+                   "session id. The resume wakes a NEW session, and it can only keep a name "
+                   "that this file gives it.")
     return out
 
 
-def schedule(when, dry_run):
+# ⛔ THE ONE FORM A TAKEOVER LINE MAY TAKE, and it is deliberately strict. A resume that
+# refuses to run is a worse failure than one that redoes work - "the resume IS the
+# guarantee" is this plugin's whole thesis - so anything this pattern does not match is
+# ignored and the run proceeds. Prose, a missing timestamp, a date this cannot parse: all
+# mean RUN. ADR 20260917-132015, D4.
+TAKEOVER = re.compile(r"TAKEN\s+OVER\s+(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})", re.I)
+
+
+def taken_over_since(path, armed_at):
+    """The takeover line in `path` written AFTER `armed_at`, or None.
+
+    ⛔ THE PROBLEM. A session dies mid-task with a resume armed. Somebody picks the work up
+    in a DIFFERENT session - which is the normal way it happens, since the session that armed
+    the alarm is the one that died - finishes it, and the alarm then fires and redoes work
+    that is already done, spending a fresh window to produce a duplicate.
+
+    ⭐ WHY THE EVIDENCE LIVES IN THE HANDOFF. do_run reads that file anyway: it is the
+    resume's only input. So the successor writes one line into it at the moment it TAKES
+    OVER, and no session ever touches another session's record or scheduled task. ⚠ An
+    earlier design had the newcomer CANCEL the old alarm at its own wind-down; that fires
+    hours too late, because a session writes its handoff when it stops, not when it starts.
+
+    ⛔ THE TIMESTAMP IS COMPARED TO `armed_at`, NOT MERELY READ. A takeover line from a
+    previous cycle would otherwise suppress every future resume for that folder, for ever -
+    the file is not cleaned up by anybody. Older than the arm: ignored.
+
+    ⛔ AND IT IS A TIMESTAMP IN THE TEXT, NEVER THE FILE'S mtime. `git checkout`, `pull`,
+    `stash` and `merge` all set mtime=now on every tracked file - measured in this repository
+    (ADR 20260902-142400, decision 4) - so an mtime rule would let one `git pull` convince
+    every armed resume on the machine that somebody had taken over, and none of them would
+    run. That failure is silent and it is in the direction that loses work.
+
+    ⚠ FAILS TOWARD RUNNING, always: unreadable file, no line, unparsable date, no `armed_at`
+    recorded - every one of them returns None and the resume proceeds.
+    """
+    if not isinstance(armed_at, (int, float)):
+        return None                    # nothing to compare against; run
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return None
+    import datetime
+    for m in TAKEOVER.finditer(text):
+        try:
+            # ⛔ `datetime`, NOT `time.mktime`. mktime NORMALISES out-of-range fields instead
+            # of rejecting them - measured here: `2026-13-45T99:99` came back as a valid
+            # moment in 2027, so a typo stood the resume DOWN for ever. datetime raises,
+            # which sends this down the "cannot parse it, so run" path where it belongs.
+            when = datetime.datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)),
+                                     int(m.group(4)), int(m.group(5))).timestamp()
+        except (ValueError, OverflowError, OSError):
+            continue                   # a date that is not a date; run
+        if when > armed_at:
+            line = text[text.rfind("\n", 0, m.start()) + 1:]
+            return line.split("\n")[0].strip()[:200]
+    return None
+
+
+def schedule(when, dry_run, session_id=None):
     """Register a ONE-SHOT task at `when` (a struct_time). Returns the command run.
 
     ⛔ THE COMMAND LINE GOES THROUGH THE SHIM, and of everything this plugin writes, this is
@@ -419,9 +670,19 @@ def schedule(when, dry_run):
     import shim
     me = os.path.abspath(__file__)
     sdir = usage.state_dir()
-    inner = shim.command(sdir, "resume.py", "--run")
+    # ⛔ THE STATE DIRECTORY IS NAMED, or the alarm fires against the WRONG ONE. The task is
+    # registered by a session whose `sdir` may come from `$CLAUDE_DISPATCH_DIR` or `--dir`,
+    # but the scheduler starts `resume.py --run` with neither - so `state_dir()` at fire time
+    # fell back to the DEFAULT directory, read a resume.json that was never written there,
+    # and logged `RUN-ABORT no handoff recorded`. Silent, and only for the people who moved
+    # their state directory. ADR 20260917-132015, D10.
+    # ⚠ Quoted and forward-slashed: this string goes inside `schtasks /TR`, and a home
+    # directory with a space in it is ordinary. `state_dir()` calls abspath on whatever it
+    # receives, so either separator arrives correctly.
+    inner = shim.command(sdir, "resume.py", "--run", "--dir",
+                         '"%s"' % sdir.replace("\\", "/"))
     if os.name == "nt":
-        cmd = ["schtasks", "/Create", "/TN", TASK_NAME, "/SC", "ONCE",
+        cmd = ["schtasks", "/Create", "/TN", task_name(sdir, session_id), "/SC", "ONCE",
                "/ST", time.strftime("%H:%M", when), "/SD", time.strftime("%m/%d/%Y", when),
                "/TR", inner, "/F"]
     else:
@@ -536,7 +797,28 @@ def do_arm(argv, sdir, cfg):
 
     when = time.localtime(when_epoch)
     dry = "--dry-run" in argv
-    cmd, result = schedule(when, dry)
+    # ⭐ `--session` when the gate armed this, the guess only for a hand-run --arm.
+    sid, transcript = arming_session(sdir, arg(argv, "--session"))
+    # ⛔ WHERE THE WORK LIVES, recorded here or lost for ever. do_run() `chdir`s before it
+    # does anything, and until now the only thing it had to aim at was the TASK folder -
+    # fine while every handoff sat inside the repository, wrong the moment one is generated
+    # into the plugin's own state directory.
+    # ⭐ THE SESSION-START cwd, NOT `os.getcwd()`. A hook payload's cwd follows the Bash
+    # tool's own `cd`, so the value at arm time may be some scratch directory the session
+    # wandered into. The gate stamps the start-time one; see dispatch_gate.session_cwd().
+    # ⚠ `os.getcwd()` is the fallback for a session stamped before that shipped.
+    work_cwd = dispatch_gate.session_cwd(sdir, sid) or os.getcwd()
+    state = {"task": folder, "handoff": path, "at": when_epoch,
+             "armed_at": time.time(), "session_id": sid, "cwd": work_cwd,
+             "transcript": transcript, "armed_for_reset": armed_reset, "at_job": None}
+    # ⛔ THE RECORD GOES DOWN BEFORE THE TASK IS REGISTERED, and the order is the point. The
+    # reaper deletes a registered task that no record claims, so registering first leaves a
+    # window in which a sibling session's start sweep can delete an alarm that was armed
+    # one line ago - the same silent loss the record's placement was chosen to avoid.
+    # ADR 20260917-132015, D6 ⟨round 2, I-N2⟩.
+    if not dry:
+        write_record(sdir, sid, state)
+    cmd, result = schedule(when, dry, sid)
 
     print("task folder   : %s" % folder)
     print("handoff       : %s (%d chars)" % (path, os.path.getsize(path)))
@@ -550,28 +832,26 @@ def do_arm(argv, sdir, cfg):
 
     ok = hasattr(result, "returncode") and result.returncode == 0
     if ok:
-        with open(os.path.join(sdir, "resume.json"), "w", encoding="utf-8") as f:
-            sid, transcript = arming_session(sdir)
-            # ⛔ WHERE THE WORK LIVES, recorded here or lost for ever. do_run() `chdir`s
-            # before it does anything, and until now the only thing it had to aim at was the
-            # TASK folder - fine while every handoff sat inside the repository, wrong the
-            # moment one is generated into the plugin's own state directory.
-            # ⭐ THE SESSION-START cwd, NOT `os.getcwd()`. A hook payload's cwd follows the
-            # Bash tool's own `cd`, so the value at arm time may be some scratch directory
-            # the session wandered into. The gate stamps the start-time one; see
-            # dispatch_gate.session_cwd(). ⚠ `os.getcwd()` is the fallback for a session
-            # stamped before that shipped - imperfect, and better than nothing.
-            work_cwd = dispatch_gate.session_cwd(sdir, sid) or os.getcwd()
-            json.dump({"task": folder, "handoff": path, "at": when_epoch,
-                       "armed_at": time.time(), "session_id": sid, "cwd": work_cwd,
-                       "transcript": transcript, "armed_for_reset": armed_reset}, f)
+        # ⭐ POSIX only: the job number `at` announced is the ONE handle that lets
+        # do_cancel() remove this job without removing every other `at` job the user has.
+        state["at_job"] = at_job_id(result)
+        write_record(sdir, sid, state)
         print("status        : ARMED (this is the BACKUP route - see below)")
-        log_line("ARMED task=%s at=%s" % (folder, time.strftime("%Y-%m-%d %H:%M", when)))
+        log_line("ARMED task=%s at=%s session=%s"
+                 % (folder, time.strftime("%Y-%m-%d %H:%M", when),
+                    str(sid or "")[:8] or "?"))
     else:
         detail = getattr(result, "stderr", b"") or b""
         print("status        : ⛔ FAILED - %s" % (detail.decode("utf-8", "replace").strip()
                                                   or repr(result)))
-        log_line("ARM-FAILED task=%s" % folder)
+        # ⛔ TAKE THE RECORD BACK DOWN. It was written BEFORE the scheduler was asked (see
+        # above), so a refused registration would otherwise leave a record claiming an alarm
+        # that does not exist - and `--status` would report a resume nothing will ever fire.
+        try:
+            os.remove(record_path(sdir, sid))
+        except OSError:
+            pass
+        log_line("ARM-FAILED task=%s session=%s" % (folder, str(sid or "")[:8] or "?"))
     print()
     if ok:
         print_route_a_reminder(when)
@@ -582,7 +862,7 @@ def do_arm(argv, sdir, cfg):
     return 0 if ok else 1
 
 
-def do_run(sdir, cfg):
+def do_run(sdir, cfg, session_id=None):
     """The scheduler's entry point. Runs headless Claude against the handoff.
 
     ⛔ IT DOES NOT DELETE ITSELF JUST BECAUSE IT WOKE UP. Two things can be true when the
@@ -595,40 +875,75 @@ def do_run(sdir, cfg):
     So: verify the window first, run, and remove the schedule ONLY on a clean exit. On
     anything else, re-arm for RETRY_MINUTES later, up to MAX_ATTEMPTS.
     """
-    state = usage.read_json(os.path.join(sdir, "resume.json"), {}) or {}
+    # ⛔ THE ALARM SAYS WHOSE RECORD IT IS. The scheduler passes `--session` because the
+    # task was registered with it; a task registered by an OLDER version passes none, and
+    # then the only record it can mean is the pre-0.60 single slot. ⚠ With neither, this
+    # REFUSES rather than picking one of several records - running somebody else's task is
+    # the failure this whole change exists to stop. ADR 20260917-132015, D8.
+    if session_id:
+        state = usage.read_json(record_path(sdir, session_id), {}) or {}
+    else:
+        legacy = os.path.join(sdir, LEGACY_RECORD)
+        state = usage.read_json(legacy, {}) or {}
+        if not state and record_paths(sdir):
+            log_line("RUN-ABORT no --session and no legacy record, but %d per-session "
+                     "record(s) exist - refusing to guess which one this alarm is for"
+                     % len(record_paths(sdir)))
+            return 1
     path = state.get("handoff")
     if not path or not os.path.exists(path):
         log_line("RUN-ABORT no handoff recorded")
         return 1
+    # ⭐ From here on every cancel and re-arm is about THIS record, so the id the record
+    # carries is the one to use - not the argument, which is absent on the legacy path.
+    my_sid = state.get("session_id", session_id)
 
     rc_ = rcfg(sdir)
 
-    # ⭐ Stand down if a live session already picked the work back up.
+    # ⭐ Stand down if THE SESSION THAT ARMED THIS has picked the work back up itself.
     # ⚠ "Recently active", NOT "active since the window reopened": resets_at names the
     # NEXT reset, so deriving the reopening from it is arithmetic that is easy to get
     # backwards - a first version did exactly that, compared against a future timestamp,
     # and the check never fired. Recency is what the question actually reduces to.
-    # ⛔ THE SECOND SIGNAL IS CONSULTED HERE AND NOWHERE ELSE IN THIS FILE, and the
-    # restriction is the point. This call asks "is ANYBODY at the keyboard?" and passes no
-    # session_id; origin_session_note() asks about ONE NAMED session and must keep reading
-    # that session's own .alive file, or it would tell the owner a week-dead conversation is
-    # still there.
-    # ⛔ AND IT CAN ONLY EVER MAKE THIS RUN STAND DOWN MORE, never less: min() of the two
-    # ages, so the answer only gets SMALLER, and smaller is what trips the check below.
-    # ⚠ Why it is needed at all: this file's signal is written by our own gate hook, and when
-    # that hook is not wired up the signal goes flat while somebody is working. MEASURED
-    # 2026-08-30 - .alive frozen at 1225 minutes on a machine in continuous use. The failure
-    # direction here is the OPPOSITE of the watcher's and worse: the watcher merely goes
-    # quiet, this decides nobody is present and RUNS THE WORK underneath somebody typing.
-    alive = session_alive_minutes(sdir)
-    user = usage._user_activity_min()
-    if user is not None and (alive is None or user < alive):
-        alive = user
+    #
+    # ⛔ THIS ASKED "IS ANYBODY ALIVE?" UNTIL 0.60, AND THAT QUESTION CANNOT BE ANSWERED BY
+    # THE SIGNAL IT USED. `session_alive_minutes(sdir)` globs every `state/*.alive`, and the
+    # gate calls heartbeat() before ANY branch on every hook event - so the answer is "yes"
+    # whenever any session exists at all, including the headless `claude -p` that a resume
+    # itself spawns, for up to the three hours of its timeout. One resume would therefore
+    # veto every other resume that fired after it.
+    # ⇒ With per-session records (ADR 20260917-132015, D1) the machine-wide question also
+    # stopped being the RIGHT one. This check exists to resolve the two resume routes
+    # against each other - "will the session that armed me do this itself?" - and another
+    # session being alive never answered that.
+    #
+    # ⛔ WHAT IS GIVEN UP, NAMED. The machine-wide test also happened to stop a headless run
+    # starting while somebody was working in a DIFFERENT session. That protection is gone,
+    # deliberately: keeping it costs the entire feature on a one-machine setup, which is the
+    # owner's actual case. Approved by the owner 2026-09-17 (ADR §11, §9.3). The bounds are
+    # the screen line the gate prints when it arms, `resume.py --cancel`, and the fact that a
+    # resumed run works in ITS OWN recorded task folder and cwd.
+    # ⚠ The 2026-08-30 reason for the second signal - our own `.alive` can go flat when the
+    # hook is not wired - is narrowed rather than answered: a record only EXISTS because the
+    # gate hook fired for that session at arm time. Not zero; recorded in the ADR as A2.
+    alive = session_alive_minutes(sdir, my_sid)
     if alive is not None and alive < ALIVE_WITHIN_MIN:
-        do_cancel(sdir, quiet=True)
-        log_line("RUN-SKIPPED a Claude session was active %.0f min ago (< %d), so somebody "
-                 "is already awake - standing down rather than running the work twice"
-                 % (alive, ALIVE_WITHIN_MIN))
+        do_cancel(sdir, quiet=True, session_id=my_sid)
+        log_line("RUN-SKIPPED the session that armed this (%s) was active %.0f min ago "
+                 "(< %d), so it is awake and will carry the work on itself - standing down "
+                 "rather than running it twice"
+                 % (str(my_sid or "?")[:8], alive, ALIVE_WITHIN_MIN))
+        return 0
+
+    # ⭐ AND THE OTHER WAY THE WORK CAN ALREADY BE IN HAND: somebody picked it up in a
+    # DIFFERENT session and said so in the handoff. That is the normal shape - the session
+    # that armed this alarm is the one that died - and the check above cannot see it,
+    # because it asks about a session that is gone either way. See taken_over_since().
+    taken = taken_over_since(path, state.get("armed_at"))
+    if taken:
+        do_cancel(sdir, quiet=True, session_id=my_sid)
+        log_line("RUN-SKIPPED the handoff says somebody took this over after it was armed, "
+                 "so the work is already in hand: %s" % taken)
         return 0
 
     attempts = int(state.get("attempts", 0)) + 1
@@ -655,10 +970,11 @@ def do_run(sdir, cfg):
                      % (rc_["retry_every_min"], attempts))
             _rearm(sdir, state, rc_["retry_every_min"])
             return 0
-        do_cancel(sdir, quiet=True)
+        do_cancel(sdir, quiet=True, session_id=my_sid)
         announce_failure(sdir, "usage still said STOP for the whole %d-minute retry "
                                "window after %d attempts, so the resume never ran"
-                               % (rc_["retry_window_min"], attempts))
+                               % (rc_["retry_window_min"], attempts),
+                         my_sid, state.get("task"))
         return 1
 
     _chdir_or_fall_back(state, path)
@@ -679,6 +995,24 @@ def do_run(sdir, cfg):
                  "was not enough."
                  % (transcript, os.path.getsize(transcript) / 1048576.0))
     when = time.strftime("%Y-%m-%d %H:%M")
+    # ⛔ THE WOKEN RUN IS A DIFFERENT SESSION, AND IT HAS TO BE TOLD SO. `claude -p` below
+    # starts a FRESH conversation with a new session id - deliberately, see the measurement
+    # there - so a run that wakes up believes it is somebody new. That is invisible on a
+    # single task and expensive when several sessions collaborate: a fleet that identifies
+    # its members by session id sees one member vanish and a stranger appear, and any
+    # registry keyed on the id has a dead entry and an unknown one.
+    # ⭐ The id cannot be preserved. The NAME can: this sentence hands the successor its
+    # predecessor's id and tells it to keep whatever name the handoff gives it, so a
+    # convention built on top of this plugin can re-register the same member.
+    # ⚠ It cannot invent a name. If the handoff does not say who this session was, there is
+    # nothing to carry - naming yourself is the handoff's job, not the scheduler's.
+    who = str(state.get("session_id") or "")[:8]
+    identity = (" ⚠ YOU ARE A CONTINUATION, NOT A NEW MEMBER: this work was armed by session "
+                "%s, which is gone. Your own session id is different and that is expected. "
+                "If %s gives this session a NAME or a role - a registry entry, a call sign, "
+                "a domain - KEEP USING THAT NAME and say which session id now answers to it, "
+                "rather than introducing yourself as somebody new."
+                % (who, HANDOFF)) if who else ""
     # ⚠ `folder` is not in scope here - do_run() reads a recorded state, not the arm-time
     # locals - so the task folder comes from what was recorded, and the repository from
     # where os.chdir() has just put us.
@@ -718,16 +1052,16 @@ def do_run(sdir, cfg):
             "Then continue the work. Append a '## Result %s' section to that file describing "
             "what you did and anything still open, and SAY IN IT that this run started from "
             "reconstruction rather than from a handoff. Do not re-verify usage limits before "
-            "starting - the stored numbers read stale-high until a statusline renders."
+            "starting - the stored numbers read stale-high until a statusline renders.%s"
             % (os.path.join(task_dir, "progress.md"), repo, repo, task_dir,
-               path or os.path.join(task_dir, HANDOFF), when))
+               path or os.path.join(task_dir, HANDOFF), when, identity))
     else:
         prompt = ("The usage window has reset, so treat usage as fresh. Read %s and continue "
-                  "that work, following its instructions exactly.%s Append a '## Result %s' "
+                  "that work, following its instructions exactly.%s%s Append a '## Result %s' "
                   "section to %s describing what you did and anything still open. "
                   "Do not re-verify usage limits before starting - the stored numbers read "
                   "stale-high until a statusline renders."
-                  % (path, extra, when, path))
+                  % (path, extra, identity, when, path))
     log_line("RUN starting for %s (attempt %d)" % (path, attempts))
     try:
         r = subprocess.run(["claude", "-p", prompt], capture_output=True, timeout=3 * 3600)
@@ -738,7 +1072,7 @@ def do_run(sdir, cfg):
         log_line("RUN-FAILED %r" % (exc,))
 
     if rc == 0:
-        do_cancel(sdir, quiet=True)   # ⭐ removed only on a clean exit
+        do_cancel(sdir, quiet=True, session_id=my_sid)   # ⭐ only on a clean exit
         log_line("RUN-OK schedule removed")
         return 0
     detail = (getattr(r, "stderr", b"") or b"").decode("utf-8", "replace").strip()[:150]
@@ -747,21 +1081,51 @@ def do_run(sdir, cfg):
                  % (rc, attempts, rc_["retry_every_min"], detail))
         _rearm(sdir, state, rc_["retry_every_min"])
         return 1
-    do_cancel(sdir, quiet=True)
+    do_cancel(sdir, quiet=True, session_id=my_sid)
     announce_failure(sdir, "the resume failed %d times over %d minutes and has stopped "
                            "trying - it is yours to handle now. Last error: %s"
-                           % (attempts, rc_["retry_window_min"], detail or "rc=%s" % rc))
+                           % (attempts, rc_["retry_window_min"], detail or "rc=%s" % rc),
+                     my_sid, state.get("task"))
     return 1
+
+
+def at_job_id(result):
+    """The job number `at` announced, or None. POSIX only; `schtasks` has names instead.
+
+    ⛔ WHY IT IS WORTH PARSING AT ALL. `at` has no named jobs, so the only way to cancel ONE
+    of them is by the number it prints when the job is registered. Without it the only
+    instrument left is `atrm -a`, which deletes EVERY `at` job the user has - including jobs
+    this plugin never created. That is what this file used to do on every cancel.
+
+    ⚠ NOT VERIFIED AGAINST A REAL `at`: this plugin's development machine is Windows and has
+    none (ADR 20260917-132015, A1). The format read is the one POSIX specifies for the
+    announcement - `job <n> at <date>` - and BOTH streams are searched because
+    implementations disagree about which one it goes to.
+
+    ⭐ None is a supported answer everywhere this is used. It means an alarm this plugin
+    cannot name, and do_cancel() then SAYS so instead of claiming the job is gone.
+    """
+    for stream in ("stderr", "stdout"):
+        raw = getattr(result, stream, b"") or b""
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", "replace")
+        found = re.search(r"\bjob\s+(\d+)", raw)
+        if found:
+            return found.group(1)
+    return None
 
 
 def _rearm(sdir, state, minutes):
     """Push the one-shot schedule out by `minutes`, keeping the attempt count."""
     when_epoch = time.time() + minutes * 60
-    schedule(time.localtime(when_epoch), False)
+    _cmd, result = schedule(time.localtime(when_epoch), False, state.get("session_id"))
+    # ⚠ A retry registers a NEW `at` job, so the id recorded at arm time is stale from here
+    # on. Keep the old one only when the new registration announced none - a stale id is
+    # still a better cancel target than nothing.
+    state["at_job"] = at_job_id(result) or state.get("at_job")
     state["at"] = when_epoch
     try:
-        with open(os.path.join(sdir, "resume.json"), "w", encoding="utf-8") as f:
-            json.dump(state, f)
+        write_record(sdir, state.get("session_id"), state)
     except OSError:
         pass
 
@@ -774,7 +1138,7 @@ def _run(cmd):
         return False
 
 
-def do_cancel(sdir, quiet=False):
+def do_cancel(sdir, quiet=False, all_jobs=False, session_id=None):
     """Cancel the scheduled resume. 0 when nothing is left to fire, non-zero when it is.
 
     ⛔ THE THREE OUTCOMES, AND WHY TWO OF THEM MUST NOT BE MERGED. `schtasks /Delete` exits
@@ -793,34 +1157,64 @@ def do_cancel(sdir, quiet=False):
 
     ⭐ So Windows asks first. `schtasks /Query /TN` is the same probe --status already uses.
 
-    ⚠ POSIX cannot make the distinction and does not pretend to: `at` has no named jobs, so
-    `atrm -a` cannot be asked about one. There, a failure is treated as "nothing there" -
-    the old behaviour - because the alternative is a record nobody can ever clear.
+    ⛔ POSIX USED TO RUN `atrm -a` HERE, AND THAT DELETED JOBS THIS PLUGIN NEVER CREATED.
+    `at` has no named jobs, so "cancel the resume" was implemented as "cancel everything the
+    user has scheduled" - on every automatic stand-down, not only when somebody asked. ⇒ The
+    job NUMBER is now recorded at arm time (at_job_id) and only that job is removed.
+
+    ⚠ `atrm -a` is not gone, it is behind `--cancel --all`. Removing it outright would leave
+    a state this docstring already rejects: an alarm armed before the number was recorded -
+    or by an `at` that announced none - would be one NOBODY CAN EVER CLEAR, and
+    stand_down_resume could never retire it. So the blunt instrument stays available to a
+    person who asks for it by name, and never fires on an automatic path. ADR
+    20260917-132015, D7 ⟨R2 I-N12⟩.
+
+    ⇒ On POSIX with no recorded number the answer is the REFUSED outcome, not the deleted
+    one: the record stays, the caller hears "something may still fire", and the message says
+    which command clears it. Claiming success there would be the one lie this function's
+    three outcomes exist to prevent.
     """
+    legacy_at = False
+    record = record_path(sdir, session_id)
+    tname = task_name(sdir, session_id)
     if os.name == "nt":
-        registered = _run(["schtasks", "/Query", "/TN", TASK_NAME])
+        registered = _run(["schtasks", "/Query", "/TN", tname])
         if registered:
-            gone = _run(["schtasks", "/Delete", "/TN", TASK_NAME, "/F"])
+            gone = _run(["schtasks", "/Delete", "/TN", tname, "/F"])
         else:
             gone = True                       # nothing to fire; see the docstring
-    else:
-        _run(["atrm", "-a"])                  # best effort; see the docstring
+    elif all_jobs:
+        _run(["atrm", "-a"])                  # asked for by name; see the docstring
         registered, gone = False, True
+    else:
+        state = usage.read_json(record, {}) or {}
+        job = state.get("at_job")
+        if job:
+            registered = True
+            gone = _run(["atrm", str(job)])
+        else:
+            registered, gone, legacy_at = True, False, True
 
     if gone:
         try:
-            os.remove(os.path.join(sdir, "resume.json"))
+            os.remove(record)
         except OSError:
             pass
     if not quiet:
-        if not registered:
+        if legacy_at:
+            print("⛔ this alarm carries no `at` job number, so it cannot be cancelled ONE")
+            print("   job at a time, and the record was KEPT - it may still fire. It was")
+            print("   armed before the number was recorded, or `at` announced none.")
+            print("   ⚠ `resume.py --cancel --all` clears it, by removing EVERY `at` job")
+            print("   this user has - including jobs this plugin never created.")
+        elif not registered:
             print("nothing registered to cancel - any record was cleared")
         elif gone:
             print("cancelled")
         else:
             print("⛔ the task is registered and could NOT be deleted, so the record was KEPT.")
             print("   It may still fire. Check with `resume.py --status`; the task is")
-            print("   named %s." % TASK_NAME)
+            print("   named %s." % tname)
     log_line("CANCELLED" if gone else "CANCEL-REFUSED")
     # ⛔ 0 means nothing is left to fire. The gate says "nothing will wake later to redo it"
     # only on a 0, so this return value carries a promise and must be earned.
@@ -875,10 +1269,31 @@ def stale_alarm_note(sdir, cfg, state):
 
 
 def do_status(sdir, cfg):
-    state = usage.read_json(os.path.join(sdir, "resume.json"), None)
-    if not state:
+    """Report EVERY armed resume in this state directory, not just one.
+
+    ⛔ ONE LINE PER SESSION, because there can now be several and a report that shows one
+    is a report that hides the rest. ADR 20260917-132015, D8.
+    """
+    records = record_paths(sdir)
+    legacy = os.path.join(sdir, LEGACY_RECORD)
+    if os.path.exists(legacy):
+        print("⚠ A pre-0.60 record is still at %s and carries no session id, so it could" % legacy)
+        print("  not be renamed automatically. Its OS task is named %s." % TASK_NAME)
+        print("  Re-arm the task it names, or `resume.py --cancel` to clear it.")
+        print()
+    if not records:
         print("no resume armed")
         return 1
+    for i, rec in enumerate(records):
+        if i:
+            print()
+        if len(records) > 1:
+            print("== %s" % os.path.basename(rec))
+        _status_one(sdir, cfg, usage.read_json(rec, {}) or {})
+    return 0
+
+
+def _status_one(sdir, cfg, state):
     print("task     : %s" % state.get("task"))
     print("handoff  : %s" % state.get("handoff"))
     print(origin_session_note(sdir, state))
@@ -907,16 +1322,48 @@ def main():
     argv = sys.argv[1:]
     sdir = usage.state_dir(argv)
     cfg = usage.config(sdir)
-    if "--run" in argv:
-        return do_run(sdir, cfg)
-    if "--cancel" in argv:
-        return do_cancel(sdir)
-    if "--status" in argv:
+    # ⛔ MIGRATION RUNS ONLY FOR A COMMAND THAT READS RECORDS, NEVER AT THE TOP OF main().
+    # It was at the top for one revision, and that gave every invocation a side effect on
+    # the REAL state directory - `--selftest`, a typo, `--help`, anything. Measured
+    # immediately: `resume.py --selftest`, run by the checks with no `--dir`, migrated a
+    # LIVE armed record of the person's and wrote a MIGRATED line into their log.
+    # ⚠ A command that changes nothing must change nothing; this repository has the same
+    # warning written on `schedule()`, about a builder with a side effect.
+    def migrated():
+        migrate_legacy(sdir)
+        return True
+
+    if "--run" in argv and migrated():
+        return do_run(sdir, cfg, arg(argv, "--session"))
+    if "--cancel" in argv and migrated():
+        # ⚠ `--all` is the POSIX blunt instrument, and it is opt-in for that reason: it
+        # removes every `at` job this user has. See do_cancel's docstring.
+        # ⛔ A BARE `--cancel` STILL CLEARS EVERYTHING IN THIS DIRECTORY, and it has to:
+        # it is the documented repair in `install.py --status`, in do_cancel's own
+        # docstring and in the README, and quietly narrowing it to one session would leave
+        # the other records with no command named for clearing them.
+        # ADR 20260917-132015, D8 ⟨round 2, I-N3⟩.
+        sid = arg(argv, "--session")
+        if sid:
+            return do_cancel(sdir, all_jobs="--all" in argv, session_id=sid)
+        rc = 0
+        records = record_paths(sdir)
+        if not records:
+            return do_cancel(sdir, all_jobs="--all" in argv)
+        for rec in records:
+            state = usage.read_json(rec, {}) or {}
+            print("-- %s" % os.path.basename(rec))
+            rc |= do_cancel(sdir, all_jobs="--all" in argv,
+                            session_id=state.get("session_id") or
+                            os.path.basename(rec)[:-len(".json")])
+        return rc
+    if "--status" in argv and migrated():
         return do_status(sdir, cfg)
-    if "--arm" in argv:
+    if "--arm" in argv and migrated():
         return do_arm(argv, sdir, cfg)
     print(__doc__.strip().splitlines()[0])
-    print("Usage: resume.py --arm --task <folder> [--at HH:MM] [--dry-run] | --status | --cancel")
+    print("Usage: resume.py --arm --task <folder> [--at HH:MM] [--dry-run] | --status"
+          " | --cancel [--all]")
     return 2
 
 

@@ -2995,7 +2995,7 @@ release-on-crash, which is a lot of machinery to save the occasional single requ
 | name | content | job |
 |---|---|---|
 | `<session>.start` | one timestamp | **decides whether this session is ENFORCED** |
-| `<session>.alive` | one timestamp | proves hooks are firing; the scheduled resume asks it whether any session is still alive. ⭐ `--watch` reads it too, to decide whether to pause fetching |
+| `<session>.alive` | one timestamp | proves hooks are firing; a scheduled resume asks it whether THE SESSION THAT ARMED IT is still alive — it asked about ANY session before 0.60, which stopped every parallel resume firing on a machine with one session open. ⭐ `--watch` reads it too, to decide whether to pause fetching |
 | `<session>.slotN` | a dispatch slot | concurrency control. **Has its own reclaim rule, in minutes** |
 
 It used to grow forever - 63 files after one day of ordinary work. It is pruned now, **but by two

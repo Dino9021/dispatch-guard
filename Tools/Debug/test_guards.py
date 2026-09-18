@@ -891,23 +891,27 @@ def case_auto_arm(gate, sdir, root):
                         "five_hour": {"used_percentage": p5, "resets_at": int(r5)},
                         "seven_day": {"used_percentage": p7, "resets_at": int(r7)}}, f)
 
-    def armed(**state):
-        path = os.path.join(sdir, "resume.json")
+    def armed(_sid=None, **state):
+        # ⭐ ONE RECORD PER SESSION since 0.60: `<sdir>/resume/<session>.json`. The de-dup
+        # below reads the ARMING session's own record, so seeding the old shared file would
+        # test nothing. ADR 20260917-132015, D1.
+        path = os.path.join(sdir, "resume", gate.safe_session(_sid) + ".json")
         if state:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
                 _json.dump(state, f)
         elif os.path.exists(path):
             os.remove(path)
 
-    def try_arm(c=None):
+    def try_arm(c=None, _sid=None):
         del spawned[:]
-        mark = os.path.join(sdir, gate.ARM_MARK)
+        mark = gate.state_path(sdir, _sid, gate.ARM_MARK)
         if os.path.exists(mark):
             os.remove(mark)                     # the spawn floor is tested on its own below
         keep = gate.subprocess.Popen
         gate.subprocess.Popen = _Rec
         try:
-            return gate.maybe_auto_arm(root, sdir, c or cfg, folder, started)
+            return gate.maybe_auto_arm(root, sdir, c or cfg, folder, started, _sid)
         finally:
             gate.subprocess.Popen = keep
 
@@ -935,10 +939,47 @@ def case_auto_arm(gate, sdir, root):
     assert try_arm() is True, "the reset target moved and it did not re-arm"
     assert folder in spawned[0], spawned
 
-    # ⚠ ...and for a DIFFERENT task it arms too - resume.json belongs to one task at a time.
+    # ⚠ ...and for a DIFFERENT task it arms too - a record belongs to one task at a time.
     usage_at(90)
     armed(task="some-other-task", armed_for_reset=r5)
     assert try_arm() is True, spawned
+
+    # ⛔ AND ANOTHER SESSION'S ARM IS NOT SUPPRESSED BY MINE. While there was one record per
+    # MACHINE, this de-dup silently swallowed a second session's arm whenever the first had
+    # armed for the same folder and reset - so on a machine with two sessions only one of
+    # them ever got a resume. ADR 20260917-132015, D1; measured live 2026-09-17.
+    armed("SESSION-A", task=folder, armed_for_reset=r5)
+    assert try_arm(_sid="SESSION-A") is False, "A's own record must still de-duplicate"
+    assert try_arm(_sid="SESSION-B") is True, (
+        "session B's arm was suppressed by session A's record - the single-slot bug")
+    assert "--session" in spawned[0] and "SESSION-B" in spawned[0], spawned
+    armed("SESSION-A")                          # clean up A's record
+
+    # ⛔ AND NEITHER IS IT SUPPRESSED BY THE SPAWN FLOOR. This is the SECOND half of the
+    # single-slot bug and the one the ADR's own first draft missed: the 300-second floor was
+    # machine-wide, so even with a record each, one session arming blocked every other
+    # session's arm for five minutes. A floor is per session by nature - it exists to stop a
+    # machine that CANNOT arm from spawning a subprocess per tool call. D3.
+    del spawned[:]
+    assert gate.maybe_auto_arm(root, sdir, cfg, folder, started, "FLOOR-A") is True, \
+        "A could not arm at all"
+    a_mark = gate.state_path(sdir, "FLOOR-A", gate.ARM_MARK)
+    assert os.path.exists(a_mark), "A's arm left no floor, so the floor is not being set"
+    del spawned[:]
+    keep_popen = gate.subprocess.Popen
+    gate.subprocess.Popen = _Rec
+    try:
+        # ⚠ NOTE: no floor is cleared here. That is the whole point.
+        got = gate.maybe_auto_arm(root, sdir, cfg, folder, started, "FLOOR-B")
+    finally:
+        gate.subprocess.Popen = keep_popen
+    assert got is True and spawned, (
+        "session B was blocked by session A's spawn floor - arming is still serialised")
+    for sid_ in ("FLOOR-A", "FLOOR-B"):
+        for p_ in (gate.state_path(sdir, sid_, gate.ARM_MARK),
+                   os.path.join(sdir, "resume", gate.safe_session(sid_) + ".json")):
+            if os.path.exists(p_):
+                os.remove(p_)
 
     # ⚠ NOTHING WORTH RESUMING, NOTHING ARMED. A placeholder handoff is refused by the
     # precondition above; arming for it would schedule a run with nothing to read.
@@ -959,7 +1000,8 @@ def case_auto_arm(gate, sdir, root):
     # tool call for the rest of the session.
     assert try_arm() is True, "the setup for the floor check did not arm"
     del spawned[:]
-    with open(os.path.join(sdir, gate.ARM_MARK), "w") as f:
+    os.makedirs(os.path.join(sdir, "state"), exist_ok=True)
+    with open(gate.state_path(sdir, None, gate.ARM_MARK), "w") as f:
         f.write(str(_time.time()))
     keep = gate.subprocess.Popen
     gate.subprocess.Popen = _Rec
@@ -987,8 +1029,8 @@ def case_auto_arm(gate, sdir, root):
     with open(os.path.join(tdir, "HANDOFF.md"), "w", encoding="utf-8") as f:
         f.write("y" * 500)
     armed()
-    if os.path.exists(os.path.join(sdir, gate.ARM_MARK)):
-        os.remove(os.path.join(sdir, gate.ARM_MARK))
+    if os.path.exists(gate.state_path(sdir, None, gate.ARM_MARK)):
+        os.remove(gate.state_path(sdir, None, gate.ARM_MARK))
     usage_at(99)                                    # well past hard_pct_5h
     del spawned[:]
     keep = gate.subprocess.Popen
@@ -1545,8 +1587,10 @@ def case_arm_on_stop(gate, sdir, root):
         return gate.usage.verdict(sdir, gate.usage.config(sdir))["verdict"]
 
     def armed(**state):
-        path = os.path.join(sdir, "resume.json")
+        # ⭐ This session's own record since 0.60 - the de-dup reads the arming session's.
+        path = os.path.join(sdir, "resume", gate.safe_session(sid) + ".json")
         if state:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
                 _json.dump(state, f)
         elif os.path.exists(path):
@@ -1569,7 +1613,7 @@ def case_arm_on_stop(gate, sdir, root):
 
     def fire(event, clear_floor=True, cwd=None):
         del spawned[:]
-        mark = os.path.join(sdir, gate.ARM_MARK)
+        mark = gate.state_path(sdir, sid, gate.ARM_MARK)
         if clear_floor and os.path.exists(mark):
             os.remove(mark)
         payload = {"hook_event_name": event, "cwd": cwd or root, "session_id": sid}
@@ -1742,15 +1786,16 @@ def case_arm_on_stop(gate, sdir, root):
     import resume as _resume
     cancelled = []
 
-    def _fake_cancel(sdir_, quiet=False):
+    def _fake_cancel(sdir_, quiet=False, all_jobs=False, session_id=None):
         cancelled.append(sdir_)
         try:
-            os.remove(os.path.join(sdir_, "resume.json"))
+            os.remove(os.path.join(sdir_, "resume",
+                                   gate.safe_session(session_id) + ".json"))
         except OSError:
             pass
         return 0
 
-    mark = os.path.join(sdir, gate.ARM_MARK)
+    mark = gate.state_path(sdir, sid, gate.ARM_MARK)
     keep_cancel = _resume.do_cancel
     _resume.do_cancel = _fake_cancel
     try:
@@ -1760,7 +1805,8 @@ def case_arm_on_stop(gate, sdir, root):
         usage_at(75)
         r = fire("UserPromptSubmit", clear_floor=False)
         assert not cancelled, "a PACE prompt cancelled the alarm the turn end armed"
-        assert os.path.exists(os.path.join(sdir, "resume.json")), "the alarm went away at PACE"
+        assert os.path.exists(os.path.join(sdir, "resume",
+                                           gate.safe_session(sid) + ".json")),             "the alarm went away at PACE"
         assert not spawned, "a PACE prompt re-armed an alarm that was already armed"
         usage_at(10)
         r = fire("UserPromptSubmit", clear_floor=False)

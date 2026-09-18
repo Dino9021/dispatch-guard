@@ -160,10 +160,38 @@ enforce. Do not compute N yourself either; read the number the line prints.
 ## HANDOFF.md after a STOP
 
 The only thing the next run gets (a transcript re-read costs ~95k tokens/MB with zero
-cache; a 3 KB handoff ~800). Six sections: Goal (standalone) · Done (with every output
-path) · Next step (nothing left to decide) · Tried and failed (with reasons) · Decided
-(not to be re-litigated) · Every path, command and branch. No backward references; never
-"continue the previous work". ⭐ Since 0.58.0 the gate arms the resume ITSELF when your turn
+cache; a 3 KB handoff ~800). Seven sections: **WHO YOU ARE** · Goal (standalone) · Done
+(with every output path) · Next step (nothing left to decide) · Tried and failed (with
+reasons) · Decided (not to be re-litigated) · Every path, command and branch. No backward
+references; never "continue the previous work".
+
+⛔ **WHO YOU ARE IS FIRST, AND IT IS NOT OPTIONAL — even when nothing is collaborating.**
+Name the session: the role or call sign it answers to, and its session id. A resume wakes a
+**FRESH** `claude -p` with a **NEW** session id — never `--resume`, because re-sending a
+transcript costs ~95k tokens/MB at zero cache read — so the successor cannot know who it is
+continuing unless this file says so. With several sessions working together the cost is
+sharper: a fleet keyed on session ids sees one member vanish and a stranger arrive. Write it
+even for solo work — you do not know today which run will be collaborating tomorrow, and the
+scheduler cannot invent a name that is not on disk. The plugin carries the predecessor's id
+into the woken run and tells it to keep the name it finds here; if there is no name, there
+is nothing to keep.
+
+⛔ **TAKING OVER SOMEBODY ELSE'S TASK? SAY SO IN THEIR HANDOFF, IMMEDIATELY.** Add one line
+the moment you pick the work up — not when you finish, not at your own wind-down:
+
+```
+⛔ TAKEN OVER 2026-09-18T11:30 by <your role> (session <id>) — do not resume.
+```
+
+The session that armed that task's resume is usually the one that DIED, so nothing else can
+tell its alarm that the work is already in hand: it wakes at the reset and spends a whole
+window producing a duplicate. `do_run` reads the handoff anyway, finds this line, and stands
+down. ⚠ **The timestamp is required and must be `YYYY-MM-DDTHH:MM` or `YYYY-MM-DD HH:MM`** —
+a line with no parsable timestamp, or one older than the moment the alarm was armed, is
+IGNORED and the resume runs. That is deliberate: redoing work wastes a window, refusing to
+run loses it, so anything ambiguous runs.
+
+⭐ Since 0.58.0 the gate arms the resume ITSELF when your turn
 ends (or on your next prompt) at PACE/STOP, for the HANDOFF.md this session wrote — a line on
 the screen says so. Check with `resume.py --status`; if it says none is armed, run
 `resume.py --arm --task <task>` yourself. The 200-character floor catches EMPTY, not BAD —
