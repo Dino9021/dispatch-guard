@@ -11,11 +11,11 @@
 
   "_soft_pct_5h": "PACE at or above this, on the FIVE-HOUR window. Dispatch is still allowed; the sub-task is told to finish its unit and not expand scope.",
   "_soft_pct_5h_zh": "「五小時」視窗到這個百分比以上就是 PACE。派工還是允許的；子任務會被告知把手上這個單位做完、不要擴大範圍。",
-  "soft_pct_5h": 75,
+  "soft_pct_5h": 80,
 
   "_hard_pct_5h": "STOP at or above this, on the FIVE-HOUR window. A dispatch is REFUSED. Dispatching a sub-task is the most expensive thing an agent does, so it is the thing worth gating.",
   "_hard_pct_5h_zh": "「五小時」視窗到這個百分比以上就是 STOP，派工會被「拒絕」。派出一個子任務是 agent 做的最貴的一件事，所以那才是值得設閘門的地方。",
-  "hard_pct_5h": 85,
+  "hard_pct_5h": 90,
 
   "_soft_pct_7d": "PACE at or above this, on the SEVEN-DAY window. ⛔ THE BRAKE USED TO IGNORE THIS WINDOW ENTIRELY: it read the five-hour percentage and nothing else, so an account at 7d 99% beside 5h 0% was told GO and kept dispatching until the SERVER refused. Both numbers were true and the answer was wrong. ⚠ THE 7d PAIR SITS HIGH ON PURPOSE: that window is usually not the constraint, and pacing on it at 70% would throttle a week of work for nothing. ⭐ The stricter of the two windows wins, and the verdict says WHICH one - a reader who sees 5h 0% beside STOP and is not told why concludes the brake is broken.",
   "_soft_pct_7d_zh": "「七天」視窗到這個百分比以上就是 PACE。⛔ 煞車以前「完全忽略」這個視窗：它只看五小時的百分比，所以 7d 99% 配 5h 0% 會被判成 GO，然後一直派工到「伺服器」拒絕為止。兩個數字都是真的，答案是錯的。⚠ 7d 這一對故意設得很高：那個視窗通常不是限制，在 70% 就開始 PACE 會白白拖慢一整週的工作。⭐ 兩個視窗取「比較嚴」的那個，而且判定會講出是「哪一個」—— 看到 5h 0% 旁邊寫著 STOP 又沒被告知原因的人，會認為煞車壞了。",
@@ -45,8 +45,8 @@
   "_relax_horizon_min": "5h ONLY: do not trust a five-hour projection more than this many minutes from the reset, even if it clears. The 7d window has NO horizon constant - its whole-window rate self-scales, so a near-empty 7d only satisfies survives within hours of its own reset.",
   "_relax_horizon_min_zh": "「只限 5h」：距離重置超過這麼多分鐘時，就算投影過關也不信任五小時的投影。7d 視窗「沒有」horizon 常數 —— 它的整窗速度會自動縮放，所以快用完的 7d 只有在距離自己重置幾小時內才會滿足 survives。",
   "relax_horizon_min": 60,
-  "_relax_ceiling_5h": "Never relax the FIVE-HOUR window at or above this percentage - an absolute backstop for the projection's blind spot (an idle under-estimate). Sits above hard_pct_5h, so 85-95% is the 5h net zone.",
-  "_relax_ceiling_5h_zh": "「五小時」視窗到這個百分比以上就絕不放寬 —— 投影盲點（閒置時低估）的絕對防線。它在 hard_pct_5h 之上，所以 85-95% 是 5h 的 NET 區。",
+  "_relax_ceiling_5h": "Never relax the FIVE-HOUR window at or above this percentage - an absolute backstop for the projection's blind spot (an idle under-estimate). Sits above hard_pct_5h, so 90-95% is the 5h net zone.",
+  "_relax_ceiling_5h_zh": "「五小時」視窗到這個百分比以上就絕不放寬 —— 投影盲點（閒置時低估）的絕對防線。它在 hard_pct_5h 之上，所以 90-95% 是 5h 的 NET 區。",
   "relax_ceiling_5h": 95,
   "_relax_ceiling_7d": "Never relax the SEVEN-DAY window at or above this percentage. 99 is the minimal 1% backstop above hard_pct_7d (97), and it is what lets the owner's approved case (7d 98% left, near reset -> GO) fire; a ceiling of 98 or lower would forbid the very percentage it was meant to relax.",
   "_relax_ceiling_7d_zh": "「七天」視窗到這個百分比以上就絕不放寬。99 是 hard_pct_7d（97）之上最小的 1% 防線，也是讓擁有者核可的情況（7d 剩 98%、接近重置 -> GO）能成立的門檻；設 98 或更低會擋掉它本來要放寬的那個百分比。",
@@ -61,15 +61,19 @@
   "_colour_zh": "讓長條圖上色。也接受 'color' 這個拼法。",
   "colour": true,
 
-  "_colour_warn_pct": "The bar and the verdict dot turn ORANGE - the PACE colour - at or above this. Deliberately NOT soft_pct: that decides what is REFUSED, and a person wants a warning colour a little before anything starts being refused. ⚠ BELOW this there is now a fourth state: YELLOW (WARN) whenever the fill has passed the bar's own ┃ time marker - i.e. you are spending faster than the clock. WARN has NO threshold key because it has no threshold: the marker IS the condition. It is colour only and changes nothing the gate does.",
-  "_colour_warn_pct_zh": "長條圖和判定圓點在這個百分比以上變成「橘色」，也就是 PACE 的顏色。刻意不等於 soft_pct：那個決定什麼會被「拒絕」，而人會希望在任何東西開始被拒絕之前，就先看到警告顏色。⚠ 在這個門檻「以下」現在多了第四個狀態：只要填滿超過長條圖自己的 ┃ 時間標記（也就是你花得比時鐘快），就是「黃色」的 WARN。WARN 沒有自己的門檻設定值，因為它沒有門檻 —— 那個標記本身就是條件。它只是顏色，不改變閘門做的任何事。",
-  "colour_warn_pct": 70,
+  "_colour_lead_pct": "HOW MANY POINTS THE COLOURS LEAD THE THRESHOLDS. Default 5. colour_warn_pct is soft_pct_5h minus this, and colour_alarm_pct is hard_pct_5h minus this - so raising a threshold carries its colour up with it. ⛔ THE REASON IS THE WHOLE DESIGN: a person wants to see the warning colour BEFORE anything starts being refused. Until 0.61.0 the two colour keys were hand-set numbers that merely SAT near the thresholds, so moving a threshold left them behind silently and red then said \"nothing is refused yet\" while the gate was already refusing. A negative value is refused, because it would put the colour AFTER the refusal.",
+  "_colour_lead_pct_zh": "顏色比門檻「提早」幾個百分點。預設 5。colour_warn_pct = soft_pct_5h 減這個值，colour_alarm_pct = hard_pct_5h 減這個值 —— 所以把門檻調高，顏色會跟著一起上去。⛔ 理由就是整個設計本身：人會希望在任何東西開始被拒絕「之前」，就先看到警告顏色。到 0.61.0 之前那兩個顏色鍵是手填的數字，只是「剛好」坐在門檻附近，所以門檻一動它們就被留在後面，紅色於是會說「還沒有東西被拒絕」，而閘門其實已經在拒絕了。負值會被拒絕，因為那會讓顏色出現在拒絕「之後」。",
+  "colour_lead_pct": 5,
 
-  "_colour_alarm_pct": "The bar and the verdict dot turn RED - the STOP colour - at or above this. Deliberately NOT hard_pct, for the same reason.",
-  "_colour_alarm_pct_zh": "長條圖和判定圓點在這個百分比以上變成「紅色」，也就是 STOP 的顏色。理由同上，刻意不等於 hard_pct。",
+  "_colour_warn_pct": "OVERRIDE ONLY - leave it OUT (or null, as here) and it is DERIVED as soft_pct_5h minus colour_lead_pct. The bar and the verdict dot turn ORANGE - the PACE colour - at or above it. ⛔ WRITING A NUMBER HERE PINS IT FOR EVER: your colour then stops following your thresholds, which is the whole point of the derivation. Set one on purpose only if you want a specific number. ⚠ BELOW this there is a fourth state: YELLOW (WARN) whenever the fill has passed the bar's own ┃ time marker - i.e. you are spending faster than the clock. WARN has NO threshold key because it has no threshold: the marker IS the condition. It is colour only and changes nothing the gate does.",
+  "_colour_warn_pct_zh": "只是「覆寫用」—— 不要寫它（或像這裡寫 null），它就會被推導成 soft_pct_5h 減 colour_lead_pct。長條圖和判定圓點在這個百分比以上變成「橘色」，也就是 PACE 的顏色。⛔ 在這裡填一個數字就等於把它「永久釘住」：你的顏色從此不再跟著你的門檻走，而那正是推導的用意。只有你真的想要某個特定數字時才設它。⚠ 在這個門檻「以下」還有第四個狀態：只要填滿超過長條圖自己的 ┃ 時間標記（也就是你花得比時鐘快），就是「黃色」的 WARN。WARN 沒有自己的門檻設定值，因為它沒有門檻 —— 那個標記本身就是條件。它只是顏色，不改變閘門做的任何事。",
+  "colour_warn_pct": null,
+
+  "_colour_alarm_pct": "OVERRIDE ONLY - leave it OUT (or null, as here) and it is DERIVED as hard_pct_5h minus colour_lead_pct. The bar and the verdict dot turn RED - the STOP colour - at or above it. ⛔ Writing a number here pins it, exactly as with colour_warn_pct. ⚠ If you pin only ONE of the pair and the pair ends up out of order, BOTH go back to derived and usage.py says so on stderr - a red band that can never be reached is indistinguishable from a speed that never happened.",
+  "_colour_alarm_pct_zh": "只是「覆寫用」—— 不要寫它（或像這裡寫 null），它就會被推導成 hard_pct_5h 減 colour_lead_pct。長條圖和判定圓點在這個百分比以上變成「紅色」，也就是 STOP 的顏色。⛔ 在這裡填數字就等於釘住它，跟 colour_warn_pct 一樣。⚠ 如果你只釘住其中一個，而且順序因此顛倒，兩個都會退回推導值，而且 usage.py 會在 stderr 上說出來 —— 一個永遠到不了的紅色頻帶，跟一個從來沒發生過的速度看起來一模一樣。",
   "_colour_warn_margin_pct": "HOW FAR PAST ITS OWN MARKER A BAR MUST BE BEFORE IT TURNS YELLOW, in percentage points. Default 5. WITHOUT A DEADBAND THIS FIRES ON THE FIRST PERCENT OF EVERY WINDOW: just after a reset the elapsed fraction is near zero, so any spending at all is \"past the marker\". Measured 2026-09-01, minutes after the seven-day window reset - 1% used against 0.48% elapsed drew a yellow bar and a yellow dot, and a seven-day clock advances 0.0099%/min, so one percent of usage stays yellow for about a hundred minutes. Points rather than a ratio, because a ratio against a near-zero baseline is exactly what broke: five points is a quarter-hour of a five-hour window and eight hours of a seven-day one. 0 restores the old always-on behaviour.",
   "_colour_warn_margin_pct_zh": "長條圖要超出自己的 ┃ 標記多少「百分點」才轉黃。預設 5。⛔ 沒有這個死區的話,每個視窗花掉第一個百分點就一定轉黃:剛重置完「已經過的比例」趨近 0,所以任何用量都算「超過標記」。2026-09-01 實測,7d 視窗重置後幾分鐘:1% 的用量對上 0.48% 的時間,長條圖和圓點都是黃的 —— 而 7d 的時鐘每分鐘只走 0.0099%,所以 1% 的用量會黃上大約一百分鐘。⭐ 用「百分點」而不是「比例」,因為對著一個趨近 0 的基準算比例正是壞掉的原因:五個百分點是 5h 視窗的一刻鐘,也是 7d 視窗的八小時。設 0 就回到舊的「一律開」行為。",
-  "colour_alarm_pct": 85,
+  "colour_alarm_pct": null,
 
   "_show_context": "Show the context-window bar beside the two usage windows.",
   "_show_context_zh": "在兩個用量時間窗旁邊，一起顯示上下文視窗的長條。",

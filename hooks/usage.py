@@ -68,22 +68,36 @@ import unicodedata
 import urllib.error
 import urllib.request
 
+# ⛔ THE THRESHOLDS ARE CONSTANTS BEFORE THEY ARE DEFAULTS, so the colour keys below can be
+# DERIVED from them in the same literal. A dict cannot read its own earlier keys, and the
+# alternative - typing the derived number by hand - is the exact drift this replaces.
+SOFT_PCT_5H = 80          # PACE
+HARD_PCT_5H = 90          # STOP
+COLOUR_LEAD_PCT = 5       # the colours lead the thresholds by this many points
+
 DEFAULTS = {
     # The two the owner asked to keep: brake, then stop.
-    # ⭐ ALIGNED WITH THE COLOUR THRESHOLDS BELOW, ON PURPOSE, and kept as separate keys.
-    # The bar turning orange now means exactly "PACE has begun" and red means "STOP has
-    # begun", so the line a person glances at and the decision the gate makes cannot drift
-    # apart. ⚠ They stay four keys rather than two: colour is what a person reads, the
+    # ⛔ THE COLOUR KEYS BELOW LEAD THESE BY `colour_lead_pct`, AND THAT IS THE OWNER'S
+    # DESIGN, decided 2026-09-18: "a person wants to see the warning colour BEFORE anything
+    # starts being refused". So the colours are deliberately NOT equal to these - they are
+    # `soft/hard - lead`, and `config()` re-derives them whenever these move.
+    # ⚠ THIS COMMENT USED TO CLAIM THE OPPOSITE - that the colours were "ALIGNED WITH THE
+    # COLOUR THRESHOLDS BELOW, ON PURPOSE... orange means exactly PACE has begun and red means
+    # STOP has begun". `_state()`'s own docstring said the reverse in the same file, and
+    # neither matched the numbers: red 85 equalled hard 85 while orange 70 led soft 75 by
+    # five. Two comments disagreeing about one pair of keys is how a person ends up trusting
+    # the wrong one. ⇒ One rule now, in one place, enforced by arithmetic.
+    # ⚠ They stay four keys rather than two: colour is what a person reads, the
     # thresholds are what refuses a tool call, and somebody who wants a warning colour
     # earlier than the slow-down - or no colour at all - must not have to give up the brake
-    # to get it.
+    # to get it. An explicit NUMBER in a person's config.json still wins over the derivation.
     # ⛔ ONE PAIR PER WINDOW, because one pair could only ever watch one window. The brake
     # read the five-hour percentage and nothing else, so an account at 7d 99% and 5h 0% was
     # told GO and dispatched until the server refused - the 5h number was true and the
     # answer was wrong. ⚠ The 7d pair sits high on purpose: that window is usually NOT the
     # constraint, and pacing on it at 70% would throttle a week of work for nothing.
-    "soft_pct_5h": 75,       # PACE  - finish what is in flight, start nothing heavy
-    "hard_pct_5h": 85,       # STOP  - wrap up and schedule a resume
+    "soft_pct_5h": SOFT_PCT_5H,   # PACE  - finish what is in flight, start nothing heavy
+    "hard_pct_5h": HARD_PCT_5H,   # STOP  - wrap up and schedule a resume
     "soft_pct_7d": 95,
     "hard_pct_7d": 97,
     # ⭐ THE NEAR-RESET RELAXATION (projection). Near a reset, a PACE/STOP is RELAXED to GO
@@ -130,8 +144,15 @@ DEFAULTS = {
     "burn_x_orange": 1.75,   # ...orange
     "burn_x_red": 2.25,      # ...red
     "stale_min": 15,         # data older than this is not trusted
-    "colour_warn_pct": 70,   # bar turns orange at or above this
-    "colour_alarm_pct": 85,  # bar turns red at or above this
+    # ⛔ DERIVED, NOT CHOSEN. `config()` recomputes both from soft/hard_pct_5h minus
+    # `colour_lead_pct` unless a person's own config.json sets a NUMBER for them, so raising a
+    # threshold carries its colour with it. The values here are the same arithmetic, written
+    # out only because a dict cannot read its own keys - never edit them by hand.
+    # ⚠ Both bars are banded by THIS pair, the five-hour one: `_state()` is called for the 7d
+    # bar too. Deriving per window would silently recolour that bar, so it is not done.
+    "colour_lead_pct": COLOUR_LEAD_PCT,            # how far the colours lead the thresholds
+    "colour_warn_pct": SOFT_PCT_5H - COLOUR_LEAD_PCT,    # orange at or above this
+    "colour_alarm_pct": HARD_PCT_5H - COLOUR_LEAD_PCT,   # red at or above this
     # ⛔ HOW FAR PAST ITS OWN ┃ MARKER A BAR MUST BE BEFORE IT TURNS YELLOW, in percentage
     # points. ⚠ WITHOUT A DEADBAND THIS FIRES ON THE FIRST PERCENT OF EVERY WINDOW: just
     # after a reset the elapsed fraction is near zero, so any spending is "past the marker".
@@ -301,6 +322,48 @@ def config(sdir):
     # ⚠ 0 IS NOT CLAMPED: it is the documented way to ask for the whole window instead.
     if cfg["burn_window_min"] < 0:
         cfg["burn_window_min"] = DEFAULTS["burn_window_min"]
+    # ⛔ THE COLOURS FOLLOW THE THRESHOLDS unless somebody pinned them on purpose. The owner's
+    # design, 2026-09-18: a person wants the warning colour BEFORE anything starts being
+    # refused, so the two colour keys are `soft/hard_pct_5h - colour_lead_pct`. Before this
+    # they were hand-set numbers that HAPPENED to sit near the thresholds, and raising a
+    # threshold left them behind silently - the colour then says "nothing is refused yet"
+    # while the gate is already refusing, or the reverse.
+    # ⚠ AN EXPLICIT NUMBER ON DISK STILL WINS. That promise is in `_state()`'s docstring and
+    # in config.example.json; somebody who tuned the colours keeps what they tuned. It is read
+    # from `disk`, not from `cfg`, because the overlay above has already merged them and by
+    # then "set to 85 on purpose" and "defaulted to 85" are the same value.
+    if cfg["colour_lead_pct"] < 0:
+        sys.stderr.write(
+            "usage.py: colour_lead_pct=%s must not be negative - the colours would appear "
+            "AFTER the gate starts refusing; using %d.\n"
+            % (cfg["colour_lead_pct"], DEFAULTS["colour_lead_pct"]))
+        cfg["colour_lead_pct"] = DEFAULTS["colour_lead_pct"]
+    _pinned_colour = set()
+    for source in (disk, disk.get("guard") or {}):
+        for k in ("colour_warn_pct", "colour_alarm_pct"):
+            if isinstance((source or {}).get(k), (int, float)):
+                _pinned_colour.add(k)
+    for k, base in (("colour_warn_pct", "soft_pct_5h"),
+                    ("colour_alarm_pct", "hard_pct_5h")):
+        if k not in _pinned_colour:
+            cfg[k] = max(0, cfg[base] - cfg["colour_lead_pct"])
+    # ⛔ AND THE PAIR MUST STILL ASCEND. Derivation cannot invert them, but pinning ONE can:
+    # `colour_warn_pct: 95` against a derived alarm of 85 makes the red band unreachable, and
+    # a colour that never appears is indistinguishable from a speed that never happened.
+    # ⚠ BOTH go back to derived, not just the offending one - the same rule the three burn
+    # band edges follow above, and for the same reason: a half-honoured set is a calibration
+    # nobody chose.
+    if cfg["colour_warn_pct"] >= cfg["colour_alarm_pct"]:
+        sys.stderr.write(
+            "usage.py: colour_warn_pct=%s must be below colour_alarm_pct=%s or the red band "
+            "is unreachable; using the derived %d/%d (soft/hard_pct_5h minus "
+            "colour_lead_pct %d).\n"
+            % (cfg["colour_warn_pct"], cfg["colour_alarm_pct"],
+               max(0, cfg["soft_pct_5h"] - cfg["colour_lead_pct"]),
+               max(0, cfg["hard_pct_5h"] - cfg["colour_lead_pct"]),
+               cfg["colour_lead_pct"]))
+        cfg["colour_warn_pct"] = max(0, cfg["soft_pct_5h"] - cfg["colour_lead_pct"])
+        cfg["colour_alarm_pct"] = max(0, cfg["hard_pct_5h"] - cfg["colour_lead_pct"])
     # ⛔ THE THREE BAND EDGES MUST ASCEND, AND ALL THREE FALL BACK TOGETHER. An out-of-order
     # set does not error - it makes a band unreachable, and a colour that never appears is
     # indistinguishable from a speed that never happened. ⚠ All three are restored, not just
@@ -1444,12 +1507,14 @@ def _state(pct, cfg, time_pct=None):
     and 85 the verdict uses, so the default display agrees with the verdict while somebody who
     tuned them keeps what they tuned.
     """
-    # ⚠ 85, matching DEFAULTS. It read 90 here for a partial-dict caller while DEFAULTS said
-    # 85, so the fallback and the documented default disagreed - invisible whenever cfg came
-    # from config(), which is why it survived.
-    if pct >= cfg.get("colour_alarm_pct", 85):
+    # ⛔ THE FALLBACKS READ `DEFAULTS`, NEVER A TYPED NUMBER. They used to be literals, and
+    # this one read 90 for a partial-dict caller while DEFAULTS said 85 - invisible whenever
+    # cfg came from config(), which is why it survived. Now that the defaults are DERIVED from
+    # soft/hard_pct_5h, a typed literal here would drift again the first time a threshold
+    # moved, and in the direction that matters: a colour claiming nothing is refused yet.
+    if pct >= cfg.get("colour_alarm_pct", DEFAULTS["colour_alarm_pct"]):
         return "STOP"
-    if pct >= cfg.get("colour_warn_pct", 70):
+    if pct >= cfg.get("colour_warn_pct", DEFAULTS["colour_warn_pct"]):
         return "PACE"
     # ⛔ A DEADBAND, AND WITHOUT ONE THIS FIRES THE MOMENT A WINDOW IS TOUCHED. `time_pct` is
     # near zero just after a reset, so ANY spending is "past the marker": measured 2026-09-01,
@@ -4237,6 +4302,81 @@ def selftest():
         assert config(_cdir)["burn_window_min"] == _want, (_v, config(_cdir))
     shutil.rmtree(_cdir, ignore_errors=True)
 
+    # ⛔⛔ THE COLOURS FOLLOW THE THRESHOLDS, AND AN EXPLICIT PIN STILL WINS. The owner's
+    # design of 2026-09-18: a person wants the warning colour BEFORE anything is refused, so
+    # the two colour keys are `soft/hard_pct_5h - colour_lead_pct` rather than hand-set
+    # numbers that merely sat near them. ⚠ DRIVEN THROUGH config(), not read off DEFAULTS:
+    # the derivation lives in config(), so asserting DEFAULTS only would pass while every
+    # real caller got a stale pair.
+    _ccdir = tempfile.mkdtemp(prefix="dg-colcfg-")
+    _ccfile = os.path.join(_ccdir, "config.json")
+
+    def _ccfg(**keys):
+        if keys:
+            with open(_ccfile, "w", encoding="utf-8") as _f:
+                json.dump(keys, _f)
+        elif os.path.exists(_ccfile):
+            os.remove(_ccfile)
+        return config(_ccdir)
+
+    # no config at all -> derived from the shipped thresholds
+    _c = _ccfg()
+    _derived = (DEFAULTS["soft_pct_5h"] - DEFAULTS["colour_lead_pct"],
+                DEFAULTS["hard_pct_5h"] - DEFAULTS["colour_lead_pct"])
+    assert (_c["colour_warn_pct"], _c["colour_alarm_pct"]) == _derived, (
+        "the colours are not DERIVED from the thresholds: got %s/%s, expected %s/%s"
+        % (_c["colour_warn_pct"], _c["colour_alarm_pct"], _derived[0], _derived[1]))
+    # ⭐ MOVE A THRESHOLD AND THE COLOUR MOVES WITH IT. This is the whole point: before this,
+    # raising hard_pct_5h left the red bar behind, so red said "nothing is refused yet" while
+    # the gate was already refusing.
+    # ⚠ THE EXPECTATION IS COMPUTED FROM THE LEAD, not typed as 55/65. A typed pair here would
+    # encode the shipped lead, so lowering `colour_lead_pct` to 0 would fail HERE - and the
+    # direction check further down, which is the one that owns "the colour must arrive first",
+    # would never be reached. One property, one check.
+    _lead = DEFAULTS["colour_lead_pct"]
+    _c = _ccfg(soft_pct_5h=60, hard_pct_5h=70)
+    assert (_c["colour_warn_pct"], _c["colour_alarm_pct"]) == (60 - _lead, 70 - _lead), (
+        "moving a threshold did not move its colour: soft 60/hard 70 gave %s/%s"
+        % (_c["colour_warn_pct"], _c["colour_alarm_pct"]))
+    # ...and the lead is configurable
+    _c = _ccfg(soft_pct_5h=60, hard_pct_5h=70, colour_lead_pct=10)
+    assert (_c["colour_warn_pct"], _c["colour_alarm_pct"]) == (50, 60), (
+        "an explicit colour_lead_pct was not honoured: %s/%s"
+        % (_c["colour_warn_pct"], _c["colour_alarm_pct"]))
+    # ⚠ AN EXPLICIT NUMBER WINS, both of them and either of them alone. Somebody who tuned
+    # the colours keeps what they tuned - the promise in _state()'s docstring.
+    _c = _ccfg(soft_pct_5h=60, hard_pct_5h=70, colour_warn_pct=20, colour_alarm_pct=30)
+    assert (_c["colour_warn_pct"], _c["colour_alarm_pct"]) == (20, 30), (
+        "an explicitly PINNED colour pair was overridden by the derivation: %s/%s"
+        % (_c["colour_warn_pct"], _c["colour_alarm_pct"]))
+    _c = _ccfg(soft_pct_5h=60, hard_pct_5h=70, colour_alarm_pct=68)
+    assert (_c["colour_warn_pct"], _c["colour_alarm_pct"]) == (60 - _lead, 68), (
+        "pinning ONE colour must leave the other derived: %s/%s"
+        % (_c["colour_warn_pct"], _c["colour_alarm_pct"]))
+    # ⛔ A PIN THAT INVERTS THE PAIR IS REFUSED, BOTH RESTORED. warn at or above alarm makes
+    # the red band unreachable, and a colour that never appears is indistinguishable from a
+    # speed that never happened.
+    _c = _ccfg(soft_pct_5h=60, hard_pct_5h=70, colour_warn_pct=99)
+    assert (_c["colour_warn_pct"], _c["colour_alarm_pct"]) == (60 - _lead, 70 - _lead), (
+        "an INVERTED pinned pair was left inverted - the red band is unreachable: %s/%s"
+        % (_c["colour_warn_pct"], _c["colour_alarm_pct"]))
+    # ⛔ AND A NEGATIVE LEAD IS REFUSED - it would put the colour AFTER the refusal, which is
+    # the one arrangement the design exists to prevent.
+    # ⚠ THIS CASE OWNS ONE THING ONLY: the negative lead was restored. It used to also assert
+    # the direction (`warn < soft`), which made it fire first - with a bare cfg dict as its
+    # message - for any mutation that flattened the lead, so the direction check further down
+    # never ran and a mutation aimed at it read as "caught" by this. One property, one check.
+    _c = _ccfg(colour_lead_pct=-5)
+    assert _c["colour_lead_pct"] == DEFAULTS["colour_lead_pct"], \
+        "a negative colour_lead_pct was not restored: %r" % (_c["colour_lead_pct"],)
+    # ⚠ A NON-NUMBER ON DISK IS NOT A PIN. config()'s overlay only copies int/float, which is
+    # what lets config.example.json carry `null` for these two and still mean "derived".
+    _c = _ccfg(soft_pct_5h=60, hard_pct_5h=70, colour_warn_pct=None, colour_alarm_pct=None)
+    assert (_c["colour_warn_pct"], _c["colour_alarm_pct"]) == (60 - _lead, 70 - _lead), (
+        "a null on disk was treated as a PIN - config.example.json relies on it not being: %s/%s"
+        % (_c["colour_warn_pct"], _c["colour_alarm_pct"]))
+    shutil.rmtree(_ccdir, ignore_errors=True)
+
     # ⛔⛔ THE COLLISION ITSELF, AS A FIXTURE - the check that would have caught the defect.
     # Two accounts whose five-hour windows reset 0.08 s apart (stamp() rounds to the second,
     # so resets_at cannot tell them apart at all), rows from BOTH in one file, and the rate
@@ -4812,15 +4952,48 @@ def selftest():
     assert _state(50, _wcfg, 50.0) == "GO", "equal is not PAST the marker"
     assert _state(54, _wcfg, 50.0) == "GO", "4 points ahead is inside the deadband"
     assert _state(56, _wcfg, 50.0) == "WARN", _state(56, _wcfg, 50.0)
-    assert _state(69, _wcfg, 50.0) == "WARN", _state(69, _wcfg, 50.0)
     # ⛔ THE CASE THE OWNER SAW: a window minutes past its reset, barely touched.
     assert _state(1.0, _wcfg, 0.48) == "GO", (
         "a freshly reset window went yellow on its first percent: %r"
         % (_state(1.0, _wcfg, 0.48),))
     # ...and a genuinely alarming early burn still fires: 20% spent in 5% of the window.
     assert _state(20.0, _wcfg, 5.0) == "WARN", _state(20.0, _wcfg, 5.0)
-    assert _state(70, _wcfg, 50.0) == "PACE", _state(70, _wcfg, 50.0)
-    assert _state(85, _wcfg, 50.0) == "STOP", _state(85, _wcfg, 50.0)
+    # ⛔ THE BAND EDGES COME FROM THE CONFIG, NEVER FROM TYPED NUMBERS. They were `70` and
+    # `85` here, which is a derived value copied by hand - so the first time the owner moved
+    # a threshold this file went red instead of the thing that was actually wrong. Measured
+    # 2026-09-18, raising soft/hard to 80/90.
+    _warn_at, _alarm_at = _wcfg["colour_warn_pct"], _wcfg["colour_alarm_pct"]
+    assert _state(_warn_at - 1, _wcfg, 50.0) == "WARN", (_warn_at,
+                                                         _state(_warn_at - 1, _wcfg, 50.0))
+    assert _state(_warn_at, _wcfg, 50.0) == "PACE", (_warn_at,
+                                                     _state(_warn_at, _wcfg, 50.0))
+    assert _state(_alarm_at - 1, _wcfg, 50.0) == "PACE", (_alarm_at,
+                                                          _state(_alarm_at - 1, _wcfg, 50.0))
+    assert _state(_alarm_at, _wcfg, 50.0) == "STOP", (_alarm_at,
+                                                      _state(_alarm_at, _wcfg, 50.0))
+    # ⭐ AND THE DIRECTION, which is the whole of the owner's design (2026-09-18): the colour
+    # must arrive BEFORE anything is refused. A lead of zero or a negative one would put the
+    # warning colour at or after the refusal, and every assertion above would still pass.
+    assert _warn_at == _wcfg["soft_pct_5h"] - _wcfg["colour_lead_pct"], (
+        "colour_warn_pct is not DERIVED from soft_pct_5h: %s, expected %s - %s"
+        % (_warn_at, _wcfg["soft_pct_5h"], _wcfg["colour_lead_pct"]))
+    assert _alarm_at == _wcfg["hard_pct_5h"] - _wcfg["colour_lead_pct"], (
+        "colour_alarm_pct is not DERIVED from hard_pct_5h: %s, expected %s - %s"
+        % (_alarm_at, _wcfg["hard_pct_5h"], _wcfg["colour_lead_pct"]))
+    assert _warn_at < _wcfg["soft_pct_5h"] and _alarm_at < _wcfg["hard_pct_5h"], (
+        "the colours must LEAD the thresholds, not trail them: warn %s/soft %s, "
+        "alarm %s/hard %s" % (_warn_at, _wcfg["soft_pct_5h"],
+                              _alarm_at, _wcfg["hard_pct_5h"]))
+    # ⛔ AND A LEAD OF ZERO IS NOT A LEAD. It puts the colour exactly ON the refusal: every
+    # band assertion above still passes, the derivation still holds, and the ONE property the
+    # owner asked for - see the colour before anything is refused - is gone. This assertion
+    # owns that property alone, which is why the config expectations above are computed from
+    # the lead rather than typed: a typed pair would fail there instead and this would never
+    # be reached.
+    assert _wcfg["colour_lead_pct"] > 0, (
+        "colour_lead_pct is %s - the colours must LEAD the thresholds, and a lead of zero "
+        "makes the warning colour arrive WITH the refusal it exists to precede"
+        % (_wcfg["colour_lead_pct"],))
     # ⛔ NO MARKER, NO WARN - the tier cannot fire on a window with no time axis, and this is
     # what keeps every pre-existing _colour() caller on exactly the three colours it had.
     assert _state(99.0, _wcfg, None) == "STOP" and _state(51, _wcfg, None) == "GO", (

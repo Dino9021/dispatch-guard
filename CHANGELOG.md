@@ -33,6 +33,60 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.61.0
+
+⚠ **預設門檻變了，所以這是次版號，不是修訂號。** 0.60.1 到 0.60.4 全都是修 bug，那會訓練讀者
+把修訂號當成「沒有要決定的事」。這一版對每一個沒有自己覆寫過的人都會改變行為。
+
+**主人調高了五小時視窗的兩個門檻。** `soft_pct_5h` **75 → 80**（PACE），
+`hard_pct_5h` **85 → 90**（STOP）。
+
+**而且顏色門檻改成「推導」，不再是手填的數字。** 問到紅色條（`colour_alarm_pct` 85）要怎麼辦
+的時候，主人的裁定是：
+
+> 故意不等於，那個決定什麼會被「拒絕」，而人會希望在任何東西開始被拒絕之前，就先看到警告
+> 顏色。這反而讓我認為應該要修改上色條件，colour_warn_pct 的定義應該改成 soft_pct_5h 減 n、
+> colour_alarm_pct 的定義應該改成 hard_pct_5h 減 n，而 n 預設應該是 5
+
+⇒ 新增 `colour_lead_pct`（預設 **5**）。`colour_warn_pct` = `soft_pct_5h` − lead，
+`colour_alarm_pct` = `hard_pct_5h` − lead。在新預設值下就是橘 75、紅 85 —— 跟改之前**同樣
+兩個數字**，但現在是跟著門檻走，不是剛好坐在旁邊。
+
+- ⛔ **這修掉的是一個會無聲發生的錯。** 原本那兩個顏色是手填的，門檻一調高它們就被留在後面：
+  紅色於是會說「還沒有東西被拒絕」，而閘門其實已經在拒絕了。這一版之前，把 `hard_pct_5h`
+  調到 90 的人，紅色還留在 85。
+- ⛔ **而這個檔案裡本來有兩段註解在互相打架。** `DEFAULTS` 開頭寫「顏色刻意**對齊**門檻，
+  橘色就是 PACE 開始、紅色就是 STOP 開始」；`_state()` 的 docstring 寫「刻意**不**等於
+  soft_pct/hard_pct」。而實際值兩邊都不符：紅 85 = hard 85（對齊），橘 70 ≠ soft 75（早 5）。
+  ⇒ 現在只有一條規則，寫在一個地方，而且由算式強制。
+- **手動填的數字仍然優先。** 在自己的 `config.json` 裡給那兩個鍵一個**數字**，行為跟以前完全
+  一樣 —— 調過顏色的人不會被改掉。⚠ 判斷「有沒有手動設」讀的是**磁碟**上的值，不是合併後的
+  `cfg`：合併之後「刻意設成 85」和「預設就是 85」是同一個值。
+- ⛔ **只釘住其中一個而導致順序顛倒，兩個都退回推導值**，並在 stderr 說出來。一個永遠到不了
+  的紅色頻帶，跟一個從來沒發生過的速度看起來一模一樣。負的 `colour_lead_pct` 也會被拒絕 ——
+  那會讓顏色出現在拒絕「之後」，正是這個設計要避免的唯一那件事。
+- ⛔ **`config.example.json` 裡那兩個鍵現在是 `null`。** 範例是給人**整份複製**的東西：填一個
+  數字進去，複製的人就把自己的顏色永久釘住，推導再也不會對他們生效。`config()` 只採納磁碟上
+  的 int/float，所以 `null` 就等於「沒設」。⭐ `install.py --status` 的交叉檢查和
+  `test_install.py` 現在都**要求**那兩個鍵是 `null`，所以範例沒辦法悄悄變回數字。
+- **`_state()` 的兩個 fallback 改讀 `DEFAULTS`。** 那裡本來是寫死的字面值，而註解就記著它們
+  曾經漂移過（一個寫 90，`DEFAULTS` 寫 85）。現在預設值是推導的，寫死的字面值下一次門檻一動
+  就會再漂一次，而且是朝著最糟的方向：一個宣稱「還沒有東西被拒絕」的顏色。
+
+⚠ **四個測試檔的 fixture 寫死了舊門檻，一起修成從門檻推導。** 這是這次唯一真正的意外，而且
+它自己就是一個教訓：
+
+- `dispatch_gate.py` 的驅動表用 **78** 代表「一個 PACE」（舊 soft 75 加一點餘裕）。在 80 之下
+  那是 GO，陽性對照觸發，看起來像 hook 壞了。
+- `test_guards.py` 有**四處** `usage_at(75)` —— 剛好等於舊的 `soft_pct_5h`，所以四個 case 都
+  以一句沒頭沒尾的 `AssertionError: GO` 失敗在它們根本沒在測的判定上。
+- `usage.py` 自己的顏色頻帶斷言寫死 **70/85**，也就是把推導值手抄一份。
+- `README.md` 的範例印 `PACE at 78%`，那在新預設值下是**不可能出現**的一行。
+- ⇒ 全部改成從 `DEFAULTS` 算出來，而且**落在頻帶內、不落在邊界上**：坐在邊界上的 fixture
+  撐不過邊界移動一格。
+
+---
+
 ## 0.60.4
 
 **0.60.2 只修了五處中的一處,而漏掉的那一處是畫面上最強的那句話。** 七天窗驅動判定時，
@@ -2474,6 +2528,69 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.61.0
+
+⚠ **A default threshold moves, so this is a MINOR release and not a patch.** 0.60.1 through
+0.60.4 were all fixes, which trains a reader to read a patch bump as "nothing to decide". This
+one changes behaviour for everybody who never overrode the defaults.
+
+**The owner raised both five-hour thresholds.** `soft_pct_5h` **75 → 80** (PACE),
+`hard_pct_5h` **85 → 90** (STOP).
+
+**And the colour thresholds are now DERIVED rather than hand-set.** Asked what should happen to
+the red bar at `colour_alarm_pct` 85, the owner ruled:
+
+> Deliberately not equal — that decides what gets REFUSED, and a person wants to see the
+> warning colour before anything starts being refused. Which makes me think the colouring rule
+> itself should change: `colour_warn_pct` should be defined as `soft_pct_5h` minus n,
+> `colour_alarm_pct` as `hard_pct_5h` minus n, and n should default to 5.
+
+⇒ New key `colour_lead_pct` (default **5**). `colour_warn_pct` is `soft_pct_5h` − lead,
+`colour_alarm_pct` is `hard_pct_5h` − lead. At the new defaults that is orange 75 and red 85 —
+**the same two numbers as before**, now following the thresholds instead of sitting beside them.
+
+- ⛔ **What this fixes was silent.** The two colours were typed numbers, so raising a threshold
+  left them behind: red then said "nothing is refused yet" while the gate was already refusing.
+  Before this release, anybody who set `hard_pct_5h` to 90 kept a red bar at 85.
+- ⛔ **And two comments in this file contradicted each other.** The head of `DEFAULTS` said the
+  colours were "ALIGNED WITH THE COLOUR THRESHOLDS BELOW, ON PURPOSE... orange means exactly
+  PACE has begun and red means STOP has begun"; `_state()`'s docstring said they were
+  "deliberately NOT soft_pct/hard_pct". The values matched neither: red 85 equalled hard 85
+  while orange 70 led soft 75 by five. ⇒ One rule now, in one place, enforced by arithmetic.
+- **An explicit number still wins.** Give either key a NUMBER in your own `config.json` and it
+  behaves exactly as before — somebody who tuned the colours keeps what they tuned. ⚠ "Was it
+  set by hand?" is read from the DISK, not from the merged `cfg`: after the overlay, "set to 85
+  on purpose" and "defaulted to 85" are the same value.
+- ⛔ **Pinning only ONE of the pair into the wrong order restores BOTH**, with a line on stderr.
+  A red band that can never be reached is indistinguishable from a speed that never happened. A
+  negative `colour_lead_pct` is refused too: it would put the colour AFTER the refusal, which is
+  the single arrangement this design exists to prevent.
+- ⛔ **`config.example.json` holds `null` for those two keys now.** An example is a thing people
+  copy WHOLESALE: a number there pins their colours for ever and the derivation never fires for
+  them again. `config()` only takes int/float off disk, so `null` means "unset".
+  ⭐ `install.py --status`'s cross-check and `test_install.py` now both REQUIRE null there, so
+  the example cannot drift back into a number.
+- **`_state()`'s two fallbacks read `DEFAULTS`.** They were literals, and the comment beside
+  them already recorded a past drift (one said 90 while `DEFAULTS` said 85). With derived
+  defaults a literal would drift again the first time a threshold moved — in the worst
+  direction, a colour claiming nothing is refused yet.
+
+⚠ **Four files had fixtures encoding the old thresholds; all are now computed from them.** That
+was the only real surprise, and it is its own lesson:
+
+- `dispatch_gate.py`'s driven table used **78** to mean "a PACE" — the old soft 75 plus a
+  margin. At 80 that is a GO, the positive control fires, and the failure reads as a regression
+  in the hook.
+- `test_guards.py` had **four** `usage_at(75)` calls — exactly the old `soft_pct_5h` — so four
+  cases failed with a bare `AssertionError: GO` on a verdict they were not testing.
+- `usage.py`'s own colour-band assertions typed **70/85**, which is a derived value copied by
+  hand.
+- `README.md`'s examples printed `PACE at 78%`, a line that **cannot occur** at the new defaults.
+- ⇒ All now read `DEFAULTS` and sit a few points **INSIDE** each band rather than on its edge: a
+  fixture on a boundary cannot survive the boundary moving by one.
 
 ---
 

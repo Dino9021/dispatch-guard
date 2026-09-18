@@ -621,7 +621,24 @@ def status():
                                   json.dumps(want.get(new_key), ensure_ascii=False)))
         # ⛔ The source of truth checked against the code, so "compare with the example"
         # cannot quietly become "compare with something stale".
+        # ⛔ TWO KEYS ARE DERIVED AND THE EXAMPLE MUST NOT CARRY A NUMBER FOR THEM. Since
+        # 0.61.0 `colour_warn_pct` and `colour_alarm_pct` are computed by usage.config() as
+        # soft/hard_pct_5h minus colour_lead_pct, so a person wanting the warning colour
+        # before anything is refused gets it automatically when they move a threshold. ⚠ But
+        # an example is a thing people COPY WHOLESALE: a number here would pin their colours
+        # for ever and the derivation would never fire for them again. `null` is how the
+        # example says "unset" - usage.config() only copies int/float off disk, so it is
+        # ignored - and this check is what stops the example drifting back into a number.
+        DERIVED_IN_EXAMPLE = ("colour_warn_pct", "colour_alarm_pct")
+        for k in DERIVED_IN_EXAMPLE:
+            if k in want and want[k] is not None:
+                example_bad.append(
+                    "%s: example %r, but this key is DERIVED (soft/hard_pct_5h minus "
+                    "colour_lead_pct). The example must hold null, or everybody who copies "
+                    "it pins their colours for ever." % (k, want[k]))
         for k, v in sorted(_u.DEFAULTS.items()):
+            if k in DERIVED_IN_EXAMPLE:
+                continue                       # checked above; the example holds null by rule
             if k in want and want[k] != v:
                 example_bad.append("%s: example %r, code %r" % (k, want[k], v))
         for k, v in sorted(_g.DEFAULTS.items()):

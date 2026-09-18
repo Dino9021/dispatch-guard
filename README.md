@@ -850,9 +850,13 @@ Context 長條、模型、說明移到第二列，**兩列各自裁到寬度**�
 變成長條圖跟數字互相矛盾。
 
 顏色只是提醒，不是政策：綠色 → `colour_warn_pct` 以上轉橘 → `colour_alarm_pct` 以上轉紅。
-⭐ **這兩個門檻跟「會拒絕東西」的門檻大致對齊：** 紅色 = `hard_pct_5h` 開始 STOP；橘色
-（`colour_warn_pct` 預設 70）在 5h 開始 PACE（`soft_pct_5h` 自 0.59.0 起預設 75）之前就先亮，
-所以顏色只會比煞車更早提醒、不會更晚。你瞄一眼的顏色，和 gate 做的決定，不會各說各話。
+⭐ **這兩個顏色門檻是從「會拒絕東西」的門檻推導出來的，而且刻意提早：** `colour_warn_pct`
+= `soft_pct_5h` 減 `colour_lead_pct`，`colour_alarm_pct` = `hard_pct_5h` 減 `colour_lead_pct`，
+`colour_lead_pct` 預設 **5**。⛔ **理由是主人的設計（2026-09-18）：人會希望在任何東西開始被
+拒絕「之前」，就先看到警告顏色。** 所以顏色只會比煞車更早提醒、不會更晚。
+⭐ **而且門檻一動，顏色會跟著動。** 到 0.61.0 之前那兩個顏色是手填的數字，只是「剛好」坐在
+門檻附近：門檻一調高，顏色就被留在後面，紅色於是會說「還沒有東西被拒絕」，而 gate 其實已經
+在拒絕了。現在那個關係是算出來的，不是手抄的。
 ⚠ **但它們仍然是四個獨立的設定值。** 顏色是給人看的，門檻是拿來拒絕工具呼叫的；
 想要顏色比減速更早出現、或乾脆不要顏色的人，不該為此放棄煞車。
 
@@ -967,18 +971,18 @@ install.py --disable-auto-task     # 關掉
 
 ### 你會看到的東西
 
-到達 PACE（`soft_pct_5h`，預設 75%）或 STOP（`hard_pct_5h`，預設 85%）時，畫面上會出現：
+到達 PACE（`soft_pct_5h`，預設 80%）或 STOP（`hard_pct_5h`，預設 90%）時，畫面上會出現：
 
 ```
-dispatch-guard: usage PACE at 78%. Dispatch is still allowed; do not start a new wave.
-Expect the agent to acknowledge with `PACE at 78% - no new batch`;
+dispatch-guard: usage PACE at 84%. Dispatch is still allowed; do not start a new wave.
+Expect the agent to acknowledge with `PACE at 84% - no new batch`;
 if that line does not appear, it did not act on it.
 ```
 
 ⇒ **然後看 agent 的下一則訊息第一行**。它被要求原封不動印出：
 
 ```
-PACE at 78% - no new batch
+PACE at 84% - no new batch
 ```
 
 ⚠ **沒有那一行 = 它沒有處理這件事。** 那時候你可以直接接手，不用猜。
@@ -1035,8 +1039,8 @@ Nothing was dispatched. The agent has been told to save the current step and arm
 
 | 門檻 | 預設 | 行為 | 長條顏色 |
 |---|---|---|---|
-| `soft_pct_5h` | **75** | **PACE** —— 縮小範圍，派工**仍然允許** | 橘（`colour_warn_pct` 70） |
-| `hard_pct_5h` | **85** | **STOP** —— 派工**被拒絕** | 紅（`colour_alarm_pct` 85） |
+| `soft_pct_5h` | **80** | **PACE** —— 縮小範圍，派工**仍然允許** | 橘（`colour_warn_pct`，推導 75） |
+| `hard_pct_5h` | **90** | **STOP** —— 派工**被拒絕** | 紅（`colour_alarm_pct`，推導 85） |
 | `soft_pct_7d` | **95** | **PACE**，由「七天」視窗觸發 | —— |
 | `hard_pct_7d` | **97** | **STOP**，由「七天」視窗觸發 | —— |
 
@@ -1051,7 +1055,7 @@ Nothing was dispatched. The agent has been told to save the current step and arm
 `~/.claude/dispatch-guard/config.json`：
 
 ```json
-{ "soft_pct_5h": 60, "hard_pct_5h": 85 }
+{ "soft_pct_5h": 60, "hard_pct_5h": 80 }
 ```
 
 ⚠ 只寫你要改的那幾個。⛔ 寫進去的值會被**釘住**，以後版本改了預設值也到不了你這裡 ——
@@ -2425,10 +2429,15 @@ than the window is passing; behind it means there is slack. A bare percentage ca
 proportion read a cell short, so the bar and the number disagree.
 
 Colours are attention, not policy: green, orange from `colour_warn_pct`, red from
-`colour_alarm_pct`. ⭐ **Roughly aligned with the thresholds that decide:** red is where `hard_pct_5h` starts STOP;
-orange (`colour_warn_pct`, default 70) lights just BEFORE the 5h PACE point (`soft_pct_5h`, default
-75 since 0.59.0), so the colour only ever warns earlier than the brake, never later. The bar you
-glance at and the decision the gate makes cannot disagree. ⚠ They remain four separate keys: colour is what a
+`colour_alarm_pct`. ⭐ **DERIVED from the thresholds that decide, and deliberately EARLIER:**
+`colour_warn_pct` is `soft_pct_5h` minus `colour_lead_pct`, `colour_alarm_pct` is `hard_pct_5h`
+minus the same, and `colour_lead_pct` defaults to **5**. ⛔ **The reason is the owner's design
+(2026-09-18): a person wants to see the warning colour BEFORE anything starts being refused.** So
+the colour only ever warns earlier than the brake, never later.
+⭐ **And moving a threshold now carries its colour with it.** Through 0.60.4 the two colours were
+hand-set numbers that merely SAT near the thresholds: raise one and the colour stayed behind, so
+red said "nothing is refused yet" while the gate was already refusing. The relationship is
+arithmetic now rather than a copied number. ⚠ They remain separate keys: colour is what a
 person reads, the thresholds are what refuses a tool call, and wanting the warning earlier than
 the slow-down must not cost you the brake.
 
@@ -2553,18 +2562,18 @@ against its task, and "it carried on working" looks exactly like "it never heard
 
 ### What you actually see
 
-At PACE (`soft_pct_5h`, 75 by default) or STOP (`hard_pct_5h`, 85), this appears on screen:
+At PACE (`soft_pct_5h`, 80 by default) or STOP (`hard_pct_5h`, 90), this appears on screen:
 
 ```
-dispatch-guard: usage PACE at 78%. Dispatch is still allowed; do not start a new wave.
-Expect the agent to acknowledge with `PACE at 78% - no new batch`;
+dispatch-guard: usage PACE at 84%. Dispatch is still allowed; do not start a new wave.
+Expect the agent to acknowledge with `PACE at 84% - no new batch`;
 if that line does not appear, it did not act on it.
 ```
 
 ⇒ **Then read the first line of the agent's next message.** It is required to print, verbatim:
 
 ```
-PACE at 78% - no new batch
+PACE at 84% - no new batch
 ```
 
 ⚠ **No line means it did not act on this.** You can take over at that point without guessing.
@@ -2625,8 +2634,8 @@ that is `PreToolUse`, judged on every dispatch, and refused every time.
 
 | Threshold | Default | Behaviour | Bar colour |
 |---|---|---|---|
-| `soft_pct_5h` | **75** | **PACE** — shrink scope, dispatch is **still allowed** | orange (`colour_warn_pct` 70) |
-| `hard_pct_5h` | **85** | **STOP** — dispatch is **refused** | red (`colour_alarm_pct` 85) |
+| `soft_pct_5h` | **80** | **PACE** — shrink scope, dispatch is **still allowed** | orange (`colour_warn_pct`, derived 75) |
+| `hard_pct_5h` | **90** | **STOP** — dispatch is **refused** | red (`colour_alarm_pct`, derived 85) |
 | `soft_pct_7d` | **95** | **PACE**, driven by the seven-day window | — |
 | `hard_pct_7d` | **97** | **STOP**, driven by the seven-day window | — |
 
@@ -2642,7 +2651,7 @@ ignored entirely — its percentage is about to become zero.
 `~/.claude/dispatch-guard/config.json`:
 
 ```json
-{ "soft_pct_5h": 60, "hard_pct_5h": 85 }
+{ "soft_pct_5h": 60, "hard_pct_5h": 80 }
 ```
 
 ⚠ Write only the keys you want to change. ⛔ A value written there is PINNED, so a later

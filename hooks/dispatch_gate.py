@@ -3766,12 +3766,21 @@ def selftest():
     # print it whatever drove the verdict - `STOP at 3%` beside a text saying the WEEK was
     # spent. The 7d rows are what pin the `7d ` label; the 5h rows are what pin that the
     # label does NOT appear when the five-hour window drives.
+    # ⚠ THE PERCENTAGES COME FROM THE THRESHOLDS, NOT FROM TYPED NUMBERS. This table read
+    # 78 for PACE and 90 for STOP, which are the OLD 75/85 bands plus a margin - so raising
+    # the defaults to 80/90 turned the PACE row into a GO and the positive control fired,
+    # reading as a regression in the hook. Measured 2026-09-18. Each row now sits a few
+    # points INSIDE its band, computed, so a future threshold change carries the fixture.
+    _s5, _h5 = usage.DEFAULTS["soft_pct_5h"], usage.DEFAULTS["hard_pct_5h"]
+    _s7, _h7 = usage.DEFAULTS["soft_pct_7d"], usage.DEFAULTS["hard_pct_7d"]
+    _pace5, _stop5 = _s5 + 2, _h5 + 5          # inside PACE, and well past STOP
+    _pace7, _stop7 = _s7 + 1, _h7 + 2
     _seen = set()
     for _pct, _p7, _want, _line, _not in (
-            (78, 10, "PACE", "`PACE at 78% - no new batch`", "winding down"),
-            (90, 10, "STOP", "`STOP at 90% - winding down`", "no new batch"),
-            (3, 96, "PACE", "`PACE at 7d 96% - no new batch`", "winding down"),
-            (3, 99, "STOP", "`STOP at 7d 99% - winding down`", "no new batch"),):
+            (_pace5, 10, "PACE", "`PACE at %d%% - no new batch`" % _pace5, "winding down"),
+            (_stop5, 10, "STOP", "`STOP at %d%% - winding down`" % _stop5, "no new batch"),
+            (3, _pace7, "PACE", "`PACE at 7d %d%% - no new batch`" % _pace7, "winding down"),
+            (3, _stop7, "STOP", "`STOP at 7d %d%% - winding down`" % _stop7, "no new batch"),):
         _got, _out = _prompt_out(_pct, "wd-%s-%d" % (_want, _p7), _p7)
         # positive control: the fixture really did read as the verdict under test
         assert _got == _want, \

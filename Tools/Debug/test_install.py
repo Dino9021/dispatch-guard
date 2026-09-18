@@ -257,8 +257,19 @@ def main():
         # ⛔ The example must not disagree with the code: --status compares a person's config
         # against the EXAMPLE, so a stale example would report drift that is not there and
         # miss drift that is.
+        # ⛔ TWO KEYS ARE DERIVED, AND THE EXAMPLE MUST HOLD `null` FOR THEM. Since 0.61.0
+        # `colour_warn_pct` and `colour_alarm_pct` are computed by usage.config() as
+        # soft/hard_pct_5h minus colour_lead_pct. An example is a thing people copy WHOLESALE,
+        # so a number here would pin their colours for ever and the derivation would never
+        # fire for them again. ⚠ Asserting `is None` rather than skipping: a skip would let a
+        # number creep back in unnoticed, which is the failure this is guarding.
+        DERIVED = ("colour_warn_pct", "colour_alarm_pct")
+        for k in DERIVED:
+            assert example.get(k, "absent") is None, (
+                "config.example.json must hold null for the derived key %s, not %r"
+                % (k, example.get(k, "absent")))
         for k, v in _usage.DEFAULTS.items():
-            if k in example:
+            if k in example and k not in DERIVED:
                 assert example[k] == v, "example %s=%r but code default is %r" % (
                     k, example[k], v)
         for k, v in _gate.DEFAULTS.items():

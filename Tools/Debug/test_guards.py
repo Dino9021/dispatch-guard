@@ -95,6 +95,22 @@ def bash(root, command, event="PreToolUse", sid="s1", tool="Bash", response=None
     return p
 
 
+def band_pcts(gate):
+    """Percentages a few points INSIDE the PACE and STOP bands, read from the thresholds.
+
+    ⛔ NEVER A TYPED NUMBER. Four cases here called `usage_at(75)` to mean "a PACE", which was
+    `soft_pct_5h` exactly - so raising the defaults to 80/90 on 2026-09-18 turned every one of
+    them into a GO, and the cases failed with a bare `AssertionError: GO` on a verdict they
+    were not testing. A fixture that encodes a threshold breaks the next time the owner moves
+    it, and it breaks in the test rather than in whatever was actually wrong.
+
+    ⚠ INSIDE, not ON, the edge: `soft_pct_5h` itself is PACE today, but a fixture sitting
+    exactly on a boundary cannot survive the boundary moving by one.
+    """
+    d = gate.usage.DEFAULTS
+    return d["soft_pct_5h"] + 2, d["hard_pct_5h"] + 5
+
+
 def stamp_session(gate, sdir, sid="s1"):
     """Mark the session as started - without this every guard is advisory, by design."""
     os.makedirs(os.path.join(sdir, "state"), exist_ok=True)
@@ -1647,7 +1663,7 @@ def case_arm_on_stop(gate, sdir, root):
     # `git checkout` gives every tracked file mtime=now - is NOT a candidate. Nothing recorded,
     # nothing armed, and the log says what was missing.
     handoff(pdir, "p" * 500)
-    usage_at(75)
+    usage_at(band_pcts(gate)[0])
     assert level() == "PACE", level()
     before = len(gitlog(root))
     r = fire("Stop")
@@ -1707,7 +1723,7 @@ def case_arm_on_stop(gate, sdir, root):
     handoff(tdir, "h" * 500)                                  # recorded
     _time.sleep(1.1)
     handoff(pdir, "p" * 500)                                  # NEWEST by mtime, never recorded
-    usage_at(75)
+    usage_at(band_pcts(gate)[0])
     before = len(gitlog(root))
     r = fire("Stop")
     assert spawned and "--arm" in spawned[0], (
@@ -1802,7 +1818,7 @@ def case_arm_on_stop(gate, sdir, root):
         armed(task=folder, armed_for_reset=r5, at=now + 3600)
         with open(mark, "w") as f:
             f.write(str(_time.time()))                     # a fresh floor, as after an arm
-        usage_at(75)
+        usage_at(band_pcts(gate)[0])
         r = fire("UserPromptSubmit", clear_floor=False)
         assert not cancelled, "a PACE prompt cancelled the alarm the turn end armed"
         assert os.path.exists(os.path.join(sdir, "resume",
@@ -1815,7 +1831,7 @@ def case_arm_on_stop(gate, sdir, root):
             "the stand-down left the spawn floor in place - the next turn end cannot re-arm")
         assert "CANCELLED" in said(r) or "CANCELLED" in str(r), r
         # ...and the very next turn end at PACE arms again, floor or no floor.
-        usage_at(75)
+        usage_at(band_pcts(gate)[0])
         r = fire("Stop", clear_floor=False)                # the cancel above removed the floor
         assert spawned and folder in spawned[0], spawned
     finally:
