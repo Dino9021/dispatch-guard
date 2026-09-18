@@ -384,6 +384,77 @@ def case_only_the_owner_session_stands_a_resume_down():
     print("ok - only the arming session's own liveness stands its resume down")
 
 
+def case_a_command_that_changes_nothing_changes_nothing():
+    """⛔ MIGRATION MUST NOT RUN FOR EVERY INVOCATION OF THIS SCRIPT.
+
+    It sat at the top of `main()` for one revision, so `--selftest`, `--help`, a typo -
+    anything - migrated records in the REAL state directory and wrote to the person's log.
+    Measured within minutes of writing it: `resume.py --selftest`, which the checks run with
+    no `--dir`, moved a LIVE armed record of the owner's.
+
+    ⚠ This is STRUCTURAL because the behaviour is invisible from outside: the migration is
+    idempotent and silent when there is nothing to migrate, so a check that merely ran
+    `--selftest` against an empty scratch directory would pass either way. What must be
+    pinned is that no call sits outside a command branch.
+    """
+    src = open(repo_path("hooks", "resume.py"), encoding="utf-8").read()
+    body = src[src.index("def main("):]
+    body = body[:body.index("\ndef ", 1)]
+    for line in body.splitlines():
+        bare = line.strip()
+        if bare.startswith("#") or "migrate_legacy(" not in bare:
+            continue
+        # The only legal home is inside the helper the command branches call.
+        assert not line.startswith("    migrate_legacy("), (
+            "migrate_legacy runs for EVERY invocation of resume.py - `--selftest`, `--help` "
+            "and a typo would all rewrite records in the real state directory: %r" % bare)
+    print("ok - migration runs for a real command, not for every invocation")
+
+
+def case_a_record_survives_an_aggressive_state_sweep():
+    """⛔ prune_state MUST NOT BE ABLE TO DELETE A LIVE ALARM'S RECORD.
+
+    This is round 1's B3, checked against the SHIPPED code rather than against the design.
+    A resume can be armed against the SEVEN-day reset; `state_keep_days` is a supported
+    setting and 1 is a legal value. If the record lived in `state/`, the age sweep would
+    delete it while the OS task stayed registered - the alarm would fire and find nothing,
+    and `prune_state`'s own docstring promise ("deletes nothing a resume needs") would be
+    false. The record therefore lives OUTSIDE `state/`. ADR 20260917-132015, D1.
+
+    ⚠ WITH A POSITIVE CONTROL, because "the record survived" and "the sweep never ran" look
+    identical: a `state/*.warned` fixture of the same age must be GONE afterwards.
+    """
+    import importlib.util as _il
+    mod = load_resume()
+    spec = _il.spec_from_file_location("dg_gate_b3", repo_path("hooks", "dispatch_gate.py"))
+    gate = _il.module_from_spec(spec)
+    spec.loader.exec_module(gate)
+
+    with scratch_dir("b3-sweep") as sdir:
+        now = time.time()
+        old = now - 3 * 86400                      # older than state_keep_days: 1
+        # A resume armed against the SEVEN-day window: armed 3 days ago, fires in 4.
+        rec = mod.write_record(sdir, "LIVE-ALARM",
+                               {"session_id": "LIVE-ALARM", "task": "T",
+                                "armed_at": old, "at": now + 4 * 86400})
+        os.utime(rec, (old, old))
+        control = gate.state_path(sdir, "SOME-SESSION", "warned")
+        os.makedirs(os.path.dirname(control), exist_ok=True)
+        with open(control, "w") as f:
+            f.write("x")
+        os.utime(control, (old, old))
+
+        gate.prune_state(sdir, {"state_keep_days": 1})
+
+        assert not os.path.exists(control), (
+            "the age sweep did not run at all, so this case proves nothing - the record "
+            "surviving means nothing without it")
+        assert os.path.exists(rec), (
+            "prune_state DELETED a live alarm's record. Its OS task is still registered, so "
+            "the alarm will fire and abort with no handoff - the guarantee gone, silently")
+    print("ok - an aggressive state sweep cannot reach a live alarm's record")
+
+
 def case_a_takeover_line_stands_the_resume_down():
     """⛔ WORK PICKED UP IN ANOTHER SESSION MUST NOT BE REDONE AT 03:40.
 
@@ -751,6 +822,8 @@ def main():
     mod = load_resume()
     case_posix_cancels_one_job_not_all()
     case_only_the_owner_session_stands_a_resume_down()
+    case_a_command_that_changes_nothing_changes_nothing()
+    case_a_record_survives_an_aggressive_state_sweep()
     case_a_takeover_line_stands_the_resume_down()
     case_a_handoff_must_say_who_wrote_it()
     case_the_woken_run_is_told_it_is_a_continuation()
