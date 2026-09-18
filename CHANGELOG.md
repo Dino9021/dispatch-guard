@@ -33,6 +33,32 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.60.4
+
+**0.60.2 只修了五處中的一處,而漏掉的那一處是畫面上最強的那句話。** 七天窗驅動判定時，
+`v["pct"]`（永遠是五小時窗的數字）還在四個地方被直接讀：`USAGE(...)` 那行 log、兩行
+`DENY(...)` log，以及 ⛔ **派工被拒絕**那句 `systemMessage` —— 這個外掛做過最強的一件事，
+而且 README 有引用它。所以在 5h 3% / 7d 99% 時，畫面上會出現
+`sub-task dispatch REFUSED - usage STOP at 3%`。
+
+⇒ **一個共用函式 `driving_pct(v)`，五處全部改用它**，回傳 `("7d ", 99)` 或 `("", 90)`。
+五小時窗那一側完全不變。
+
+- ⭐ **檢查釘的是根因,不是那五句話。** `selftest()` 斷言 `on_user_prompt` 和 `on_pre_agent`
+  的原始碼裡**不准再出現** `v.get("pct") or 0`。一句一句去比對的檢查，得為每一句寫一次，
+  而且一定會漏掉第五句 —— 這次就是這樣漏的。外加三個 `driving_pct()` 自己的單元斷言，
+  包含「沒有 driver 也不能炸」。
+- **五個突變被預期的斷言殺掉**，其中一個是把拒絕訊息改回讀五小時數字。
+- **拒絕那一句是實際驅動出來的，不是只讀原始碼。** 原始碼釘子只證明呼叫寫對了，不證明字串
+  出來是對的；`on_pre_agent` 沒有任何驅動列覆蓋。⚠ 探針第一版回報 `decision: 'allow'` ——
+  **沒有蓋 `state/<sid>.start` 印記的 session，每個守衛都只是勸告**，所以拒絕分支從來沒跑到，
+  而那句要讀的訊息根本不存在。陽性對照（`decision == "deny"`）就是為了這個。
+- ⚠ 探針第一版還把環境變數名稱猜成 `CLAUDE_DISPATCH_GUARD_STATE`；實際是
+  **`CLAUDE_DISPATCH_DIR`**。猜錯名字會安靜地退回讀**真實**狀態目錄，於是量到的是這台機器
+  當下的判定，不是 fixture 的。
+
+---
+
 ## 0.60.3
 
 **0.60.2 那個新篩選器會把多行指令的續行誤標成污染。** 換句話說，它把它剛修掉的那個毛病
@@ -2448,6 +2474,36 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.60.4
+
+**0.60.2 fixed one site out of five, and the one it missed is the loudest thing on the screen.**
+When the seven-day window drives the verdict, `v["pct"]` - always the five-hour figure - was
+still read directly in four places: the `USAGE(...)` log line, both `DENY(...)` log lines, and
+⛔ the **dispatch refusal's** `systemMessage`, which is the strongest thing this plugin ever
+does and is quoted in the README. So at 5h 3% / 7d 99% the screen read
+`sub-task dispatch REFUSED - usage STOP at 3%`.
+
+⇒ **One helper, `driving_pct(v)`, and all five callers use it**, returning `("7d ", 99)` or
+`("", 90)`. The five-hour side is unchanged.
+
+- ⭐ **The check pins the ROOT CAUSE, not the five messages.** `selftest()` asserts that the
+  source of `on_user_prompt` and `on_pre_agent` no longer contains `v.get("pct") or 0` at all.
+  A per-message check has to be written once per message and will miss the fifth - which is
+  exactly how this was missed. Plus three unit assertions on `driving_pct()` itself, including
+  that a verdict with no driver does not crash it.
+- **Five mutations killed by the intended assertion**, one of them putting the five-hour figure
+  back into the refusal message.
+- **The refusal line is DRIVEN, not read.** A source pin proves the call is written, not that
+  the string comes out right, and no driven row exercises `on_pre_agent`. ⚠ The probe's first
+  run reported `decision: 'allow'`: **without a `state/<sid>.start` stamp every guard is
+  advisory by design**, so the refusal branch never ran and the message under test did not
+  exist. That is what the `decision == "deny"` positive control is for.
+- ⚠ The probe also guessed the environment variable as `CLAUDE_DISPATCH_GUARD_STATE`; it is
+  **`CLAUDE_DISPATCH_DIR`**. A wrong name falls back silently to the REAL state directory, so
+  the measurement becomes this machine's current verdict rather than the fixture's.
 
 ---
 

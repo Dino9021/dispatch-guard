@@ -990,10 +990,14 @@ PACE at 78% - no new batch
 要求收尾，逃生口是 `- NOT winding down`。到 0.60.0 為止兩個判定共用同一句，PACE 因此被
 用大寫命令去宣告收尾並點名「你丟掉了什麼」，也就是把 PACE 當成 STOP 在跑。
 
-⚠ **是「七天」視窗觸發的時候，那一行會多一個 `7d`** —— 例如
-`STOP at 7d 99% - winding down`。上面的例子都是五小時視窗觸發的，所以沒有那個標記。
-⭐ 到 0.60.1 為止那一行印的一律是**五小時**視窗的數字，所以 5h 3% / 7d 99% 會印成
-`STOP at 3%`：一邊說這一週快用完了，另一邊叫你去等一行寫著 3% 的字。0.60.2 修好了。
+⚠ **是「七天」視窗觸發的時候，每一句都會多一個 `7d`** —— 確認行是
+`STOP at 7d 99% - winding down`，下面那句派工被拒絕也是
+`sub-task dispatch REFUSED - usage STOP at 7d 99%`。本節所有例子都是五小時視窗觸發的，
+所以都沒有那個標記。
+⭐ 到 0.60.1 為止那些句子印的一律是**五小時**視窗的數字，所以 5h 3% / 7d 99% 會印成
+`STOP at 3%`：一邊說這一週快用完了，另一邊叫你去等一行寫著 3% 的字。0.60.2 修了確認行，
+⚠ 但漏了另外四處（那兩行 log、以及**派工拒絕**那句畫面訊息）—— 0.60.4 才全部改用同一個
+`driving_pct()`，並且用檢查釘住不准再有人直接讀五小時的數字。
 
 派工在 STOP 被拒絕時，畫面上會出現：
 
@@ -2573,11 +2577,15 @@ a different fix: "heard it and chose to continue" is not "never received it".
 its escape hatch. Through 0.60.0 both verdicts shared one line, so a PACE session was ordered
 in capitals to announce a wind-down and to name "what you are dropping" — PACE run as STOP.
 
-⚠ **When the SEVEN-DAY window is what drives the verdict, the line carries a `7d`** — for
-example `STOP at 7d 99% - winding down`. The examples above are five-hour driven, which is why
-they have no marker. ⭐ Through 0.60.1 the line always printed the **five-hour** figure, so
-5h 3% / 7d 99% came out as `STOP at 3%`: one sentence said the week was nearly spent and the
-next told you to watch for a line reading 3%. Fixed in 0.60.2.
+⚠ **When the SEVEN-DAY window drives the verdict, every one of these lines carries a `7d`** —
+the acknowledgement becomes `STOP at 7d 99% - winding down` and the refusal below becomes
+`sub-task dispatch REFUSED - usage STOP at 7d 99%`. Every example in this section is five-hour
+driven, which is why none of them has the marker. ⭐ Through 0.60.1 they all printed the
+**five-hour** figure, so 5h 3% / 7d 99% came out as `STOP at 3%`: one sentence said the week
+was nearly spent and the next told you to watch for a line reading 3%. 0.60.2 fixed the
+acknowledgement line, ⚠ and missed four other sites — the two log lines and the **dispatch
+refusal's** screen message. 0.60.4 routes all five through one `driving_pct()` and pins with a
+check that nobody reads the five-hour figure directly again.
 
 When a dispatch is refused at STOP, this appears:
 

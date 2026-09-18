@@ -2771,6 +2771,36 @@ def on_session_start(payload, root, sdir, cfg):
     print(json.dumps(out, ensure_ascii=False))
 
 
+def driving_pct(v):
+    """The percentage of the window that DROVE this verdict, and a label saying which one.
+
+    Returns `("7d ", 99)` or `("", 90)`. The empty label is the five-hour window - the common
+    case - so a five-hour line reads exactly as it always did and nothing quoting its shape
+    needed editing.
+
+    ⛔ `v["pct"]` IS ALWAYS THE FIVE-HOUR FIGURE, and every message that took it directly was
+    wrong whenever the WEEK was the constraint. At 5h 3% / 7d 99% `v["text"]` correctly said
+    the week was nearly spent, and the next sentence ordered `STOP at 3% - winding down`: one
+    screen, one half saying the brake is on and the other naming 3%, which reads as a false
+    alarm. Measured 2026-09-18.
+
+    ⛔ AND THE FIRST FIX WAS INCOMPLETE, which is why this is a function and not two lines
+    inlined. 0.60.2 corrected only the acknowledgement line. FOUR other sites still took the
+    five-hour figure - the `USAGE(...)` log, both `DENY(...)` logs, and the `systemMessage` of
+    the DISPATCH REFUSAL, which is the strongest thing this plugin ever says and is quoted in
+    the README. ⇒ One helper, every caller, and `selftest()` asserts that neither
+    `on_user_prompt` nor `on_pre_agent` reads `v["pct"]` directly again.
+
+    ⭐ `driver` is `None` only when the verdict is GO; every caller here has already returned
+    on GO. ⚠ The `7d ` label is the owner's choice of 2026-09-18, taken over a bare
+    `STOP at 99%`: the number alone cannot be told from a five-hour one, and the statusline is
+    showing the five-hour figure at that same moment.
+    """
+    if v.get("driver") == "7d":
+        return "7d ", round(v.get("pct_7d") or 0)
+    return "", round(v.get("pct") or 0)
+
+
 def on_user_prompt(payload, root, sdir, cfg):
     """The wind-down net, ported from claude-pacer's budget-guard.
 
@@ -2815,7 +2845,7 @@ def on_user_prompt(payload, root, sdir, cfg):
             f.write(v["verdict"])
     except OSError:
         pass
-    log(root, "USAGE(%s) pct=%s" % (v["verdict"], round(v.get("pct") or 0)))
+    log(root, "USAGE(%s) pct=%s%s" % ((v["verdict"],) + driving_pct(v)))
     extra = ""
     if v["verdict"] == "STOP":
         extra = (" Arm the resume so this survives the window: write a stand-alone "
@@ -2840,21 +2870,7 @@ def on_user_prompt(payload, root, sdir, cfg):
     # ⭐ ONE `ack_line` VARIABLE FEEDS BOTH FIELDS. The screen must expect exactly what the
     # transcript is ordered to print; two strings that merely agree today drift apart, and
     # that drift is unreadable from a chair - the person waits for a line nothing demands.
-    # ⛔ THE DRIVING WINDOW'S PERCENTAGE, AND IT SAYS WHICH. `pct` is always the FIVE-HOUR
-    # figure, so until 0.60.2 a verdict driven by the seven-day window printed the wrong
-    # window's number: at 5h 3% / 7d 99% `v["text"]` correctly said the WEEK was spent and the
-    # very next sentence ordered `STOP at 3% - winding down`. One message then said the brake
-    # was on and the line the person was told to watch for said 3%, which reads as a false
-    # alarm. Measured 2026-09-18 (probe in this task's folder); the defect predates 0.60.1.
-    # ⭐ `driver` is `None` only when the verdict is GO, and GO returned long before here.
-    # ⚠ The `7d ` prefix is the owner's choice of 2026-09-18, against a bare `STOP at 99%`:
-    # the number alone cannot be told from a 5h one, and the statusline is showing the 5h
-    # figure at the same moment. A 5h-driven line is unchanged, which is why nothing that
-    # quotes the shape needed editing.
-    if v.get("driver") == "7d":
-        pct, window = round(v.get("pct_7d") or 0), "7d "
-    else:
-        pct, window = round(v.get("pct") or 0), ""
+    window, pct = driving_pct(v)
     if v["verdict"] == "STOP":
         ack_line = "`STOP at %s%d%% - winding down`" % (window, pct)
         ack_tail = ("Then say in one sentence what you are finishing and what you are "
@@ -2959,7 +2975,7 @@ def on_pre_agent(payload, root, sdir, cfg, wind=None):
                                started, sid, session_cwd(sdir, sid))
             except Exception as exc:
                 log(root, "AUTO-ARM-FAILED %r" % (exc,))
-            log(root, "DENY(usage-stop pct=%s) %s" % (round(v.get("pct") or 0), desc))
+            log(root, "DENY(usage-stop pct=%s%s) %s" % (driving_pct(v) + (desc,)))
             deny(event, "dispatch gate: %s Dispatching a sub-task is the most expensive "
                         "thing you can do right now, so it is refused until the window "
                         "resets. Finish and save the current step, then pick a resume:%s"
@@ -2974,9 +2990,9 @@ def on_pre_agent(payload, root, sdir, cfg, wind=None):
                  # from the agent simply choosing something else. A refusal nobody sees is
                  # indistinguishable from a brake that was never installed.
                  systemMessage=("dispatch-guard: sub-task dispatch REFUSED - usage %s at "
-                                "%d%%. Nothing was dispatched. The agent has been told to "
+                                "%s%d%%. Nothing was dispatched. The agent has been told to "
                                 "save the current step and arm a resume."
-                                % (v["verdict"], round(v.get("pct") or 0))))
+                                % ((v["verdict"],) + driving_pct(v))))
             return
         if v.get("relaxed_stop") and cfg["brake_on_usage"]:
             # ⭐ THE NET ZONE, THE OWNER'S STRICT 甲. A STOP was relaxed so the MAIN session
@@ -2991,7 +3007,7 @@ def on_pre_agent(payload, root, sdir, cfg, wind=None):
                                started, sid, session_cwd(sdir, sid))
             except Exception as exc:
                 log(root, "AUTO-ARM-FAILED %r" % (exc,))
-            log(root, "DENY(usage-net pct=%s) %s" % (round(v.get("pct") or 0), desc))
+            log(root, "DENY(usage-net pct=%s%s) %s" % (driving_pct(v) + (desc,)))
             deny(event, "dispatch gate: %s ⛔ You are in the NET zone - a STOP was relaxed "
                         "because the window resets soon and the budget survives. Keep doing "
                         "your OWN work, but dispatching a NEW sub-agent is refused: it can burn "
@@ -3688,6 +3704,20 @@ def selftest():
     # unknowable - measured three times today with three different messages. systemMessage is
     # the one channel a model cannot swallow, so the two loud events must carry one.
     import inspect
+    # ⛔ NOBODY READS THE FIVE-HOUR FIGURE DIRECTLY AGAIN. This is the root-cause pin, and it
+    # exists because the first fix was incomplete: 0.60.2 corrected the acknowledgement line
+    # and left four sites taking `v["pct"]` whatever drove the verdict - including the
+    # `systemMessage` of the dispatch REFUSAL, the strongest thing this plugin says. A
+    # per-message check would have to be written once per message and would miss the fifth.
+    assert driving_pct({"driver": "7d", "pct": 3, "pct_7d": 98.6}) == ("7d ", 99), \
+        driving_pct({"driver": "7d", "pct": 3, "pct_7d": 98.6})
+    assert driving_pct({"driver": "5h", "pct": 90.4, "pct_7d": 10}) == ("", 90), \
+        driving_pct({"driver": "5h", "pct": 90.4, "pct_7d": 10})
+    assert driving_pct({}) == ("", 0), driving_pct({})      # no driver, no crash
+    for _fn in (on_user_prompt, on_pre_agent):
+        assert 'v.get("pct") or 0' not in inspect.getsource(_fn), \
+            ("%s takes the FIVE-HOUR percentage directly - it must use driving_pct(v), or it "
+             "prints 3%% while the WEEK is at 99%%" % _fn.__name__)
     src = inspect.getsource(on_user_prompt)
     assert "systemMessage=" in src, "the wind-down no longer speaks to the user"
     assert "winding down" in src, "the acknowledgement line was dropped"
