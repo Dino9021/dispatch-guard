@@ -80,10 +80,30 @@ agent 原封不動印出的確認行是**一個** format string 餵 `v["verdict"
   ⚠ 重置時間太近（`usage._relax` 放行成 GO）或 `warned` 標記已經寫過，`on_user_prompt()`
   什麼都不印 —— 那不是安靜通過，是 `json.loads("")` 直接拋錯，訊息會指向 JSON 而不是措辭。
   真正守住那條路的是那個陽性對照：`usage.verdict()` 必須先讀成受測的那個判定。
-- **六個突變全部被新的斷言殺掉**（不是被舊的那一句）：把 PACE 的字改回從 `v["verdict"]` 組出來、
-  把 "winding down" 塞回 PACE 的逃生口、拿掉表格的 PACE 列、把 END THE TURN 和 dropping 塞進
-  PACE 的尾句、以及讓技能 §17 說回「PACE 才交接」和拿掉那一句。每一個都讀 AssertionError 的
-  **訊息**，確認不是被別的檢查攔下。
+- ⛔ **而畫面那個欄位要自己一行。** 那個線索檢查一開始只讀 `additionalContext`，第二輪量到把
+  `seen_why` 改成在**使用者畫面上**下令交接，整套測試照樣全綠。現在兩個欄位都檢查，而且規則
+  不同：線索只准出現在 STOP 的 `additionalContext`，`systemMessage` 在**任何**判定都不准有 ——
+  那個欄位是給人的一行預期說明，它不下任何命令。
+- **兩個散文樣式是刻意收緊的,那是修正,不是疏漏。** 第一版只要 PACE 出現在
+  「hand over when the verdict」附近就命中，第二輪量到它**對正確的規則變紅** —— 用最自然的
+  寫法寫出來的那一句（"You hand over when the verdict is STOP, not PACE"）。會擋住正確編輯的
+  偵測器，比漏掉一個改寫更糟：刪掉那一句本來就有必要句在守，而一次誤紅會讓下一個踩到的人
+  直接把檢查刪了。現在除了兩個陽性對照，還有四個**偽陽性**對照一起出貨。
+- **必要句那個迴圈會數自己跑了幾次**，而 PACE 的失敗訊息也不再把原因推給燒率行。篩選條件
+  一個都沒中的迴圈，什麼都沒斷言卻回報成功 —— 那正是判定集合檢查堵住的同一條安靜的路。
+- `dispatch-protocol` 原本寫交接「只由那個『字』觸發」，沒說是哪一個字。現在兩個語言側都
+  指名 **STOP**，並明講 PACE 不是。
+- **總共八個突變，每一個都被它針對的那個斷言殺掉**，而且每一個都讀 AssertionError 的**訊息**，
+  不看結束碼。其中兩個是對 `3e1ee3b` 手動跑的：把 PACE 的字改回從 `v["verdict"]` 組出來、
+  把 "winding down" 塞回 PACE 的逃生口。另外六個寫成可重跑的腳本，在
+  `Memory/tasks/20260918-092012-pace-says-winding-down/scratch/04-fix/mutate.py`：表格少掉
+  PACE 列、把 END THE TURN 和 dropping 塞進 PACE 尾句、讓技能 §17 說回「PACE 才交接」、
+  以及在兩個語言各拿掉那一句。
+  ⚠ 那個腳本現在也記下兩個會讓突變**看起來像通過**的陷阱：錨點字串含 `\n` 的話，在這個
+  倉庫的 CRLF 檔案裡一個都不會中，那個 case 會被跳過；而整個 `test_guards.py` 會在到達散文
+  釘子之前，先中止在那個已知的 state-directory log 檔案大小比對上，所以技能的突變直接呼叫
+  `case_burn_figure_never_winds_down`。不過那個釘子還是有用整個檔案證明過 —— 第三次嘗試，
+  等到那個鄰居安靜的時候。
 - `README.md` 兩個語言側都更新了，順手修掉同一段裡過期的門檻數字：那裡寫「PACE 預設 85%、
   STOP 預設 93%」，實際是 `soft_pct_5h` 75 和 `hard_pct_5h` 85，而且範例用的 90% 其實已經是 STOP。
 
@@ -2406,11 +2426,36 @@ not work; the LINE is what needs fixing.**
   silent pass, it is `json.loads("")` raising, with a message about JSON rather than about the
   wording. What actually guards that route is the positive control: `usage.verdict()` must first
   read the fixture as the verdict under test.
-- **Six mutations killed, each by the NEW assertion** and not by an older one: rebuilding the
-  PACE words from `v["verdict"]`; putting "winding down" back into the PACE escape hatch;
-  removing the PACE row from the table; putting `END THE TURN` and `dropping` into the PACE
-  tail; and making skill §17 say "hand over at PACE" again, then removing that sentence
-  altogether. Each verified by reading the AssertionError **message**.
+- ⛔ **AND THE SCREEN FIELD NEEDS ITS OWN ROW.** The cue check first read `additionalContext`
+  alone, and round 2 measured `seen_why` rewritten to order a handover on the USER'S SCREEN
+  passing the whole suite. Both fields are checked now, with different rules: a cue belongs in
+  `additionalContext` at STOP and nowhere else, and in `systemMessage` at NO verdict - that
+  field is the person's one-line expectation note and issues no orders at all.
+- **The two prose patterns are TIGHT, and that is the fix, not an oversight.** The first
+  version matched PACE anywhere near "hand over when the verdict", and round 2 measured it
+  going **red on the CORRECT rule** written the obvious way ("You hand over when the verdict is
+  STOP, not PACE"). A detector that blocks the right edit is worse than one that misses a
+  paraphrase: the required sentence already catches removal, while a false red gets the check
+  deleted by the next person who hits it. Four false-positive controls now ship beside the two
+  positive ones.
+- **The required-sentence loop counts its iterations**, and the failure message for a PACE
+  finding no longer blames the burn figure. A loop whose filter matches nothing asserts nothing
+  and reports success - the same silent route the verdict-set check closes.
+- `dispatch-protocol` said handing over is "triggered by the WORD" without naming which. It
+  names **STOP** now, in both languages, and says PACE is not one.
+- **Eight mutations killed in total, each by the assertion it was aimed at**, every one verified
+  by reading the AssertionError **message** rather than the exit code. Two were run by hand
+  against `3e1ee3b` - rebuilding the PACE words from `v["verdict"]`, and putting "winding down"
+  back into the PACE escape hatch. The other six are scripted and repeatable in
+  `Memory/tasks/20260918-092012-pace-says-winding-down/scratch/04-fix/mutate.py`: the table
+  losing its PACE row, `END THE TURN` and `dropping` in the PACE tail, skill §17 saying "hand
+  over at PACE" again, and that sentence removed in each language.
+  ⚠ Two traps that script now documents, both of which make a mutation look like a pass: an
+  anchor containing `\n` matches nothing in this repository's CRLF files and the case is
+  SKIPPED; and the whole of `test_guards.py` aborts on the known state-directory log-size
+  comparison BEFORE reaching the prose pin, so the skill mutations drive
+  `case_burn_figure_never_winds_down` directly. The pin was still proven through the whole
+  file, on the third attempt, once that neighbour was quiet.
 - `README.md` updated on both language sides, and a stale threshold in the same block fixed
   along with it: it said PACE defaults to 85% and STOP to 93%, where the real defaults are
   `soft_pct_5h` 75 and `hard_pct_5h` 85 - and its 90% example is already a STOP.

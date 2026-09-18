@@ -3680,9 +3680,9 @@ def selftest():
     # ⛔ AND PACE AND STOP MUST NOT SHARE ONE WORDING - DRIVEN, NOT READ. The assertion above
     # is satisfied by the STOP branch alone, so on its own it passes while a PACE session is
     # being told to wind down again; the defect WAS one format string serving two verdicts, so
-    # the check has to see the two OUTPUTS. ⚠ Both directions per verdict: a one-sided absence
-    # test ("no 'winding down' at PACE") also passes on EMPTY output, which is what a relaxed
-    # verdict or an already-set `warned` mark produces.
+    # the check has to see the two OUTPUTS. ⚠ Both directions per verdict, because an absence
+    # test alone cannot tell a fixed branch from a branch that never ran - see the positive
+    # control below, which is what actually guards the routes that emit nothing.
     import contextlib as _cl3, io as _io3
     def _prompt_out(pct5, sid):
         """Run on_user_prompt() on a fabricated 5h percentage; return (verdict, json)."""
@@ -3734,12 +3734,21 @@ def selftest():
             assert _not not in _text, \
                 "%s %s says %r - the two verdicts share one wording again: %r" \
                 % (_want, _where, _not, _text)
-        # ⛔ AND THE WIND-DOWN INSTRUCTIONS THEMSELVES STAY STOP-ONLY. The acknowledgement
-        # LINE is only the label; a PACE tail rewritten to demand a handoff and the end of the
-        # turn would satisfy every assertion above while doing the exact damage this fixes.
-        for _cue in ("END THE TURN", "dropping"):
-            assert (_cue in _ctx) is (_want == "STOP"), \
-                "%s must%s order %r: %r" % (_want, "" if _want == "STOP" else " NOT", _cue, _ctx)
+            # ⛔ AND THE WIND-DOWN INSTRUCTIONS THEMSELVES STAY STOP-ONLY, IN BOTH FIELDS.
+            # The acknowledgement LINE is only the label; a PACE tail rewritten to demand a
+            # handoff and the end of the turn satisfies every assertion above while doing the
+            # exact damage this fixes. ⚠ And the SCREEN field needs its own row: a first
+            # version checked `additionalContext` alone, and round 2 measured `seen_why`
+            # rewritten to order a handover on the user's screen passing the whole suite.
+            # ⭐ The rule is not the same for the two fields. `additionalContext` carries the
+            # orders, so a cue belongs there at STOP and nowhere else; `systemMessage` is the
+            # person's one-line expectation note and issues no orders at all, so a cue in it
+            # is wrong at EVERY verdict.
+            for _cue in ("END THE TURN", "dropping"):
+                _may = _want == "STOP" and _where == "additionalContext"
+                assert (_cue in _text) is _may, \
+                    "%s %s must%s carry %r: %r" \
+                    % (_want, _where, "" if _may else " NOT", _cue, _text)
     # ⛔ AND BOTH ROWS MUST HAVE RUN. Nothing above notices a table that lost its PACE row -
     # delete it and every assertion here passes while the hook orders a PACE session to wind
     # down. An unchecked fixture list is the third silent route, beside usage._relax and the

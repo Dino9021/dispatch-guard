@@ -1969,9 +1969,19 @@ def case_burn_figure_never_winds_down():
         # beside a hook that agreed with them: the owner ruled on 2026-09-17 that PACE means
         # start no new batch, and STOP is the one that winds down. ⚠ The English one spanned a
         # line break in the file, so it needs [\s\S] and not [^\n].
-        (r"hand over when the verdict[\s\S]{0,20}PACE", "makes PACE a handover trigger"),
-        (r"判定說[^\n]{0,20}PACE[^\n]{0,20}才交接", "makes PACE a handover trigger (zh)"),
+        # ⛔ TIGHT ON PURPOSE - `says **PACE**` and `判定說 **PACE**`, not PACE anywhere
+        # nearby. Round 2 measured the loose version going RED on the CORRECT rule written the
+        # obvious way ("You hand over when the verdict is STOP, not PACE", "判定說 PACE 不是
+        # 交接，STOP 才交接"). A detector that blocks the right edit is worse than one that
+        # misses a paraphrase, because the REQUIRED sentence below already catches removal,
+        # while a false red costs somebody an afternoon and teaches them to delete the check.
+        (r"hand over when the verdict[\s\S]{0,6}says \*\*PACE\*\*",
+         "makes PACE a handover trigger"),
+        (r"判定說\s*\*\*PACE\*\*[^\n]{0,20}才交接", "makes PACE a handover trigger (zh)"),
     )
+    # ⚠ WHICH PATTERNS ARE ABOUT PACE, so the failure does not blame the burn figure for a
+    # finding that has nothing to do with it. Index into FORBIDDEN, kept beside it.
+    PACE_PATS = (6, 7)
     # ⚠ The scoping sentence is REQUIRED, not merely the bad one absent. A file that says
     # nothing about N leaves the agent to infer, and inference is what this is fixing.
     REQUIRED = {"SKILL.md": "At GO you keep working",
@@ -1982,10 +1992,13 @@ def case_burn_figure_never_winds_down():
     for path in paths:
         with open(path, encoding="utf-8") as f:
             text = f.read()
-        for pat, why in FORBIDDEN:
+        for _i, (pat, why) in enumerate(FORBIDDEN):
             assert not re.search(pat, text), \
-                "%s %s - the burn figure sizes the NEXT block, it never winds anybody down" \
-                % (path, why)
+                "%s %s - %s" % (path, why,
+                                "PACE means start no new batch; STOP is the verdict that "
+                                "hands over (owner's ruling, 2026-09-17)" if _i in PACE_PATS
+                                else "the burn figure sizes the NEXT block, it never winds "
+                                     "anybody down")
         if "SPENT in" not in text:
             continue                      # this file does not carry the rule at all
         seen += 1
@@ -2010,11 +2023,23 @@ def case_burn_figure_never_winds_down():
     assert re.search(FORBIDDEN[6][0], "You hand over when the verdict\nsays **PACE** or "
                                       "**STOP** - never because"), FORBIDDEN[6][0]
     assert re.search(FORBIDDEN[7][0], "判定說 **PACE** 或 **STOP** 才交接"), FORBIDDEN[7][0]
+    # ⛔ AND THE FALSE-POSITIVE CONTROL, which is the half a detector normally lacks. Round 2
+    # measured the loose first version going RED on the CORRECT rule written the obvious way,
+    # so these two lines are the reason the patterns are tight. A detector that blocks the
+    # right edit gets deleted by the next person who hits it.
+    for ok in ("You hand over when the verdict is STOP, not PACE.",
+               "判定說 PACE 不是交接，STOP 才交接。",
+               "⛔ AND PACE IS NOT A HANDOVER. It means start no new batch.",
+               "⛔ 而 PACE 不是交接。它的意思是不要開新的一批。"):
+        for pat, why in (FORBIDDEN[i] for i in PACE_PATS):
+            assert not re.search(pat, ok), \
+                "the detector calls a CORRECT sentence %r: %r fires on %r" % (why, pat, ok)
     # ⛔ AND SAYING IT IS REQUIRED, not merely the bad line absent - the same argument as
     # REQUIRED above. A file that says nothing leaves the agent to infer from "the window is
     # closing", and inference is what put the hook and the skill on opposite sides.
     PACE_SAYS = {"SKILL.md": "PACE IS NOT A HANDOVER",
                  "SKILL.zh-TW.md": "PACE 不是交接"}
+    pace_seen = 0
     for path in paths:
         if "unattended-work" not in path.replace("\\", "/"):
             continue
@@ -2024,6 +2049,13 @@ def case_burn_figure_never_winds_down():
         assert want in text, "%s never says %r - PACE means start no new batch, and STOP is " \
                              "the verdict that hands over (owner's ruling, 2026-09-17)" \
                              % (path, want)
+        pace_seen += 1
+    # ⛔ AND THE FILTER MUST HAVE MATCHED SOMETHING. A loop that iterates zero times asserts
+    # nothing and reports success - the same silent route the verdict-set check closes in
+    # dispatch_gate.py's selftest. Rename the skill folder and this says so instead of
+    # passing.
+    assert pace_seen == 2, \
+        "expected both unattended-work SKILL files, found %d in %r" % (pace_seen, paths)
     print("ok - the burn figure sizes the next block and winds nobody down, in both languages")
 
 

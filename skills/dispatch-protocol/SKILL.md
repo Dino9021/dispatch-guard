@@ -143,7 +143,8 @@ number. Never compute headroom from raw percentages.
 rate the 5h window is SPENT in ~N min - M min BEFORE it resets.`
 
 ⛔ **N NEVER WINDS YOU DOWN.** Handing over, writing `HANDOFF.md` and arming a resume are
-triggered by the WORD, and by nothing else. N answers exactly one question: **does the block I
+triggered by the word **STOP**, and by nothing else — not by N, and not by PACE either, which
+means start no new batch and nothing more. N answers exactly one question: **does the block I
 am about to START fit inside N?** It fits → start it. It does not → start a smaller one. That
 is the whole of it. **At GO you keep working, however small N is.**
 

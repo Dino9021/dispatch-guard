@@ -135,7 +135,8 @@ gate 會去 stat 它的提示詞要求建立的那些檔案，少了就說出來
 那一行有時候會多印一句：`⛔ At the current rate the 5h window is SPENT in ~N min - M min
 BEFORE it resets.`
 
-**交接、寫 `HANDOFF.md`、預約續跑，只由那個「字」觸發，其他什麼都不觸發。**
+**交接、寫 `HANDOFF.md`、預約續跑，只由 STOP 這個字觸發，其他什麼都不觸發** —— 不是 N，
+也不是 PACE；PACE 的意思只有「不要開新的一批」。
 N 只回答一個問題：**我接下來要開的這一塊，塞得進 N 嗎？** 塞得進就開；塞不進就換一塊小的。
 就這樣而已。⭐ **判定是 GO 就繼續做，不管 N 多小。**
 
