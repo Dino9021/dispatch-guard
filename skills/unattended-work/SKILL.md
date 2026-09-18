@@ -165,11 +165,18 @@ Prepare first: (1) a standalone handover document (state, decisions, done/not-do
 tried-and-failed); (2) the next session's prompt saved as its own file, written to stand
 completely alone. Re-verify every cited line number at the moment of writing.
 
-⛔ **USAGE IS A DIFFERENT TRIGGER, AND ONLY THE WORD PULLS IT.** You hand over when the verdict
-says **PACE** or **STOP** — never because the `SPENT in ~N min` sentence appeared. That figure
-sizes the NEXT block and nothing else, and it is loudest early in a window when headroom is
-largest. `dispatch-protocol` carries the full rule with its measurement; this paragraph is its
-scope line, and both have to stay. **At GO you keep working.**
+⛔ **USAGE IS A DIFFERENT TRIGGER, AND ONLY THE WORD PULLS IT.** **STOP** is the verdict that
+hands over — never the `SPENT in ~N min` sentence. That figure sizes the NEXT block and nothing
+else, and it is loudest early in a window when headroom is largest. `dispatch-protocol` carries
+the full rule with its measurement; this paragraph is its scope line, and both have to stay.
+**At GO you keep working.**
+
+⛔ **AND PACE IS NOT A HANDOVER.** It means start no new batch — no new wave, no new heavy
+block — and you carry on with what is in flight, dropping nothing. ⚠ This line used to say you
+hand over at PACE **or** STOP, and through 0.60.0 the hook agreed with it: at PACE it ordered
+the agent, in capitals, to print `PACE at N% - winding down` and to name what it was dropping.
+Sessions obeyed. The owner ruled on 2026-09-17 that PACE means no new batch; 0.60.1 fixed the
+hook, which now says `PACE at N% - no new batch`.
 
 Once HANDOFF.md is on disk, the gate arms the resume itself when your turn ends at PACE/STOP
 (0.58.0); `resume.py --status` shows it, and if it shows none, arm it yourself — an unarmed

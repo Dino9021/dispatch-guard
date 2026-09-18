@@ -33,6 +33,65 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.60.1
+
+**hook 在 PACE 命令 agent 宣告收尾,它不該這樣。** 主人 2026-09-17 裁定：**PACE 的意思是
+「不要開新的一批」，STOP 才是收尾那一個。** 技能文字一直就是這樣寫的，程式卻不是：那句要求
+agent 原封不動印出的確認行是**一個** format string 餵 `v["verdict"]`，所以在 PACE 時它用大寫
+命令 agent 印 `PACE at N% - winding down`，並且「用一句話說你**丟掉了什麼**」—— 每一個 prompt
+都來一次。
+
+⇒ 那等於把 PACE 當 STOP 在跑，而且它比它牴觸的技能散文大聲。2026-09-17 量到兩次：規則
+已經寫在 `dispatch-protocol`、`unattended-work` §17 和機器的記憶檔裡，session 還是提早收尾。
+⛔ **重述規則沒有用，要修的是那一行。**
+
+- **兩個判定各有自己的措辭。** STOP 保留原文（`STOP at N% - winding down`、「你丟掉了什麼」、
+  逃生口 `- NOT winding down`）。PACE 改成 `PACE at N% - no new batch`，並且明講「在 PACE 你
+  什麼都不丟、也不交接，只是不要開新的一批或新的重工作」，逃生口是
+  `- starting a new batch anyway`。⚠ 逃生口刻意不含 "winding down" 四個字：否則檢查會被一個
+  仍然在畫面上說收尾的字串滿足。
+- **確認行的機制留著,只換字。** 要求一行原封不動的輸出，是「它一直在工作」跟「它從來沒收到」
+  唯一分得開的辦法。
+- ⭐ **畫面和 transcript 由同一個變數餵。** 兩個欄位（`additionalContext` 給模型、
+  `systemMessage` 給人）現在共用一個 `ack_line`，所以「畫面叫你等的那一行」不可能再和
+  「transcript 被要求印的那一行」漂開。那種漂移從椅子上看不出來：人會在等一個沒有人要求的字。
+- **技能的散文也在說反話,一併修好。** `unattended-work` §17 原本寫「判定說 **PACE** 或
+  **STOP** 才交接」—— 和 hook 站在同一邊，兩邊一起叫 session 在 PACE 交接。兩個語言側現在都
+  明講「⛔ 而 PACE 不是交接」。⚠ 這一條是審查第一輪的阻擋項：程式修好、`PENDING.md` 卻把
+  這一半標成 FIXED，而技能還在說反話。
+- ⭐ **散文的回歸被釘住了。** `test_guards.py` 既有的 `case_burn_figure_never_winds_down`
+  多兩個 FORBIDDEN 樣式（出貨過的原文，英中各一）和一組必須出現的句子，所以技能文字退回去
+  會是紅的，不是只有人讀得出來。
+- **「batch」綁到「wave」。** `dispatch-protocol` 給 batch 一個較窄的技術意義（主人核可的
+  **併發**群組），所以 `no new batch` 可能被讀成「我這一個循序子任務不算」。確認行後面那一句
+  現在明講：新的一批指新的派工波或新的重工作，**循序的也算**。
+- **檢查是驅動出來的,不是讀原始碼。** selftest 用 PACE（5h 78%）和 STOP（5h 90%）兩份 payload
+  實際跑 `on_user_prompt()`，再讀它產生的兩個欄位。⛔ 原本的 `assert "winding down" in src`
+  單獨留著會通過，因為新程式的 STOP 分支照樣滿足它 —— 缺陷本來就是一句服務兩個判定。
+- **斷言的是整行,不是那個片語。** 比對 `` `PACE at 78% - no new batch` `` 會連判定字和百分比
+  一起釘住；而在**兩個欄位**比對**同一個**字串，是唯一釘住那句標題主張的東西 —— 畫面不可能
+  跑去等一行 transcript 沒有被要求印的字。
+- ⛔ **收尾的指令本身也必須留在 STOP。** 確認行只是標籤：把 PACE 的尾句改成要求 handoff 和
+  END THE TURN，上面每一個斷言都還是綠的，傷害卻一模一樣。所以 `END THE TURN` 和 `dropping`
+  在 PACE 斷言為不存在、在 STOP 斷言為存在。
+- ⛔ **而且兩列都必須真的跑過。** 驅動用的表格少掉 PACE 那一列，上面所有斷言都會通過 ——
+  那是第三條安靜的路，和 `usage._relax`、`warned` 標記並列。現在比對跑過的判定集合，
+  表格也補了尾逗號，所以刪掉一列不會讓元組退化成它自己那一列。
+  ⚠ 重置時間太近（`usage._relax` 放行成 GO）或 `warned` 標記已經寫過，`on_user_prompt()`
+  什麼都不印 —— 那不是安靜通過，是 `json.loads("")` 直接拋錯，訊息會指向 JSON 而不是措辭。
+  真正守住那條路的是那個陽性對照：`usage.verdict()` 必須先讀成受測的那個判定。
+- **六個突變全部被新的斷言殺掉**（不是被舊的那一句）：把 PACE 的字改回從 `v["verdict"]` 組出來、
+  把 "winding down" 塞回 PACE 的逃生口、拿掉表格的 PACE 列、把 END THE TURN 和 dropping 塞進
+  PACE 的尾句、以及讓技能 §17 說回「PACE 才交接」和拿掉那一句。每一個都讀 AssertionError 的
+  **訊息**，確認不是被別的檢查攔下。
+- `README.md` 兩個語言側都更新了，順手修掉同一段裡過期的門檻數字：那裡寫「PACE 預設 85%、
+  STOP 預設 93%」，實際是 `soft_pct_5h` 75 和 `hard_pct_5h` 85，而且範例用的 90% 其實已經是 STOP。
+
+⚠ **`SPENT in ~N min` 那條燒率行是另一件事,不在這個版本裡。**
+見 `Memory/tasks/20260914-124312-burn-line-read-as-a-stop-signal/`。
+
+---
+
 ## 0.60.0
 
 **一台機器上只有一個 session 的 resume 活得下來,現在每個 session 各有一份。** 整套機制的每一個
@@ -2283,6 +2342,81 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.60.1
+
+**At PACE the hook ordered the agent to announce a wind-down. It must not.** The owner ruled on
+2026-09-17: **PACE means "start no new batch"; STOP is the one that winds down.** The skills
+already said exactly that; the code did not. The acknowledgement line the agent is ordered to
+print verbatim came out of **one** format string fed `v["verdict"]`, so at PACE it told the
+agent, in capitals and on every prompt, to print `PACE at N% - winding down` and to say in one
+sentence **what it was dropping**.
+
+⇒ That is PACE run as STOP, and it was louder than the skill prose it contradicted. Measured
+twice on 2026-09-17: the rule was already in `dispatch-protocol`, in `unattended-work` §17 and
+in this machine's memory file, and sessions still stopped early. ⛔ **Restating the rule does
+not work; the LINE is what needs fixing.**
+
+- **Each verdict has its own wording.** STOP keeps today's text (`STOP at N% - winding down`,
+  "what you are dropping", escape hatch `- NOT winding down`). PACE becomes
+  `PACE at N% - no new batch` and says plainly that at PACE the session drops NOTHING and hands
+  nothing back - it only refrains from starting a new wave or a new heavy block. Its escape
+  hatch is `- starting a new batch anyway`. ⚠ That phrase deliberately avoids the words
+  "winding down": otherwise the new check is satisfied by a string that still says it on screen.
+- **The acknowledgement MECHANISM stays; only the words change.** Demanding one verbatim line is
+  the only thing that separates "it kept working" from "it never heard".
+- ⭐ **The screen and the transcript are fed by ONE variable.** Both fields
+  (`additionalContext` for the model, `systemMessage` for the person) now build from a single
+  `ack_line`, so the line the screen tells you to wait for cannot drift from the line the
+  transcript is ordered to print. That drift is invisible from a chair: the person waits for
+  words nothing demands.
+- **The skill's own prose said the opposite, and is fixed with it.** `unattended-work` §17 read
+  "You hand over when the verdict says **PACE** or **STOP**" - it stood on the hook's side, and
+  the two of them together told a session to hand over at PACE. Both language sides now say
+  "⛔ AND PACE IS NOT A HANDOVER". ⚠ This was round 1's blocking finding: the code was fixed
+  while `PENDING.md` closed that half as FIXED and the skill still contradicted it.
+- ⭐ **The prose regression is pinned.** `test_guards.py`'s existing
+  `case_burn_figure_never_winds_down` gains two FORBIDDEN patterns - the phrasings that actually
+  shipped, one per language - and one required sentence, so the skill text going back is RED and
+  not merely noticeable to a careful reader.
+- **"batch" is bound to "wave".** `dispatch-protocol` gives batch a narrower technical sense (an
+  owner-approved CONCURRENT group), so `no new batch` could be read as not covering one more
+  ordinary sequential sub-task. The sentence after the acknowledgement line now says it plainly:
+  a new batch means a new dispatch wave or a new heavy block, **sequential ones included**.
+- **The check is DRIVEN, not read.** The selftest runs `on_user_prompt()` with a PACE payload
+  (5h 78%) and a STOP payload (5h 90%) and reads the two fields it emits. ⛔ The old
+  `assert "winding down" in src` passes on its own, because the new STOP branch still satisfies
+  it - the defect was one string serving two verdicts, so the check has to see the two OUTPUTS.
+- **It asserts the whole LINE, not the phrase.** Matching `` `PACE at 78% - no new batch` ``
+  pins the verdict word and the percentage too; and matching the SAME string in BOTH fields is
+  the only thing that pins the headline claim - that the screen cannot come to expect a line the
+  transcript is not ordered to print.
+- ⛔ **The wind-down INSTRUCTIONS stay STOP-only as well.** The acknowledgement line is only the
+  label: a PACE tail rewritten to demand a handoff and the end of the turn satisfies every
+  assertion above while doing the identical damage. So `END THE TURN` and `dropping` are
+  asserted ABSENT at PACE and PRESENT at STOP.
+- ⛔ **And both rows must actually have run.** Drop the PACE row from the driving table and every
+  assertion above passes - the third silent route, beside `usage._relax` and the `warned` mark.
+  The set of verdicts driven is now checked, and the table carries a trailing comma so removing
+  a row cannot degenerate the tuple into that row.
+  ⚠ Correcting an earlier claim in this entry: when a reset is too close (`usage._relax` returns
+  GO) or the `warned` mark is already set, `on_user_prompt()` prints nothing - that is not a
+  silent pass, it is `json.loads("")` raising, with a message about JSON rather than about the
+  wording. What actually guards that route is the positive control: `usage.verdict()` must first
+  read the fixture as the verdict under test.
+- **Six mutations killed, each by the NEW assertion** and not by an older one: rebuilding the
+  PACE words from `v["verdict"]`; putting "winding down" back into the PACE escape hatch;
+  removing the PACE row from the table; putting `END THE TURN` and `dropping` into the PACE
+  tail; and making skill §17 say "hand over at PACE" again, then removing that sentence
+  altogether. Each verified by reading the AssertionError **message**.
+- `README.md` updated on both language sides, and a stale threshold in the same block fixed
+  along with it: it said PACE defaults to 85% and STOP to 93%, where the real defaults are
+  `soft_pct_5h` 75 and `hard_pct_5h` 85 - and its 90% example is already a STOP.
+
+⚠ **The `SPENT in ~N min` burn line is a SEPARATE issue and is not in this release.**
+See `Memory/tasks/20260914-124312-burn-line-read-as-a-stop-signal/`.
 
 ---
 

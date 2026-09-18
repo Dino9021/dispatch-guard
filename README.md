@@ -967,23 +967,28 @@ install.py --disable-auto-task     # 關掉
 
 ### 你會看到的東西
 
-到達 PACE（預設 85%）或 STOP（預設 93%）時，畫面上會出現：
+到達 PACE（`soft_pct_5h`，預設 75%）或 STOP（`hard_pct_5h`，預設 85%）時，畫面上會出現：
 
 ```
-dispatch-guard: usage PACE at 90%. Dispatch is still allowed; scope should shrink.
-Expect the agent to acknowledge with `PACE at 90% - winding down`;
+dispatch-guard: usage PACE at 78%. Dispatch is still allowed; do not start a new wave.
+Expect the agent to acknowledge with `PACE at 78% - no new batch`;
 if that line does not appear, it did not act on it.
 ```
 
 ⇒ **然後看 agent 的下一則訊息第一行**。它被要求原封不動印出：
 
 ```
-PACE at 90% - winding down
+PACE at 78% - no new batch
 ```
 
 ⚠ **沒有那一行 = 它沒有處理這件事。** 那時候你可以直接接手，不用猜。
-⭐ 它也可以印 `- NOT winding down` 並說明理由 —— 那是**不同的**故障，處理方式也不同：
+⭐ 它也可以印 `- starting a new batch anyway` 並說明理由 —— 那是**不同的**故障，處理方式也不同：
 「收到但選擇繼續」跟「從來沒收到」要修的地方不一樣。
+
+⛔ **兩個判定的措辭不一樣，而且刻意不一樣。** PACE 說 `- no new batch`：它的意思只有
+「不要開新的一批」，不要求交接、也不丟掉任何東西。STOP 說 `- winding down`，那一個才
+要求收尾，逃生口是 `- NOT winding down`。到 0.60.0 為止兩個判定共用同一句，PACE 因此被
+用大寫命令去宣告收尾並點名「你丟掉了什麼」，也就是把 PACE 當成 STOP 在跑。
 
 派工在 STOP 被拒絕時，畫面上會出現：
 
@@ -2539,23 +2544,29 @@ against its task, and "it carried on working" looks exactly like "it never heard
 
 ### What you actually see
 
-At PACE (85 by default) or STOP (93), this appears on screen:
+At PACE (`soft_pct_5h`, 75 by default) or STOP (`hard_pct_5h`, 85), this appears on screen:
 
 ```
-dispatch-guard: usage PACE at 90%. Dispatch is still allowed; scope should shrink.
-Expect the agent to acknowledge with `PACE at 90% - winding down`;
+dispatch-guard: usage PACE at 78%. Dispatch is still allowed; do not start a new wave.
+Expect the agent to acknowledge with `PACE at 78% - no new batch`;
 if that line does not appear, it did not act on it.
 ```
 
 ⇒ **Then read the first line of the agent's next message.** It is required to print, verbatim:
 
 ```
-PACE at 90% - winding down
+PACE at 78% - no new batch
 ```
 
 ⚠ **No line means it did not act on this.** You can take over at that point without guessing.
-⭐ It may instead print `- NOT winding down` with a reason — a DIFFERENT fault with a
-different fix: "heard it and chose to continue" is not "never received it".
+⭐ It may instead print `- starting a new batch anyway` with a reason — a DIFFERENT fault with
+a different fix: "heard it and chose to continue" is not "never received it".
+
+⛔ **THE TWO VERDICTS DO NOT SHARE A WORDING, and the difference is the point.** PACE says
+`- no new batch` and asks for nothing else: no handover, and nothing dropped. STOP says
+`- winding down`, and that one does ask the session to wrap up, with `- NOT winding down` as
+its escape hatch. Through 0.60.0 both verdicts shared one line, so a PACE session was ordered
+in capitals to announce a wind-down and to name "what you are dropping" — PACE run as STOP.
 
 When a dispatch is refused at STOP, this appears:
 

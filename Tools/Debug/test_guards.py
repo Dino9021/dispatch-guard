@@ -1964,6 +1964,13 @@ def case_burn_figure_never_winds_down():
         (r"STOP for a new wave", "turns N into a dispatch verdict"),
         (r"N\s*(?:是|就是)[^\n]{0,12}預算", "calls N a budget (zh)"),
         (r"在\s*N\s*(?:之內|以內)[^\n]{0,8}(?:寫|交接)", "tells the agent to hand over inside N (zh)"),
+        # ⛔ AND PACE IS NOT A HANDOVER EITHER - the same class of defect, one verdict over.
+        # These two are the phrasings that SHIPPED in unattended-work §17 through 0.60.0,
+        # beside a hook that agreed with them: the owner ruled on 2026-09-17 that PACE means
+        # start no new batch, and STOP is the one that winds down. ⚠ The English one spanned a
+        # line break in the file, so it needs [\s\S] and not [^\n].
+        (r"hand over when the verdict[\s\S]{0,20}PACE", "makes PACE a handover trigger"),
+        (r"判定說[^\n]{0,20}PACE[^\n]{0,20}才交接", "makes PACE a handover trigger (zh)"),
     )
     # ⚠ The scoping sentence is REQUIRED, not merely the bad one absent. A file that says
     # nothing about N leaves the agent to infer, and inference is what this is fixing.
@@ -1998,6 +2005,25 @@ def case_burn_figure_never_winds_down():
             "the detector misses 0.58.1's own wording: %r" % pat
     assert re.search(FORBIDDEN[4][0], "N 是你的預算"), FORBIDDEN[4][0]
     assert re.search(FORBIDDEN[5][0], "在 N 之內寫好交接"), FORBIDDEN[5][0]
+    # ⚠ AND THE SAME MUTATION CHECK for the two PACE patterns, against the lines that shipped
+    # in unattended-work §17 through 0.60.0 - verbatim, line break included.
+    assert re.search(FORBIDDEN[6][0], "You hand over when the verdict\nsays **PACE** or "
+                                      "**STOP** - never because"), FORBIDDEN[6][0]
+    assert re.search(FORBIDDEN[7][0], "判定說 **PACE** 或 **STOP** 才交接"), FORBIDDEN[7][0]
+    # ⛔ AND SAYING IT IS REQUIRED, not merely the bad line absent - the same argument as
+    # REQUIRED above. A file that says nothing leaves the agent to infer from "the window is
+    # closing", and inference is what put the hook and the skill on opposite sides.
+    PACE_SAYS = {"SKILL.md": "PACE IS NOT A HANDOVER",
+                 "SKILL.zh-TW.md": "PACE 不是交接"}
+    for path in paths:
+        if "unattended-work" not in path.replace("\\", "/"):
+            continue
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        want = PACE_SAYS["SKILL.zh-TW.md" if ".zh-TW." in path else "SKILL.md"]
+        assert want in text, "%s never says %r - PACE means start no new batch, and STOP is " \
+                             "the verdict that hands over (owner's ruling, 2026-09-17)" \
+                             % (path, want)
     print("ok - the burn figure sizes the next block and winds nobody down, in both languages")
 
 

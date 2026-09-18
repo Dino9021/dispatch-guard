@@ -2831,20 +2831,46 @@ def on_user_prompt(payload, root, sdir, cfg):
     # ⚠ It is not proof of obedience - nothing in a prompt can be - but it separates
     # "acknowledged and continued anyway" from "never received", which are different faults
     # with different fixes.
+    # ⛔ AND THE TWO VERDICTS DO NOT SHARE ONE WORDING. Until 0.60.1 this was ONE format
+    # string fed `v["verdict"]`, so a PACE session was ordered, in capitals, to announce a
+    # wind-down and to name "what you are dropping" - the opposite of the ruling of
+    # 2026-09-17 (PACE = start no new batch; STOP = wind down), and louder than the skill
+    # prose it contradicted. Measured twice that day: sessions stopped early because the
+    # hook's capitals outrank a skill's paragraph. Fix the LINE, not the text around it.
+    # ⭐ ONE `ack_line` VARIABLE FEEDS BOTH FIELDS. The screen must expect exactly what the
+    # transcript is ordered to print; two strings that merely agree today drift apart, and
+    # that drift is unreadable from a chair - the person waits for a line nothing demands.
+    pct = round(v.get("pct") or 0)
+    if v["verdict"] == "STOP":
+        ack_line = "`STOP at %d%% - winding down`" % pct
+        ack_tail = ("Then say in one sentence what you are finishing and what you are "
+                    "dropping. If you will NOT wind down, print that line with `- NOT "
+                    "winding down` instead and say why.")
+        seen_why = "Sub-task dispatch is now REFUSED until the window resets."
+    else:
+        # ⚠ NO "WINDING DOWN" ANYWHERE IN THIS BRANCH, escape hatch included - the selftest
+        # asserts its absence, and an escape phrase carrying the words would satisfy the
+        # assertion while putting them back on the screen.
+        ack_line = "`PACE at %d%% - no new batch`" % pct
+        # ⚠ AND "BATCH" IS BOUND TO "WAVE" HERE, on purpose. `dispatch-protocol` gives batch a
+        # narrower technical sense - an owner-approved CONCURRENT group - so a session about to
+        # start one more ordinary sequential sub-task could read `no new batch` as not applying
+        # to it, which is the same early-stop dressed as compliance.
+        ack_tail = ("Then say in one sentence what is in flight that you will finish. ⛔ At "
+                    "PACE you drop NOTHING and you hand nothing back: carry on with the work "
+                    "already started. ⚠ A new batch here means a new dispatch wave or a new "
+                    "heavy block - sequential ones included, not only an owner-approved "
+                    "concurrent group. If you WILL start one anyway, print that line with "
+                    "`- starting a new batch anyway` instead and say why.")
+        seen_why = "Dispatch is still allowed; do not start a new wave."
     ack = (" ⛔ FIRST, IN YOUR NEXT MESSAGE, PRINT EXACTLY THIS LINE AND NOTHING BEFORE IT: "
-           "`%s at %d%% - winding down`. Then say in one sentence what you are finishing and "
-           "what you are dropping. If you will NOT wind down, print that line with `- NOT "
-           "winding down` instead and say why."
-           % (v["verdict"], round(v.get("pct") or 0)))
+           "%s. %s" % (ack_line, ack_tail))
     # ⭐ AND THE SAME FACT ON THE USER'S SCREEN, through the one channel a model cannot
     # swallow. The person then holds both halves: the brake fired (this line, guaranteed) and
     # whether the agent answered for it (the line above, in the transcript).
-    seen = ("dispatch-guard: usage %s at %d%%. %s Expect the agent to acknowledge with "
-            "`%s at %d%% - winding down`; if that line does not appear, it did not act on it."
-            % (v["verdict"], round(v.get("pct") or 0),
-               "Sub-task dispatch is now REFUSED until the window resets."
-               if v["verdict"] == "STOP" else "Dispatch is still allowed; scope should shrink.",
-               v["verdict"], round(v.get("pct") or 0)))
+    seen = ("dispatch-guard: usage %s at %d%%. %s Expect the agent to acknowledge with %s; "
+            "if that line does not appear, it did not act on it."
+            % (v["verdict"], pct, seen_why, ack_line))
     context_note(payload.get("hook_event_name", "UserPromptSubmit"),
                  "[usage] " + v["text"] + extra + ack + note + armed_line,
                  systemMessage=seen + armed_line)
@@ -3651,6 +3677,75 @@ def selftest():
     src = inspect.getsource(on_user_prompt)
     assert "systemMessage=" in src, "the wind-down no longer speaks to the user"
     assert "winding down" in src, "the acknowledgement line was dropped"
+    # ⛔ AND PACE AND STOP MUST NOT SHARE ONE WORDING - DRIVEN, NOT READ. The assertion above
+    # is satisfied by the STOP branch alone, so on its own it passes while a PACE session is
+    # being told to wind down again; the defect WAS one format string serving two verdicts, so
+    # the check has to see the two OUTPUTS. ⚠ Both directions per verdict: a one-sided absence
+    # test ("no 'winding down' at PACE") also passes on EMPTY output, which is what a relaxed
+    # verdict or an already-set `warned` mark produces.
+    import contextlib as _cl3, io as _io3
+    def _prompt_out(pct5, sid):
+        """Run on_user_prompt() on a fabricated 5h percentage; return (verdict, json)."""
+        _sd, _rt = tempfile.mkdtemp(), tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(_sd, "state"), exist_ok=True)
+            _now = time.time()
+            # ⚠ THE RESET TWO HOURS OUT, deliberately: usage._relax turns a PACE or a STOP
+            # near its reset back into GO, and on_user_prompt() then returns before it builds
+            # a single word. p7 low so the FIVE-HOUR window is the driver.
+            with open(os.path.join(_sd, "token_usage.json"), "w", encoding="utf-8") as fh:
+                json.dump({"ts": int(_now * 1000),
+                           "five_hour": {"used_percentage": pct5,
+                                         "resets_at": int(_now + 2 * 3600)},
+                           "seven_day": {"used_percentage": 10,
+                                         "resets_at": int(_now + 3 * 86400)}}, fh)
+            _got = usage.verdict(_sd, usage.config(_sd))["verdict"]
+            _buf = _io3.StringIO()
+            with _cl3.redirect_stdout(_buf):
+                on_user_prompt({"hook_event_name": "UserPromptSubmit",
+                                "session_id": sid, "cwd": _rt}, _rt, _sd, dict(DEFAULTS))
+            return _got, json.loads(_buf.getvalue())
+        finally:
+            shutil.rmtree(_sd, ignore_errors=True)
+            shutil.rmtree(_rt, ignore_errors=True)
+    # ⚠ A FRESH STATE DIRECTORY EACH TIME (_prompt_out makes one): the `warned` mark is
+    # once-per-level-per-session, so a reused sdir returns early - and then `on_user_prompt()`
+    # prints nothing, `json.loads("")` raises, and the failure names JSON instead of the
+    # wording. Distinct session ids would separate the marks too; the fresh directory also
+    # keeps `usage.config()` off this machine's real thresholds.
+    # ⭐ THE WHOLE LINE, NOT THE PHRASE. Asserting `PACE at 78% - no new batch` pins the
+    # verdict word and the percentage as well, and asserting the SAME string in both fields is
+    # the only thing that pins the headline claim - that the screen cannot come to expect a
+    # line the transcript is not ordered to print.
+    _seen = set()
+    for _pct, _want, _line, _not in (
+            (78, "PACE", "`PACE at 78% - no new batch`", "winding down"),
+            (90, "STOP", "`STOP at 90% - winding down`", "no new batch"),):
+        _got, _out = _prompt_out(_pct, "wd-" + _want)
+        # positive control: the fixture really did read as the verdict under test
+        assert _got == _want, "5h %d%% read as %s, not %s" % (_pct, _got, _want)
+        _seen.add(_got)
+        _ctx = _out.get("hookSpecificOutput", {}).get("additionalContext", "")
+        for _where, _text in (("additionalContext", _ctx),
+                              ("systemMessage", _out.get("systemMessage", ""))):
+            assert _line in _text, \
+                "%s %s lost %r - both fields must carry the one acknowledgement line: %r" \
+                % (_want, _where, _line, _text)
+            assert _not not in _text, \
+                "%s %s says %r - the two verdicts share one wording again: %r" \
+                % (_want, _where, _not, _text)
+        # ⛔ AND THE WIND-DOWN INSTRUCTIONS THEMSELVES STAY STOP-ONLY. The acknowledgement
+        # LINE is only the label; a PACE tail rewritten to demand a handoff and the end of the
+        # turn would satisfy every assertion above while doing the exact damage this fixes.
+        for _cue in ("END THE TURN", "dropping"):
+            assert (_cue in _ctx) is (_want == "STOP"), \
+                "%s must%s order %r: %r" % (_want, "" if _want == "STOP" else " NOT", _cue, _ctx)
+    # ⛔ AND BOTH ROWS MUST HAVE RUN. Nothing above notices a table that lost its PACE row -
+    # delete it and every assertion here passes while the hook orders a PACE session to wind
+    # down. An unchecked fixture list is the third silent route, beside usage._relax and the
+    # `warned` mark.
+    assert _seen == set(["PACE", "STOP"]), \
+        "the wording check stopped driving both verdicts: %r" % (sorted(_seen),)
     src2 = inspect.getsource(on_pre_agent)
     assert "systemMessage=" in src2, "a refused dispatch no longer speaks to the user"
     # ⛔ AND A FULL-SLOTS REFUSAL MUST CARRY THE HOLDER AND ITS CLOCK. The function exists
