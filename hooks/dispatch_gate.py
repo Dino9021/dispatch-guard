@@ -2840,9 +2840,23 @@ def on_user_prompt(payload, root, sdir, cfg):
     # ⭐ ONE `ack_line` VARIABLE FEEDS BOTH FIELDS. The screen must expect exactly what the
     # transcript is ordered to print; two strings that merely agree today drift apart, and
     # that drift is unreadable from a chair - the person waits for a line nothing demands.
-    pct = round(v.get("pct") or 0)
+    # ⛔ THE DRIVING WINDOW'S PERCENTAGE, AND IT SAYS WHICH. `pct` is always the FIVE-HOUR
+    # figure, so until 0.60.2 a verdict driven by the seven-day window printed the wrong
+    # window's number: at 5h 3% / 7d 99% `v["text"]` correctly said the WEEK was spent and the
+    # very next sentence ordered `STOP at 3% - winding down`. One message then said the brake
+    # was on and the line the person was told to watch for said 3%, which reads as a false
+    # alarm. Measured 2026-09-18 (probe in this task's folder); the defect predates 0.60.1.
+    # ⭐ `driver` is `None` only when the verdict is GO, and GO returned long before here.
+    # ⚠ The `7d ` prefix is the owner's choice of 2026-09-18, against a bare `STOP at 99%`:
+    # the number alone cannot be told from a 5h one, and the statusline is showing the 5h
+    # figure at the same moment. A 5h-driven line is unchanged, which is why nothing that
+    # quotes the shape needed editing.
+    if v.get("driver") == "7d":
+        pct, window = round(v.get("pct_7d") or 0), "7d "
+    else:
+        pct, window = round(v.get("pct") or 0), ""
     if v["verdict"] == "STOP":
-        ack_line = "`STOP at %d%% - winding down`" % pct
+        ack_line = "`STOP at %s%d%% - winding down`" % (window, pct)
         ack_tail = ("Then say in one sentence what you are finishing and what you are "
                     "dropping. If you will NOT wind down, print that line with `- NOT "
                     "winding down` instead and say why.")
@@ -2851,7 +2865,7 @@ def on_user_prompt(payload, root, sdir, cfg):
         # ⚠ NO "WINDING DOWN" ANYWHERE IN THIS BRANCH, escape hatch included - the selftest
         # asserts its absence, and an escape phrase carrying the words would satisfy the
         # assertion while putting them back on the screen.
-        ack_line = "`PACE at %d%% - no new batch`" % pct
+        ack_line = "`PACE at %s%d%% - no new batch`" % (window, pct)
         # ⚠ AND "BATCH" IS BOUND TO "WAVE" HERE, on purpose. `dispatch-protocol` gives batch a
         # narrower technical sense - an owner-approved CONCURRENT group - so a session about to
         # start one more ordinary sequential sub-task could read `no new batch` as not applying
@@ -2868,9 +2882,9 @@ def on_user_prompt(payload, root, sdir, cfg):
     # ⭐ AND THE SAME FACT ON THE USER'S SCREEN, through the one channel a model cannot
     # swallow. The person then holds both halves: the brake fired (this line, guaranteed) and
     # whether the agent answered for it (the line above, in the transcript).
-    seen = ("dispatch-guard: usage %s at %d%%. %s Expect the agent to acknowledge with %s; "
+    seen = ("dispatch-guard: usage %s at %s%d%%. %s Expect the agent to acknowledge with %s; "
             "if that line does not appear, it did not act on it."
-            % (v["verdict"], pct, seen_why, ack_line))
+            % (v["verdict"], window, pct, seen_why, ack_line))
     context_note(payload.get("hook_event_name", "UserPromptSubmit"),
                  "[usage] " + v["text"] + extra + ack + note + armed_line,
                  systemMessage=seen + armed_line)
@@ -3684,20 +3698,21 @@ def selftest():
     # test alone cannot tell a fixed branch from a branch that never ran - see the positive
     # control below, which is what actually guards the routes that emit nothing.
     import contextlib as _cl3, io as _io3
-    def _prompt_out(pct5, sid):
-        """Run on_user_prompt() on a fabricated 5h percentage; return (verdict, json)."""
+    def _prompt_out(pct5, sid, pct7=10):
+        """Run on_user_prompt() on fabricated percentages; return (verdict, json)."""
         _sd, _rt = tempfile.mkdtemp(), tempfile.mkdtemp()
         try:
             os.makedirs(os.path.join(_sd, "state"), exist_ok=True)
             _now = time.time()
             # ⚠ THE RESET TWO HOURS OUT, deliberately: usage._relax turns a PACE or a STOP
             # near its reset back into GO, and on_user_prompt() then returns before it builds
-            # a single word. p7 low so the FIVE-HOUR window is the driver.
+            # a single word. `pct7` defaults LOW so the FIVE-HOUR window drives; raise it to
+            # drive from the WEEK instead (soft_pct_7d 95, hard_pct_7d 97 - not 75/85).
             with open(os.path.join(_sd, "token_usage.json"), "w", encoding="utf-8") as fh:
                 json.dump({"ts": int(_now * 1000),
                            "five_hour": {"used_percentage": pct5,
                                          "resets_at": int(_now + 2 * 3600)},
-                           "seven_day": {"used_percentage": 10,
+                           "seven_day": {"used_percentage": pct7,
                                          "resets_at": int(_now + 3 * 86400)}}, fh)
             _got = usage.verdict(_sd, usage.config(_sd))["verdict"]
             _buf = _io3.StringIO()
@@ -3717,13 +3732,20 @@ def selftest():
     # verdict word and the percentage as well, and asserting the SAME string in both fields is
     # the only thing that pins the headline claim - that the screen cannot come to expect a
     # line the transcript is not ordered to print.
+    # ⛔ AND THE SEVEN-DAY ROWS, because `pct` is the FIVE-HOUR figure and the line used to
+    # print it whatever drove the verdict - `STOP at 3%` beside a text saying the WEEK was
+    # spent. The 7d rows are what pin the `7d ` label; the 5h rows are what pin that the
+    # label does NOT appear when the five-hour window drives.
     _seen = set()
-    for _pct, _want, _line, _not in (
-            (78, "PACE", "`PACE at 78% - no new batch`", "winding down"),
-            (90, "STOP", "`STOP at 90% - winding down`", "no new batch"),):
-        _got, _out = _prompt_out(_pct, "wd-" + _want)
+    for _pct, _p7, _want, _line, _not in (
+            (78, 10, "PACE", "`PACE at 78% - no new batch`", "winding down"),
+            (90, 10, "STOP", "`STOP at 90% - winding down`", "no new batch"),
+            (3, 96, "PACE", "`PACE at 7d 96% - no new batch`", "winding down"),
+            (3, 99, "STOP", "`STOP at 7d 99% - winding down`", "no new batch"),):
+        _got, _out = _prompt_out(_pct, "wd-%s-%d" % (_want, _p7), _p7)
         # positive control: the fixture really did read as the verdict under test
-        assert _got == _want, "5h %d%% read as %s, not %s" % (_pct, _got, _want)
+        assert _got == _want, \
+            "5h %d%% / 7d %d%% read as %s, not %s" % (_pct, _p7, _got, _want)
         _seen.add(_got)
         _ctx = _out.get("hookSpecificOutput", {}).get("additionalContext", "")
         for _where, _text in (("additionalContext", _ctx),

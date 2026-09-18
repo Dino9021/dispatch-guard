@@ -33,6 +33,63 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.60.2
+
+**七天視窗觸發判定時,那一行印的是五小時視窗的數字。** agent 被要求原封不動印的那一句用
+`round(v["pct"] or 0)` 組出來，而 `pct` 永遠是五小時窗的。⇒ 在 5h 3% / 7d 99% 時，判定是
+STOP、`v["text"]` 正確地說「這一週快用完了，五小時窗不是限制（5h 3%）」，緊接著的下一句卻
+命令 agent 印 `STOP at 3% - winding down` —— 同一個畫面上，一邊說剎車踩下去了，另一邊叫你
+去等一行寫著 3% 的字，讀起來像誤報。
+
+⚠ **這是既有缺陷，不是 0.60.1 造成的** —— 同一個運算式在 `550b556` 就在了。它由 0.60.1 的
+第二輪審查找到；那一輪報成印 `0%`，實際量測是印**五小時窗**的數字，只有在五小時窗完全沒動
+的時候才會是 0。
+
+- **改成印驅動窗的百分比,並且說出是哪一個窗。** 七天窗驅動時那一行變成
+  `STOP at 7d 99% - winding down`；五小時窗驅動時**完全不變**，所以任何引用那個形狀的地方
+  都不用改。`verdict()` 早就回傳 `driver` 和 `pct_7d`，不需要新的計算。
+  ⭐ 主人 2026-09-18 在兩個版本並排之下選了標出窗名，而不是只換數字的 `STOP at 99%`：光看
+  數字分不出是哪個窗，而且狀態列在同一時刻顯示的是五小時窗的數字。
+- **驅動用的表格多兩列七天窗的。** 七天窗的門檻是 `soft_pct_7d` 95 和 `hard_pct_7d` 97，
+  不是 75/85。⭐ 五小時窗那兩列現在多了一個職責：它們釘住五小時窗驅動時**不會**出現 `7d`。
+
+**`test_guards.py` 那個比對日誌檔案大小的檢查,換成比對行。** `case_selftests_never_read_the_terminal`
+原本比對真實狀態目錄日誌前後的 `len(f.read())`。但這台機器上每一個活著的 session，每一次
+Bash 呼叫都會往那裡追加一行 `CMD-ALLOW` —— 所以只要有另一個 session 在工作，斷言就紅，而
+訊息還把責任推給 selftest。
+
+⇒ **它不只是吵而已。** 那個檢查排在散文釘子的前一行，所以它一紅就**中止整個檔案**，後面的
+斷言根本沒執行 —— 用整個檔案做的突變檢查會讀成「攔下了」，而受測的斷言從來沒跑到。
+2026-09-18 量到：連續三次整檔執行，前兩次都死在它上面（105 和 143 bytes），第三次才過。
+修好之後連續三次全綠。
+
+- **比對行,並忽略活 session 的工具流量**（`CMD-ALLOW`、`CMD-DENY` —— PreToolUse 每次呼叫
+  就寫的那兩種）。視窗期間出現的其他新行一律算失敗，訊息直接印出那幾行。
+- ⚠ **刻意接受的殘餘缺口：** 如果某個 selftest 寫的是 `CMD-ALLOW` 或 `CMD-DENY`，它會溜過
+  這個篩選。替代方案是原本的大小比對，而它三次裡兩次因為別人的流量變紅，所以什麼都沒守住。
+  **一個因為無關原因而紅的檢查不是更嚴格的檢查。**
+- ⭐ **篩選器自己在同一次執行裡有對照**：它必須標記一行 `USAGE(...)`，而且必須**不**標記一行
+  `CMD-ALLOW`。少了這個，一個什麼都不匹配的篩選器會永遠回報乾淨通過。
+- **前綴比對，附集合退路**：日誌實務上只追加，但視窗期間輪替或被截斷會讓 `len(before)` 失去
+  意義，每一行舊的都會被當成新的。
+
+**四個突變被預期的斷言殺掉**，外加一個獨立探針。⛔ **那個探針的故事值得讀** ——
+`scratch/06-fix-0.60.2/`：
+
+- 「selftest 污染狀態日誌」**不能**注入 `selftest()` 裡面。把 `usage.state_dir` 導向暫存目錄的
+  隔離，是在 `if "--selftest"` 那個分支裝的，也就是在那個函式跑**之前**，所以放在函式裡的寫入
+  會進隔離區，突變量到的是空氣。
+- 更糟的是，「確認探針那一行有寫進去」的那次 `grep`，**比對到的是它自己的指令文字** —— gate
+  會把每一個 Bash 指令記進同一個檔案，所以拿字串去搜日誌，等於把那個字串放進日誌。
+- ⇒ 忠實的版本把隔離區和檢查**指到同一個暫存目錄**：出貨 selftest 自己寫了 21 行，全部被
+  標記，訊息是新的那一句，而且真實日誌零污染。
+
+⚠ **產生的程式裡不要放反斜線。** 第一版探針把換行寫成轉義序列，注入的那一層把它變成真的
+換行，檔案就不能解析了，`--selftest` 結束碼 1 —— 被檢查**舊的** `assert rc == 0` 攔下，對
+受測的斷言什麼都沒證明。改用 `chr(10)`。
+
+---
+
 ## 0.60.1
 
 **hook 在 PACE 命令 agent 宣告收尾,它不該這樣。** 主人 2026-09-17 裁定：**PACE 的意思是
@@ -2362,6 +2419,76 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.60.2
+
+**A seven-day driven verdict printed the five-hour window's percentage.** The line the agent
+is ordered to echo was built from `round(v["pct"] or 0)`, and `pct` is always the five-hour
+figure. ⇒ At 5h 3% / 7d 99% the verdict is STOP, `v["text"]` correctly says the WEEK is nearly
+spent and the five-hour window is not the constraint (5h 3%), and the very next sentence orders
+`STOP at 3% - winding down`. On one screen, one half says the brake is on and the other tells
+you to watch for a line reading 3% - which reads as a false alarm.
+
+⚠ **Pre-existing, not from 0.60.1**: the same expression is in `550b556`. Found by 0.60.1's
+round-2 review, which reported it as printing `0%`; measured, it prints the **five-hour**
+number, and 0 only when that window is untouched.
+
+- **It prints the DRIVING window's percentage, and says which window that is.** A seven-day
+  driven line becomes `STOP at 7d 99% - winding down`; a five-hour driven one is **unchanged**,
+  which is why nothing that quotes the shape needed editing. `verdict()` already returned
+  `driver` and `pct_7d`, so no new computation.
+  ⭐ The owner chose the labelled form over a bare `STOP at 99%` on 2026-09-18, with both side
+  by side: the number alone cannot be told from a five-hour one, and the statusline is showing
+  the five-hour figure at that same moment.
+- **Two seven-day rows in the driven table.** Its thresholds are `soft_pct_7d` 95 and
+  `hard_pct_7d` 97, not 75/85. ⭐ The five-hour rows now carry a second duty: they pin that the
+  `7d` marker does NOT appear when the five-hour window drives.
+
+**`test_guards.py` stopped comparing the state log's file SIZE.**
+`case_selftests_never_read_the_terminal` compared `len(f.read())` of the real state-directory
+log before and after running the shipped selftests. But every live session on the machine
+appends a `CMD-ALLOW` line there on every Bash call, so any concurrent session failed the
+assertion - with a message blaming the selftest.
+
+⇒ **And it was not merely noisy.** That case runs immediately BEFORE the prose pin, so a red
+there ABORTED the whole file before later assertions executed: a mutation check driven through
+the whole file read as "caught" while the assertion under test never ran. Measured 2026-09-18:
+three consecutive whole-file runs failed twice (105 and 143 bytes) and reached the rest only on
+the third. Three consecutive runs after the fix are green.
+
+- **It compares LINES and ignores a live session's tool traffic** (`CMD-ALLOW`, `CMD-DENY` -
+  the two a `PreToolUse` writes on every call). Any other new line inside the window fails, and
+  the message prints those lines.
+- ⚠ **The residual gap, accepted deliberately:** a selftest writing a `CMD-ALLOW` or `CMD-DENY`
+  line slips past the filter. The alternative is the size comparison, which was red on somebody
+  else's traffic two runs in three and therefore protected nothing. **A check that is red for
+  an unrelated reason is not a stricter check.**
+- ⭐ **The filter has a control in the same run**: it must flag a `USAGE(...)` line and must NOT
+  flag a `CMD-ALLOW` one. Without that, a filter matching nothing reports a clean pass for ever.
+- **Prefix comparison with a set fallback**: the log is append-only in practice, but a rotation
+  or truncation inside the window would make `len(before)` meaningless and read every old line
+  as new.
+
+**Four mutations killed by the intended assertion**, plus one standalone probe whose story is
+the part worth reading (`scratch/06-fix-0.60.2/`):
+
+- "a shipped selftest pollutes the state log" **cannot** be injected into `selftest()`. The
+  quarantine that redirects `usage.state_dir` to a temp directory is installed in the
+  `if "--selftest"` branch, BEFORE that function runs, so a write placed inside it lands in the
+  quarantine and the mutation measures nothing.
+- Worse, the `grep` that "confirmed" the probe line had landed was matching **its own command
+  text**: the gate logs every Bash command to that same file, so searching the log for a string
+  puts the string in the log.
+- ⇒ The faithful version points the quarantine and the check at **one** temp directory. The
+  shipped selftests wrote 21 real lines, all flagged, the message is the new one, and the
+  owner's log was never touched.
+
+⚠ **Never put a backslash in generated code.** The first probe wrote its newline as an escape
+sequence, the injecting layer turned it into a real line break, the file stopped parsing and
+`--selftest` exited 1 - caught by the check's **older** `assert rc == 0`, proving nothing about
+the assertion under test. `chr(10)` instead.
 
 ---
 

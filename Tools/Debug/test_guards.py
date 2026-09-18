@@ -1857,15 +1857,45 @@ def case_selftests_never_read_the_terminal():
     # that pollutes the evidence it exists to protect is worse than no check.
     # ⚠ This reads the real state directory deliberately - reading is the only way to know -
     # and never writes to it.
-    def _real_state_log():
+    # ⛔ LINES, NOT THE FILE SIZE, and the difference decides whether this check works at all.
+    # It used to compare `len(f.read())` before and after. But EVERY live session on the
+    # machine appends a `CMD-ALLOW` line here on EVERY Bash call, so any concurrent session
+    # failed the assertion - with a message blaming the selftest. Measured 2026-09-18: three
+    # consecutive whole-file runs failed twice (105 and 143 bytes) and reached the rest only
+    # on the third. ⇒ It is not merely noisy: this case runs immediately BEFORE the prose pin,
+    # so it ABORTED the run before later assertions executed, and a mutation check driven
+    # through the whole file read as "caught" while the assertion under test never ran.
+    # ⚠ THE RESIDUAL GAP, accepted on purpose: a selftest that wrote a `CMD-ALLOW` or
+    # `CMD-DENY` line into the real directory slips past this filter. The alternative is the
+    # size comparison, which failed on somebody else's traffic two runs in three and therefore
+    # protected nothing. A check that is red for an unrelated reason is not a stricter check.
+    LIVE_TRAFFIC = ("CMD-ALLOW", "CMD-DENY")
+
+    def _real_state_lines():
         try:
             with open(os.path.join(usage_state_dir(), "dispatch_gate.log"),
                       encoding="utf-8") as f:
-                return len(f.read())
+                return f.read().splitlines()
         except OSError:
-            return 0
+            return []
 
-    _state_before = _real_state_log()
+    def _suspect(rows):
+        """The new lines that a LIVE session's tool traffic cannot account for."""
+        out = []
+        for row in rows:
+            msg = re.sub(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d ", "", row)
+            if msg and not msg.startswith(LIVE_TRAFFIC):
+                out.append(row)
+        return out
+
+    # ⭐ THE FILTER GETS A CONTROL IN THIS RUN. A `_suspect` that matched nothing - a typo in
+    # the prefix, a regex that eats the whole line - would report a clean pass for ever.
+    assert _suspect(["2026-09-18 14:00:00 USAGE(STOP) pct=99"]), \
+        "the filter no longer flags a line only a selftest could have written"
+    assert not _suspect(["2026-09-18 14:00:00 CMD-ALLOW(checked=5 off=-) ls"]), \
+        "the filter flags another live session's ordinary tool traffic"
+
+    _state_before = _real_state_lines()
     for script, expect_ok in (("dispatch_gate.py", True), ("usage.py", True),
                               ("unattended.py", True), ("resume.py", False)):
         path = repo_path("hooks", script)
@@ -1884,10 +1914,20 @@ def case_selftests_never_read_the_terminal():
                 "%s --selftest blocked with an open stdin - it reads the terminal" % script)
         if expect_ok:
             assert rc == 0, "%s --selftest exited %s" % (script, rc)
-    assert _real_state_log() == _state_before, (
-        "a shipped --selftest wrote into the REAL state directory: %d bytes added to %s"
-        % (_real_state_log() - _state_before,
-           os.path.join(usage_state_dir(), "dispatch_gate.log")))
+    _state_after = _real_state_lines()
+    # ⚠ PREFIX COMPARISON, with a set fallback: the log is append-only in practice, but a
+    # rotation or a truncation during the window would make `len(before)` meaningless and
+    # every old line read as new.
+    if _state_after[:len(_state_before)] == _state_before:
+        _new = _state_after[len(_state_before):]
+    else:
+        _old = set(_state_before)
+        _new = [r for r in _state_after if r not in _old]
+    _bad = _suspect(_new)
+    assert not _bad, (
+        "a shipped --selftest wrote into the REAL state directory (%s):\n   %s"
+        % (os.path.join(usage_state_dir(), "dispatch_gate.log"),
+           "\n   ".join(_bad[:5])))
     print("ok - no shipped --selftest blocks on stdin or writes to the real state dir")
 
 
