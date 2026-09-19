@@ -33,6 +33,60 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.62.0
+
+⚠ **又一個預設門檻變了，所以又是次版號。** `soft_pct_7d` **95 → 93**（PACE，由「七天」視窗
+觸發）。`hard_pct_7d` 維持 97。
+
+**而「七天」那條長條圖終於有自己的一對顏色門檻。** 在 0.61.0 之前（含）是**一對門檻切兩條
+長條圖** —— 所以七天那條是用「五小時」的門檻上色。2026-09-19 量到，在 0.61.0 的預設值下：
+
+```
+7d  86% -> 紅    而那一週自己的等級還在 PACE 以下
+7d  94% -> 紅
+7d  96% -> 紅    那一週的等級是 PACE
+7d  98% -> 紅    那一週的等級是 STOP
+```
+
+⇒ 那條長條圖在它自己的 PACE 點之前**十四點**就已經叫到最大聲，而且**分不出 86% 和 98%**。
+
+- **新增四個鍵。** `colour_lead_soft_pct_7d`（**3**）、`colour_lead_hard_pct_7d`（**2**），
+  以及推導出來的 `colour_warn_pct_7d`（**90**）和 `colour_alarm_pct_7d`（**95**）。
+  ⭐ 主人 2026-09-19 的指定：soft 減 3 轉橘、hard 減 2 轉紅。
+- ⚠ **兩個提早量彼此不同，也和五小時的 5 不同，那是決定不是疏漏。** 7d 那一對本來就坐得很高
+  —— 那一週通常不是限制 —— 所以單一的提早 5 會讓那條幾乎整週都綠、然後直接跳。3 和 2 留下
+  一個看得見的警告帶，又不會讓它連叫好幾天。這句話寫在常數旁邊，免得有人「整理」掉它。
+- **`colour_lead_pct`（5）沒有被retire。** 它一個版本前才出貨、README 有寫、它就是五小時的
+  提早量。加了一個鍵、下一版就把它換掉是純粹的擾動，而 `install.py` 的 `RENAMED` 表就是因為
+  那種事很痛才存在的。
+- `_state()` / `_colour()` / `_window()` 多一個 `bands` 參數，帶那個窗自己的 `(warn, alarm)`；
+  `None` 就是五小時那一對，所以每一個既有呼叫端行為完全不變。
+  ⛔ **不是靠嗅 `window_secs` 判斷。** `_window()` 本來就收到它，從 `7 * 86400` 反推今天會對，
+  但只要哪天出現第三個同樣七天長度、卻有自己門檻的窗，它就會無聲地錯。呼叫端知道自己在畫哪
+  一個窗，就讓呼叫端講出來。⭐ 兩個七天窗都走這條路：`7d` 那條，和帳號有的話那條**模型範圍**
+  的週限制。
+- **七天那一對也是可以釘住的**：磁碟上填**數字**就優先，只釘一個而順序顛倒兩個都退回推導值，
+  `config.example.json` 對兩個推導鍵都寫 `null`，而 `install.py --status` 與 `test_install.py`
+  都**要求**它是 `null`。
+
+**七個突變被預期的斷言殺掉。** ⛔ **其中最重要的那一個一開始溜過去了，而它溜過去的方式值得
+記下來：** 把 renderer 那一行改回讀 `colour_warn_pct`，**整套 selftest 全綠**。因為我原本的
+斷言測的是 **config**，而 config 可以完全正確、同時長條圖還是用預設那一對畫出來的。
+⇒ 現在多一個檢查**驅動真正的 `_line_parts()`**，讀七天那一段自己的 escape code。
+⚠ 而那個檢查的第一版**也**漏掉同一個突變：它只斷言紅色不出現，但那個突變只改了橘色那一半，
+所以 86% 變成橘色 —— 不是紅色，檢查就過了。兩個顏色都要斷言。
+
+⚠ 三個寫這個檢查時踩到的陷阱，都記在程式裡：
+
+- `_line_parts()` **沒有** `now` 參數。第一版在 `"now" in _line_parts.__code__.co_varnames`
+  時傳 `now=` —— 但那個 tuple 裝的是**所有區域變數**，不是參數，所以條件永遠成真、呼叫直接
+  拋錯。
+- `lstrip("\033[0-9;m")` 看起來對，其實不對：`lstrip` 吃的是一個**字元集合**，而 `7` 在裡面，
+  所以它會把 `7d` 的 `7` 一起吃掉，那一段永遠找不到。改用 regex。
+- `_line_parts()` 回傳的是 `(segments, extras)` **兩元素元組**，不是一個 list。
+
+---
+
 ## 0.61.0
 
 ⚠ **預設門檻變了，所以這是次版號，不是修訂號。** 0.60.1 到 0.60.4 全都是修 bug，那會訓練讀者
@@ -2528,6 +2582,69 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.62.0
+
+⚠ **Another default threshold moves, so this is another MINOR release.** `soft_pct_7d`
+**95 → 93** (PACE, driven by the seven-day window). `hard_pct_7d` stays 97.
+
+**And the seven-day bar finally has its own pair of colour thresholds.** Through 0.61.0 ONE
+pair banded BOTH bars — so the seven-day bar was coloured by the FIVE-HOUR thresholds. Measured
+2026-09-19 at the 0.61.0 defaults:
+
+```
+7d  86% -> red    while the week's own level was still below PACE
+7d  94% -> red
+7d  96% -> red    the week's level is PACE
+7d  98% -> red    the week's level is STOP
+```
+
+⇒ That bar was at its loudest **fourteen points** before the week's own PACE point, and it
+**could not tell 86% from 98%**.
+
+- **Four new keys.** `colour_lead_soft_pct_7d` (**3**), `colour_lead_hard_pct_7d` (**2**), and
+  the derived `colour_warn_pct_7d` (**90**) and `colour_alarm_pct_7d` (**95**).
+  ⭐ The owner's specification of 2026-09-19: soft minus 3 turns orange, hard minus 2 turns red.
+- ⚠ **The two leads differ from each other and from the five-hour 5, and that is the decision
+  rather than an oversight.** The 7d pair sits high on purpose — the week is usually not the
+  constraint — so a single lead of 5 would leave that bar green for almost the whole week and
+  then jump. 3 and 2 keep a visible warning band without making it shout for days. That
+  sentence lives beside the constants, so nobody "tidies" the asymmetry away.
+- **`colour_lead_pct` (5) is NOT retired.** It shipped one release ago, the README documents it,
+  and it is the five-hour lead. Adding a key and replacing it the next version is pure churn,
+  and `install.py`'s `RENAMED` table exists because that hurts.
+- `_state()`, `_colour()` and `_window()` take a `bands` argument carrying that window's
+  `(warn, alarm)`; `None` means the five-hour pair, so every pre-existing caller behaves exactly
+  as before.
+  ⛔ **NOT by sniffing `window_secs`.** `_window()` already receives it, and deriving the bands
+  from `7 * 86400` would be right today and silently wrong the moment a third window appears
+  with a seven-day span and thresholds of its own. The caller knows which window it is drawing,
+  so the caller says so. ⭐ Both seven-day bars go through it: `7d`, and the **model-scoped**
+  weekly limit when the account has one.
+- **The 7d pair is pinnable too**: a NUMBER on disk wins, pinning one of the pair into the wrong
+  order restores both, `config.example.json` carries `null` for both derived keys, and
+  `install.py --status` and `test_install.py` both REQUIRE that null.
+
+**Seven mutations killed by the intended assertion.** ⛔ **The most important one survived at
+first, and how it survived is the part worth keeping:** repointing the renderer's line back at
+`colour_warn_pct` passed the **entire selftest**. The assertions tested the CONFIG, and the
+config can be perfectly right while the bar is still drawn from the default pair. ⇒ There is now
+a check that **drives the real `_line_parts()`** and reads the seven-day segment's own escape
+codes. ⚠ And its first version missed the same mutation **again**: it asserted only that red was
+absent, while that mutation changed only the ORANGE half — so an 86% bar came out orange, which
+is not red, and the check passed. Both colours are asserted now.
+
+⚠ Three traps hit while writing that check, all recorded in the code:
+
+- `_line_parts()` has **no** `now` parameter. A first version passed `now=` whenever `"now"`
+  appeared in `_line_parts.__code__.co_varnames` — but that tuple holds every **local**, not the
+  parameters, so the guard was always true and the call raised.
+- `lstrip("\033[0-9;m")` looks right and is not: `lstrip` takes a **set of characters** and `7`
+  is one of them, so it eats the 7 out of the `7d` label and the segment is never found. A regex
+  instead.
+- `_line_parts()` returns a **two-tuple** `(segments, extras)`, not a list.
 
 ---
 

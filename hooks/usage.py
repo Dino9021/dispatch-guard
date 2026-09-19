@@ -73,7 +73,16 @@ import urllib.request
 # alternative - typing the derived number by hand - is the exact drift this replaces.
 SOFT_PCT_5H = 80          # PACE
 HARD_PCT_5H = 90          # STOP
-COLOUR_LEAD_PCT = 5       # the colours lead the thresholds by this many points
+COLOUR_LEAD_PCT = 5       # the 5h colours lead the 5h thresholds by this many points
+SOFT_PCT_7D = 93          # PACE, driven by the WEEK
+HARD_PCT_7D = 97          # STOP, driven by the WEEK
+# ⛔ THE SEVEN-DAY LEADS DIFFER FROM EACH OTHER AND FROM THE FIVE-HOUR ONE, and the asymmetry
+# is the owner's decision of 2026-09-19, not an oversight nobody tidied. The 7d pair sits high
+# on purpose - the week is usually not the constraint - so one lead of 5 would leave that bar
+# green for almost the whole week and then jump. 3 and 2 keep a visible warning band without
+# making the bar shout for days: orange at 90, red at 95.
+COLOUR_LEAD_SOFT_PCT_7D = 3
+COLOUR_LEAD_HARD_PCT_7D = 2
 
 DEFAULTS = {
     # The two the owner asked to keep: brake, then stop.
@@ -98,8 +107,8 @@ DEFAULTS = {
     # constraint, and pacing on it at 70% would throttle a week of work for nothing.
     "soft_pct_5h": SOFT_PCT_5H,   # PACE  - finish what is in flight, start nothing heavy
     "hard_pct_5h": HARD_PCT_5H,   # STOP  - wrap up and schedule a resume
-    "soft_pct_7d": 95,
-    "hard_pct_7d": 97,
+    "soft_pct_7d": SOFT_PCT_7D,
+    "hard_pct_7d": HARD_PCT_7D,
     # ⭐ THE NEAR-RESET RELAXATION (projection). Near a reset, a PACE/STOP is RELAXED to GO
     # when the whole-window burn rate says the remaining headroom survives to the reset. It
     # NEVER tightens - a burn rate may only loosen the word, never add caution (the inverted
@@ -150,9 +159,18 @@ DEFAULTS = {
     # out only because a dict cannot read its own keys - never edit them by hand.
     # ⚠ Both bars are banded by THIS pair, the five-hour one: `_state()` is called for the 7d
     # bar too. Deriving per window would silently recolour that bar, so it is not done.
-    "colour_lead_pct": COLOUR_LEAD_PCT,            # how far the colours lead the thresholds
-    "colour_warn_pct": SOFT_PCT_5H - COLOUR_LEAD_PCT,    # orange at or above this
-    "colour_alarm_pct": HARD_PCT_5H - COLOUR_LEAD_PCT,   # red at or above this
+    "colour_lead_pct": COLOUR_LEAD_PCT,            # how far the 5h colours lead the 5h pair
+    "colour_warn_pct": SOFT_PCT_5H - COLOUR_LEAD_PCT,    # 5h bar: orange at or above this
+    "colour_alarm_pct": HARD_PCT_5H - COLOUR_LEAD_PCT,   # 5h bar: red at or above this
+    # ⛔ THE SEVEN-DAY BAR HAS ITS OWN PAIR SINCE 0.62.0, and before that it did not: ONE pair
+    # banded BOTH bars, so a 7d bar was coloured by the FIVE-HOUR thresholds. Measured
+    # 2026-09-19 at the 0.61.0 defaults - 7d 86%, 94%, 96% and 98% were ALL red, i.e. the bar
+    # was at its loudest fourteen points before the week's own PACE point and could not tell
+    # 86% from 98%. ⚠ Its two leads differ from each other: see COLOUR_LEAD_*_PCT_7D above.
+    "colour_lead_soft_pct_7d": COLOUR_LEAD_SOFT_PCT_7D,
+    "colour_lead_hard_pct_7d": COLOUR_LEAD_HARD_PCT_7D,
+    "colour_warn_pct_7d": SOFT_PCT_7D - COLOUR_LEAD_SOFT_PCT_7D,    # 7d bar: orange
+    "colour_alarm_pct_7d": HARD_PCT_7D - COLOUR_LEAD_HARD_PCT_7D,   # 7d bar: red
     # ⛔ HOW FAR PAST ITS OWN ┃ MARKER A BAR MUST BE BEFORE IT TURNS YELLOW, in percentage
     # points. ⚠ WITHOUT A DEADBAND THIS FIRES ON THE FIRST PERCENT OF EVERY WINDOW: just
     # after a reset the elapsed fraction is near zero, so any spending is "past the marker".
@@ -338,32 +356,50 @@ def config(sdir):
             "AFTER the gate starts refusing; using %d.\n"
             % (cfg["colour_lead_pct"], DEFAULTS["colour_lead_pct"]))
         cfg["colour_lead_pct"] = DEFAULTS["colour_lead_pct"]
-    _pinned_colour = set()
-    for source in (disk, disk.get("guard") or {}):
-        for k in ("colour_warn_pct", "colour_alarm_pct"):
-            if isinstance((source or {}).get(k), (int, float)):
-                _pinned_colour.add(k)
-    for k, base in (("colour_warn_pct", "soft_pct_5h"),
-                    ("colour_alarm_pct", "hard_pct_5h")):
-        if k not in _pinned_colour:
-            cfg[k] = max(0, cfg[base] - cfg["colour_lead_pct"])
-    # ⛔ AND THE PAIR MUST STILL ASCEND. Derivation cannot invert them, but pinning ONE can:
-    # `colour_warn_pct: 95` against a derived alarm of 85 makes the red band unreachable, and
-    # a colour that never appears is indistinguishable from a speed that never happened.
-    # ⚠ BOTH go back to derived, not just the offending one - the same rule the three burn
-    # band edges follow above, and for the same reason: a half-honoured set is a calibration
-    # nobody chose.
-    if cfg["colour_warn_pct"] >= cfg["colour_alarm_pct"]:
-        sys.stderr.write(
-            "usage.py: colour_warn_pct=%s must be below colour_alarm_pct=%s or the red band "
-            "is unreachable; using the derived %d/%d (soft/hard_pct_5h minus "
-            "colour_lead_pct %d).\n"
-            % (cfg["colour_warn_pct"], cfg["colour_alarm_pct"],
-               max(0, cfg["soft_pct_5h"] - cfg["colour_lead_pct"]),
-               max(0, cfg["hard_pct_5h"] - cfg["colour_lead_pct"]),
-               cfg["colour_lead_pct"]))
-        cfg["colour_warn_pct"] = max(0, cfg["soft_pct_5h"] - cfg["colour_lead_pct"])
-        cfg["colour_alarm_pct"] = max(0, cfg["hard_pct_5h"] - cfg["colour_lead_pct"])
+    # ⛔ ONE TABLE, BOTH WINDOWS. Since 0.62.0 the seven-day bar has its OWN colour pair -
+    # before that ONE pair banded BOTH bars, so a 7d bar was coloured by the FIVE-HOUR
+    # thresholds and read red from 86% while the week's own PACE point was 95. ⚠ The two 7d
+    # leads differ from each other (3 and 2) and from the 5h one (5); that asymmetry is the
+    # owner's decision, recorded beside the constants.
+    COLOUR_BANDS = (
+        # (warn key, alarm key, soft key, hard key, warn lead key, alarm lead key)
+        ("colour_warn_pct", "colour_alarm_pct", "soft_pct_5h", "hard_pct_5h",
+         "colour_lead_pct", "colour_lead_pct"),
+        ("colour_warn_pct_7d", "colour_alarm_pct_7d", "soft_pct_7d", "hard_pct_7d",
+         "colour_lead_soft_pct_7d", "colour_lead_hard_pct_7d"),
+    )
+    for lead_key in ("colour_lead_soft_pct_7d", "colour_lead_hard_pct_7d"):
+        if cfg[lead_key] < 0:
+            sys.stderr.write(
+                "usage.py: %s=%s must not be negative - the colour would appear AFTER the "
+                "gate starts refusing; using %d.\n"
+                % (lead_key, cfg[lead_key], DEFAULTS[lead_key]))
+            cfg[lead_key] = DEFAULTS[lead_key]
+    for warn_k, alarm_k, soft_k, hard_k, wlead_k, alead_k in COLOUR_BANDS:
+        _pinned_colour = set()
+        for source in (disk, disk.get("guard") or {}):
+            for k in (warn_k, alarm_k):
+                if isinstance((source or {}).get(k), (int, float)):
+                    _pinned_colour.add(k)
+        _derived = (max(0, cfg[soft_k] - cfg[wlead_k]),
+                    max(0, cfg[hard_k] - cfg[alead_k]))
+        for k, want in ((warn_k, _derived[0]), (alarm_k, _derived[1])):
+            if k not in _pinned_colour:
+                cfg[k] = want
+        # ⛔ AND THE PAIR MUST STILL ASCEND. Derivation cannot invert them, but pinning ONE
+        # can: `colour_warn_pct: 95` against a derived alarm of 85 makes the red band
+        # unreachable, and a colour that never appears is indistinguishable from a speed that
+        # never happened.
+        # ⚠ BOTH go back to derived, not just the offending one - the same rule the three burn
+        # band edges follow below, and for the same reason: a half-honoured set is a
+        # calibration nobody chose.
+        if cfg[warn_k] >= cfg[alarm_k]:
+            sys.stderr.write(
+                "usage.py: %s=%s must be below %s=%s or the red band is unreachable; using "
+                "the derived %d/%d (%s/%s minus %s/%s).\n"
+                % (warn_k, cfg[warn_k], alarm_k, cfg[alarm_k], _derived[0], _derived[1],
+                   soft_k, hard_k, cfg[wlead_k], cfg[alead_k]))
+            cfg[warn_k], cfg[alarm_k] = _derived
     # ⛔ THE THREE BAND EDGES MUST ASCEND, AND ALL THREE FALL BACK TOGETHER. An out-of-order
     # set does not error - it makes a band unreachable, and a colour that never appears is
     # indistinguishable from a speed that never happened. ⚠ All three are restored, not just
@@ -1488,8 +1524,15 @@ ANSI = {"reset": "\033[0m",
 STATE_ANSI = {"GO": "ok", "WARN": "caution", "PACE": "warn", "STOP": "alarm"}
 
 
-def _state(pct, cfg, time_pct=None):
+def _state(pct, cfg, time_pct=None, bands=None):
     """The DISPLAY state for a percentage: GO / WARN / PACE / STOP.
+
+    ⛔ `bands` IS THE WINDOW'S OWN COLOUR PAIR, `(warn, alarm)`, and `None` means the FIVE-HOUR
+    pair. Until 0.62.0 there was no such argument: one pair banded BOTH bars, so the seven-day
+    bar was coloured by the five-hour thresholds. Measured 2026-09-19 - 7d 86%, 94%, 96% and
+    98% were ALL red, i.e. loudest fourteen points before the week's own PACE point and unable
+    to tell 86% from 98%. ⚠ `None` keeps every pre-existing caller on exactly today's colours,
+    which is why the argument defaults rather than being required.
 
     ⛔ DISPLAY ONLY, AND IT IS NOT verdict(). The gate reads verdict() and acts on its word;
     `dispatch_gate.py` tests that word against literal tuples in four places (`not in ("GO",
@@ -1512,9 +1555,12 @@ def _state(pct, cfg, time_pct=None):
     # cfg came from config(), which is why it survived. Now that the defaults are DERIVED from
     # soft/hard_pct_5h, a typed literal here would drift again the first time a threshold
     # moved, and in the direction that matters: a colour claiming nothing is refused yet.
-    if pct >= cfg.get("colour_alarm_pct", DEFAULTS["colour_alarm_pct"]):
+    _warn, _alarm = bands if bands else (
+        cfg.get("colour_warn_pct", DEFAULTS["colour_warn_pct"]),
+        cfg.get("colour_alarm_pct", DEFAULTS["colour_alarm_pct"]))
+    if pct >= _alarm:
         return "STOP"
-    if pct >= cfg.get("colour_warn_pct", DEFAULTS["colour_warn_pct"]):
+    if pct >= _warn:
         return "PACE"
     # ⛔ A DEADBAND, AND WITHOUT ONE THIS FIRES THE MOMENT A WINDOW IS TOUCHED. `time_pct` is
     # near zero just after a reset, so ANY spending is "past the marker": measured 2026-09-01,
@@ -1533,13 +1579,16 @@ def _state(pct, cfg, time_pct=None):
     return "GO"
 
 
-def _colour(pct, cfg, time_pct=None):
+def _colour(pct, cfg, time_pct=None, bands=None):
     """⚠ `time_pct` is optional and its ABSENCE is meaningful, not a default: without it there
     is no marker to be past, so the WARN tier cannot fire and a caller that never had a time
-    axis (the context bar) keeps exactly the three colours it always had."""
+    axis (the context bar) keeps exactly the three colours it always had.
+
+    ⚠ `bands` is the window's own `(warn, alarm)` pair; None means the five-hour one. See
+    `_state()` for the measurement that made it an argument."""
     if not cfg.get("colour", True):
         return "", ""
-    return ANSI[STATE_ANSI[_state(pct, cfg, time_pct)]], ANSI["reset"]
+    return ANSI[STATE_ANSI[_state(pct, cfg, time_pct, bands)]], ANSI["reset"]
 
 
 def _state_colour(state, cfg):
@@ -1690,7 +1739,7 @@ def duration(mins):
     return "%d%s%d%s" % (big, bu, small, su)
 
 
-def _window(label, win, now, cfg=None, window_secs=None, stale=False):
+def _window(label, win, now, cfg=None, window_secs=None, stale=False, bands=None):
     """One window's bar, percentage and time remaining - or dashes.
 
     ⛔ A STALE NUMBER IS NOT SHOWN AS A NUMBER. Measured 2026-08-26: the display read 74%
@@ -1729,7 +1778,7 @@ def _window(label, win, now, cfg=None, window_secs=None, stale=False):
     # turns yellow exactly when its fill passes its own ┃, so the colour never disagrees with
     # the picture beside it. ⚠ It is None for a window with no reset, and then _state() simply
     # cannot reach WARN - see there.
-    on, off = _colour(pct, cfg, time_pct)
+    on, off = _colour(pct, cfg, time_pct, bands)
     out = "%s %s%s %d%%%s" % (label, on, _bar(pct, BAR_WIDTH, time_pct), round(pct), off)
     if resets:
         out += " " + duration((resets - now) / 60) + _reset_clock(resets, now)
@@ -2342,8 +2391,14 @@ def _line_parts(record, stale_note=None, cfg=None, payload=None, stale=None, bur
     stale = bool(stale_note) if stale is None else bool(stale)
     parts = [_window(FIVE_HOUR_LABEL, rec.get("five_hour"), now, cfg,
                      FIVE_HOUR_SECONDS, stale)]
+    # ⛔ THE SEVEN-DAY BANDS, NAMED BY THE CALLER. Deriving them from `window_secs`
+    # would work today and break silently the moment a third window arrives with a
+    # seven-day span and thresholds of its own. The caller knows which window it draws.
+    _b7 = (cfg.get("colour_warn_pct_7d", DEFAULTS["colour_warn_pct_7d"]),
+           cfg.get("colour_alarm_pct_7d", DEFAULTS["colour_alarm_pct_7d"]))
     if isinstance(rec.get("seven_day"), dict):
-        parts.append(_window(SEVEN_DAY_LABEL, rec["seven_day"], now, cfg, 7 * 86400, stale))
+        parts.append(_window(SEVEN_DAY_LABEL, rec["seven_day"], now, cfg, 7 * 86400,
+                             stale, _b7))
     # ⭐ THE MODEL-SCOPED WINDOW, when the account has one running. It goes THROUGH _window()
     # like the other two, so staleness, the idle rule and the past-a-reset rule all apply to
     # it identically - a bar that degraded differently would be the one bar that lies.
@@ -2352,7 +2407,8 @@ def _line_parts(record, stale_note=None, cfg=None, payload=None, stale=None, bur
     # running a clock of its own.
     sc = rec.get("scoped")
     if isinstance(sc, dict) and isinstance(sc.get("label"), str):
-        parts.append(_window(sc["label"], sc, now, cfg, 7 * 86400, stale))
+        # ⚠ The scoped window is a WEEKLY limit, so it takes the 7d bands too.
+        parts.append(_window(sc["label"], sc, now, cfg, 7 * 86400, stale, _b7))
     # ⭐ ON THE FIRST ROW, after the windows: it is a decision input like they are, not
     # context like the model name. ⚠ Last of the four, so a narrow terminal drops it before
     # any usage bar - the five-hour window is what the brake acts on.
@@ -4375,6 +4431,111 @@ def selftest():
     assert (_c["colour_warn_pct"], _c["colour_alarm_pct"]) == (60 - _lead, 70 - _lead), (
         "a null on disk was treated as a PIN - config.example.json relies on it not being: %s/%s"
         % (_c["colour_warn_pct"], _c["colour_alarm_pct"]))
+
+    # ⛔⛔ THE SEVEN-DAY BAR HAS ITS OWN PAIR, AND THAT IS THE WHOLE OF 0.62.0. Until then ONE
+    # pair banded BOTH bars, so the 7d bar was coloured by the FIVE-HOUR thresholds: measured
+    # 2026-09-19 at the 0.61.0 defaults, 7d 86/94/96/98% were ALL red - loudest fourteen points
+    # before the week's own PACE point, unable to tell 86% from 98%.
+    _c = _ccfg()
+    # ⭐ THE CONTROL THAT MATTERS MOST: the two windows must NOT share a pair. Every assertion
+    # below would pass with the 7d keys quietly equal to the 5h ones.
+    assert (_c["colour_warn_pct_7d"], _c["colour_alarm_pct_7d"]) != \
+           (_c["colour_warn_pct"], _c["colour_alarm_pct"]), (
+        "the two windows share one colour pair again (%s/%s) - the 7d bar is being banded by "
+        "the five-hour thresholds" % (_c["colour_warn_pct"], _c["colour_alarm_pct"]))
+    assert _c["colour_warn_pct_7d"] == _c["soft_pct_7d"] - _c["colour_lead_soft_pct_7d"], (
+        "colour_warn_pct_7d is not DERIVED from soft_pct_7d: %s, expected %s - %s"
+        % (_c["colour_warn_pct_7d"], _c["soft_pct_7d"], _c["colour_lead_soft_pct_7d"]))
+    assert _c["colour_alarm_pct_7d"] == _c["hard_pct_7d"] - _c["colour_lead_hard_pct_7d"], (
+        "colour_alarm_pct_7d is not DERIVED from hard_pct_7d: %s, expected %s - %s"
+        % (_c["colour_alarm_pct_7d"], _c["hard_pct_7d"], _c["colour_lead_hard_pct_7d"]))
+    # ⚠ THE OWNER'S NUMBERS, 2026-09-19: soft_pct_7d 93 minus 3 is orange at 90, hard_pct_7d
+    # 97 minus 2 is red at 95. Written out because the derivation above would also be satisfied
+    # by leads nobody chose.
+    assert (_c["soft_pct_7d"], _c["hard_pct_7d"]) == (93, 97), (
+        "the 7d thresholds are %s/%s, and the owner asked for 93/97"
+        % (_c["soft_pct_7d"], _c["hard_pct_7d"]))
+    assert (_c["colour_warn_pct_7d"], _c["colour_alarm_pct_7d"]) == (90, 95), (
+        "the 7d bands are %s/%s, and the owner asked for 90/95"
+        % (_c["colour_warn_pct_7d"], _c["colour_alarm_pct_7d"]))
+    # ⭐ AND THE 7d BAR IS BANDED BY THEM - driven through _state(), not read off the config,
+    # because the pair only matters if the renderer is handed it.
+    _b7 = (_c["colour_warn_pct_7d"], _c["colour_alarm_pct_7d"])
+    for _p, _want in ((_b7[0] - 1, "GO"), (_b7[0], "PACE"),
+                      (_b7[1] - 1, "PACE"), (_b7[1], "STOP")):
+        # time_pct None, so the WARN tier cannot fire and this reads the colour bands alone
+        assert _state(_p, _c, None, _b7) == _want, (
+            "7d %s%% is %r with the 7d bands %s, expected %r"
+            % (_p, _state(_p, _c, None, _b7), _b7, _want))
+    # ⛔ THE REGRESSION, STATED: at 86% the 7d bar must NOT be red any more.
+    assert _state(86, _c, None, _b7) != "STOP", (
+        "7d 86%% is still red - that is the 0.61.0 defect, with %s points of room left"
+        % (_c["hard_pct_7d"] - 86,))
+    # ...while the FIVE-HOUR bands are untouched: 86 is still red there.
+    assert _state(86, _c, None) == "STOP", _state(86, _c, None)
+    # ⚠ The 7d leads are independently pinnable, and an inverted 7d pin restores BOTH.
+    _c = _ccfg(colour_lead_soft_pct_7d=10, colour_lead_hard_pct_7d=8)
+    assert (_c["colour_warn_pct_7d"], _c["colour_alarm_pct_7d"]) == (83, 89), _c
+    _c = _ccfg(colour_warn_pct_7d=99)
+    assert (_c["colour_warn_pct_7d"], _c["colour_alarm_pct_7d"]) == (90, 95), (
+        "an INVERTED pinned 7d pair was left inverted: %s/%s"
+        % (_c["colour_warn_pct_7d"], _c["colour_alarm_pct_7d"]))
+    _c = _ccfg(colour_lead_soft_pct_7d=-1)
+    assert _c["colour_lead_soft_pct_7d"] == DEFAULTS["colour_lead_soft_pct_7d"], (
+        "a negative colour_lead_soft_pct_7d was not restored: %r"
+        % (_c["colour_lead_soft_pct_7d"],))
+
+    # ⛔⛔ AND THE RENDERER MUST ACTUALLY BE HANDED THE 7d PAIR. Everything above checks the
+    # CONFIG, and the config can be perfectly right while `_line_parts()` still draws the
+    # seven-day bar from the five-hour pair. Measured: pointing that call back at
+    # `colour_warn_pct` passed the ENTIRE selftest, so this is the assertion that owns the
+    # wiring. ⇒ Drive the real renderer and read the 7d segment's own escape codes.
+    # ⚠ `_line_parts()` takes NO `now`; it reads the clock itself, which is why the fixture
+    # below stamps its record from the same `time.time()`. ⛔ A first version passed `now=`
+    # whenever "now" appeared in `_line_parts.__code__.co_varnames` - but that tuple holds
+    # every LOCAL, not the parameters, so the guard was always true and the call raised.
+    # ⛔ AND THE SEGMENT IS FOUND BY STRIPPING ANSI WITH A REGEX. `lstrip("\033[0-9;m")` looks
+    # right and is not: lstrip takes a SET of characters and "7" is one of them, so it eats
+    # the 7 out of the "7d" label and the segment is never found.
+    def _seg7_of(parts):
+        _bare = re.compile("\033\\[[0-9;]*m")
+        return [x for x in parts if _bare.sub("", x).startswith(SEVEN_DAY_LABEL)]
+
+    _rc = dict(_ccfg(), colour=True)
+    _rnow = time.time()
+    _rrec = {"ts": int(_rnow * 1000),
+             "five_hour": {"used_percentage": 5.0, "resets_at": int(_rnow + 2 * 3600)},
+             # ⭐ 86% is the case the 0.61.0 defect got wrong. Under the 5h bands it is
+             # RED (alarm 85); under the 7d ones it is below the orange point (warn 90),
+             # so measured it comes out YELLOW - the WARN tier, because the fill has
+             # passed the bar's own time marker. ⇒ The two wirings give visibly
+             # different answers here, which is what makes this the row to assert on.
+             "seven_day": {"used_percentage": 86.0, "resets_at": int(_rnow + 3 * 86400)}}
+    _rparts, _rextra = _line_parts(_rrec, cfg=_rc)   # (segments, extras)
+    _seg7 = _seg7_of(_rparts)
+    assert _seg7, "the seven-day segment is not in the rendered line: %r" % (_rparts,)
+    # ⛔ THE 5h ALARM COLOUR MUST NOT APPEAR ON IT. That escape IS the defect's signature.
+    # ⛔ BOTH COLOURS, NOT JUST RED. A first version asserted only the alarm escape,
+    # and a mutation that repointed the WARN half alone at `colour_warn_pct` survived it:
+    # with bands (75, 95) an 86% bar is ORANGE, which is not red, so the check passed
+    # while the 7d bar was half-banded by the five-hour pair again.
+    assert ANSI["warn"] not in _seg7[0], (
+        "the seven-day bar at 86%% is drawn ORANGE - its own orange point is %s, so it "
+        "is being banded by the five-hour warn point %s: %r"
+        % (_rc["colour_warn_pct_7d"], _rc["colour_warn_pct"], _seg7[0]))
+    assert ANSI["alarm"] not in _seg7[0], (
+        "the seven-day bar at 86%% is drawn with the ALARM colour - it is being banded by "
+        "the five-hour pair (%s/%s) instead of its own (%s/%s): %r"
+        % (_rc["colour_warn_pct"], _rc["colour_alarm_pct"],
+           _rc["colour_warn_pct_7d"], _rc["colour_alarm_pct_7d"], _seg7[0]))
+    # ⭐ CONTROL: the same render must still paint the 7d bar RED once it passes ITS alarm,
+    # or the assertion above would pass on a bar that is never coloured at all.
+    _rrec["seven_day"]["used_percentage"] = float(_rc["colour_alarm_pct_7d"])
+    _rparts, _rextra = _line_parts(_rrec, cfg=_rc)   # (segments, extras)
+    _seg7 = _seg7_of(_rparts)
+    assert _seg7 and ANSI["alarm"] in _seg7[0], (
+        "the seven-day bar is not red at its OWN alarm point %s - the colour check above "
+        "proves nothing: %r" % (_rc["colour_alarm_pct_7d"], _seg7))
     shutil.rmtree(_ccdir, ignore_errors=True)
 
     # ⛔⛔ THE COLLISION ITSELF, AS A FIXTURE - the check that would have caught the defect.

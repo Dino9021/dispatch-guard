@@ -263,7 +263,8 @@ def main():
         # so a number here would pin their colours for ever and the derivation would never
         # fire for them again. ⚠ Asserting `is None` rather than skipping: a skip would let a
         # number creep back in unnoticed, which is the failure this is guarding.
-        DERIVED = ("colour_warn_pct", "colour_alarm_pct")
+        DERIVED = ("colour_warn_pct", "colour_alarm_pct",
+                   "colour_warn_pct_7d", "colour_alarm_pct_7d")
         for k in DERIVED:
             assert example.get(k, "absent") is None, (
                 "config.example.json must hold null for the derived key %s, not %r"

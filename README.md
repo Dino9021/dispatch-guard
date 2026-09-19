@@ -857,6 +857,15 @@ Context 長條、模型、說明移到第二列，**兩列各自裁到寬度**�
 ⭐ **而且門檻一動，顏色會跟著動。** 到 0.61.0 之前那兩個顏色是手填的數字，只是「剛好」坐在
 門檻附近：門檻一調高，顏色就被留在後面，紅色於是會說「還沒有東西被拒絕」，而 gate 其實已經
 在拒絕了。現在那個關係是算出來的，不是手抄的。
+
+⭐ **兩條長條圖各有自己的一對，從 0.62.0 起。** 「七天」那條用 `colour_warn_pct_7d` =
+`soft_pct_7d` 減 `colour_lead_soft_pct_7d`（預設 **3**）和 `colour_alarm_pct_7d` =
+`hard_pct_7d` 減 `colour_lead_hard_pct_7d`（預設 **2**），也就是橘 90、紅 95。
+⚠ **兩個提早量彼此不同，也和五小時的 5 不同，那是刻意的**：7d 那一對本來就坐得很高，提早 5
+會讓那條幾乎整週都綠、然後直接跳。
+⛔ **在那之前是一對門檻切兩條長條圖**，所以七天那條是用「五小時」的門檻上色。2026-09-19 在
+0.61.0 預設值下量到：7d 86%、94%、96%、98% **全部是紅色** —— 在那一週自己的 PACE 點之前
+十四點就叫到最大聲，而且分不出 86% 和 98%。
 ⚠ **但它們仍然是四個獨立的設定值。** 顏色是給人看的，門檻是拿來拒絕工具呼叫的；
 想要顏色比減速更早出現、或乾脆不要顏色的人，不該為此放棄煞車。
 
@@ -1041,8 +1050,8 @@ Nothing was dispatched. The agent has been told to save the current step and arm
 |---|---|---|---|
 | `soft_pct_5h` | **80** | **PACE** —— 縮小範圍，派工**仍然允許** | 橘（`colour_warn_pct`，推導 75） |
 | `hard_pct_5h` | **90** | **STOP** —— 派工**被拒絕** | 紅（`colour_alarm_pct`，推導 85） |
-| `soft_pct_7d` | **95** | **PACE**，由「七天」視窗觸發 | —— |
-| `hard_pct_7d` | **97** | **STOP**，由「七天」視窗觸發 | —— |
+| `soft_pct_7d` | **93** | **PACE**，由「七天」視窗觸發 | 橘（`colour_warn_pct_7d`，推導 90） |
+| `hard_pct_7d` | **97** | **STOP**，由「七天」視窗觸發 | 紅（`colour_alarm_pct_7d`，推導 95） |
 
 ⛔ **0.34.0 以前煞車完全不看 7d。** 它只讀五小時的百分比，所以 **7d 99% 配 5h 0% 會被判成 GO**，
 然後一直派工到「伺服器」拒絕為止 —— 兩個數字都是真的，答案是錯的。
@@ -2437,7 +2446,17 @@ the colour only ever warns earlier than the brake, never later.
 ⭐ **And moving a threshold now carries its colour with it.** Through 0.60.4 the two colours were
 hand-set numbers that merely SAT near the thresholds: raise one and the colour stayed behind, so
 red said "nothing is refused yet" while the gate was already refusing. The relationship is
-arithmetic now rather than a copied number. ⚠ They remain separate keys: colour is what a
+arithmetic now rather than a copied number.
+
+⭐ **Each bar has its OWN pair since 0.62.0.** The seven-day one uses
+`colour_warn_pct_7d` = `soft_pct_7d` minus `colour_lead_soft_pct_7d` (default **3**) and
+`colour_alarm_pct_7d` = `hard_pct_7d` minus `colour_lead_hard_pct_7d` (default **2**) - orange 90,
+red 95. ⚠ **The two leads differ from each other and from the five-hour 5, deliberately**: the 7d
+pair sits high on purpose, so a lead of 5 would leave that bar green for almost the whole week and
+then jump.
+⛔ **Before that ONE pair banded BOTH bars**, so the seven-day bar was coloured by the FIVE-HOUR
+thresholds. Measured 2026-09-19 at the 0.61.0 defaults: 7d 86%, 94%, 96% and 98% were **all red** -
+loudest fourteen points before the week's own PACE point, and unable to tell 86% from 98%. ⚠ They remain separate keys: colour is what a
 person reads, the thresholds are what refuses a tool call, and wanting the warning earlier than
 the slow-down must not cost you the brake.
 
@@ -2636,8 +2655,8 @@ that is `PreToolUse`, judged on every dispatch, and refused every time.
 |---|---|---|---|
 | `soft_pct_5h` | **80** | **PACE** — shrink scope, dispatch is **still allowed** | orange (`colour_warn_pct`, derived 75) |
 | `hard_pct_5h` | **90** | **STOP** — dispatch is **refused** | red (`colour_alarm_pct`, derived 85) |
-| `soft_pct_7d` | **95** | **PACE**, driven by the seven-day window | — |
-| `hard_pct_7d` | **97** | **STOP**, driven by the seven-day window | — |
+| `soft_pct_7d` | **93** | **PACE**, driven by the seven-day window | orange (`colour_warn_pct_7d`, derived 90) |
+| `hard_pct_7d` | **97** | **STOP**, driven by the seven-day window | red (`colour_alarm_pct_7d`, derived 95) |
 
 ⛔ **Before 0.34.0 the brake ignored the 7d window entirely.** It read the five-hour
 percentage and nothing else, so **7d 99% beside 5h 0% read as GO** and kept dispatching until

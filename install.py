@@ -629,7 +629,8 @@ def status():
         # for ever and the derivation would never fire for them again. `null` is how the
         # example says "unset" - usage.config() only copies int/float off disk, so it is
         # ignored - and this check is what stops the example drifting back into a number.
-        DERIVED_IN_EXAMPLE = ("colour_warn_pct", "colour_alarm_pct")
+        DERIVED_IN_EXAMPLE = ("colour_warn_pct", "colour_alarm_pct",
+                              "colour_warn_pct_7d", "colour_alarm_pct_7d")
         for k in DERIVED_IN_EXAMPLE:
             if k in want and want[k] is not None:
                 example_bad.append(

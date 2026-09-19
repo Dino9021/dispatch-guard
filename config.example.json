@@ -19,7 +19,7 @@
 
   "_soft_pct_7d": "PACE at or above this, on the SEVEN-DAY window. ⛔ THE BRAKE USED TO IGNORE THIS WINDOW ENTIRELY: it read the five-hour percentage and nothing else, so an account at 7d 99% beside 5h 0% was told GO and kept dispatching until the SERVER refused. Both numbers were true and the answer was wrong. ⚠ THE 7d PAIR SITS HIGH ON PURPOSE: that window is usually not the constraint, and pacing on it at 70% would throttle a week of work for nothing. ⭐ The stricter of the two windows wins, and the verdict says WHICH one - a reader who sees 5h 0% beside STOP and is not told why concludes the brake is broken.",
   "_soft_pct_7d_zh": "「七天」視窗到這個百分比以上就是 PACE。⛔ 煞車以前「完全忽略」這個視窗：它只看五小時的百分比，所以 7d 99% 配 5h 0% 會被判成 GO，然後一直派工到「伺服器」拒絕為止。兩個數字都是真的，答案是錯的。⚠ 7d 這一對故意設得很高：那個視窗通常不是限制，在 70% 就開始 PACE 會白白拖慢一整週的工作。⭐ 兩個視窗取「比較嚴」的那個，而且判定會講出是「哪一個」—— 看到 5h 0% 旁邊寫著 STOP 又沒被告知原因的人，會認為煞車壞了。",
-  "soft_pct_7d": 95,
+  "soft_pct_7d": 93,
 
   "_hard_pct_7d": "STOP at or above this, on the SEVEN-DAY window. ⛔ A seven-day STOP is NOT the same instruction as a five-hour one: the resume must be scheduled after the SEVEN-DAY reset, which can be days away, and the verdict text says so. ⚠ A 7d window that resets BEFORE the current 5h window ends is ignored entirely - its percentage is about to become zero, so braking on it would brake on a number on its way out.",
   "_hard_pct_7d_zh": "「七天」視窗到這個百分比以上就是 STOP。⛔ 七天的 STOP 和五小時的 STOP「不是同一個指令」：續跑要排在「七天」的重置之後，而那可能是好幾天以後，判定文字會這樣寫。⚠ 如果 7d 視窗在「目前這個 5h 視窗結束之前」就會重置，它會被完全忽略 —— 它的百分比馬上就要歸零，對它踩煞車等於對一個正在消失的數字踩煞車。",
@@ -64,6 +64,22 @@
   "_colour_lead_pct": "HOW MANY POINTS THE COLOURS LEAD THE THRESHOLDS. Default 5. colour_warn_pct is soft_pct_5h minus this, and colour_alarm_pct is hard_pct_5h minus this - so raising a threshold carries its colour up with it. ⛔ THE REASON IS THE WHOLE DESIGN: a person wants to see the warning colour BEFORE anything starts being refused. Until 0.61.0 the two colour keys were hand-set numbers that merely SAT near the thresholds, so moving a threshold left them behind silently and red then said \"nothing is refused yet\" while the gate was already refusing. A negative value is refused, because it would put the colour AFTER the refusal.",
   "_colour_lead_pct_zh": "顏色比門檻「提早」幾個百分點。預設 5。colour_warn_pct = soft_pct_5h 減這個值，colour_alarm_pct = hard_pct_5h 減這個值 —— 所以把門檻調高，顏色會跟著一起上去。⛔ 理由就是整個設計本身：人會希望在任何東西開始被拒絕「之前」，就先看到警告顏色。到 0.61.0 之前那兩個顏色鍵是手填的數字，只是「剛好」坐在門檻附近，所以門檻一動它們就被留在後面，紅色於是會說「還沒有東西被拒絕」，而閘門其實已經在拒絕了。負值會被拒絕，因為那會讓顏色出現在拒絕「之後」。",
   "colour_lead_pct": 5,
+
+  "_colour_lead_soft_pct_7d": "HOW MANY POINTS THE SEVEN-DAY BAR'S ORANGE LEADS soft_pct_7d. Default 3. ⛔ THE 7d BAR HAS ITS OWN PAIR SINCE 0.62.0. Before that ONE pair banded BOTH bars, so the seven-day bar was coloured by the FIVE-HOUR thresholds: measured 2026-09-19 at the 0.61.0 defaults, 7d 86%, 94%, 96% and 98% were ALL red - loudest fourteen points before the week's own PACE point, and unable to tell 86% from 98%. ⚠ The two 7d leads differ from each other (3 and 2) and from the five-hour one (5), and that is the owner's decision, not an oversight: the 7d pair sits high on purpose, so one lead of 5 would leave the bar green for almost the whole week and then jump.",
+  "_colour_lead_soft_pct_7d_zh": "「七天」長條圖的橘色比 soft_pct_7d 提早幾個百分點。預設 3。⛔ 從 0.62.0 起，7d 長條圖有自己的一對門檻。在那之前是一對門檻切兩條長條圖，所以七天那條是用「五小時」的門檻上色：2026-09-19 在 0.61.0 預設值下量到，7d 86%、94%、96%、98% 全部是紅色 —— 在那一週自己的 PACE 點之前十四點就叫到最大聲，而且分不出 86% 和 98%。⚠ 两個 7d 提前量彼此不同（3 和 2），也和五小時的（5）不同，那是主人的決定，不是沒人整理：7d 那一對本來就刻意坐得很高，提早 5 會讓它幾乎整週都綠、然後直接跳。",
+  "colour_lead_soft_pct_7d": 3,
+
+  "_colour_lead_hard_pct_7d": "HOW MANY POINTS THE SEVEN-DAY BAR'S RED LEADS hard_pct_7d. Default 2. Same reasoning as colour_lead_soft_pct_7d.",
+  "_colour_lead_hard_pct_7d_zh": "「七天」長條圖的紅色比 hard_pct_7d 提早幾個百分點。預設 2。理由同 colour_lead_soft_pct_7d。",
+  "colour_lead_hard_pct_7d": 2,
+
+  "_colour_warn_pct_7d": "OVERRIDE ONLY - leave it OUT (or null, as here) and it is DERIVED as soft_pct_7d minus colour_lead_soft_pct_7d. The SEVEN-DAY bar turns ORANGE at or above it. ⛔ Writing a number here pins it, exactly as with colour_warn_pct.",
+  "_colour_warn_pct_7d_zh": "只是「覆寫用」—— 不要寫它（或像這裡寫 null），它就會被推導成 soft_pct_7d 減 colour_lead_soft_pct_7d。「七天」長條圖在這個百分比以上轉橘色。⛔ 在這裡填數字就等於釘住它，跟 colour_warn_pct 一樣。",
+  "colour_warn_pct_7d": null,
+
+  "_colour_alarm_pct_7d": "OVERRIDE ONLY - leave it OUT (or null, as here) and it is DERIVED as hard_pct_7d minus colour_lead_hard_pct_7d. The SEVEN-DAY bar turns RED at or above it. ⚠ If you pin only ONE of this pair and it ends up out of order, BOTH go back to derived and usage.py says so on stderr.",
+  "_colour_alarm_pct_7d_zh": "只是「覆寫用」—— 不要寫它（或像這裡寫 null），它就會被推導成 hard_pct_7d 減 colour_lead_hard_pct_7d。「七天」長條圖在這個百分比以上轉紅色。⚠ 如果你只釘住這一對裡的一個而順序顆倒，兩個都會退回推導值，usage.py 會在 stderr 上說出來。",
+  "colour_alarm_pct_7d": null,
 
   "_colour_warn_pct": "OVERRIDE ONLY - leave it OUT (or null, as here) and it is DERIVED as soft_pct_5h minus colour_lead_pct. The bar and the verdict dot turn ORANGE - the PACE colour - at or above it. ⛔ WRITING A NUMBER HERE PINS IT FOR EVER: your colour then stops following your thresholds, which is the whole point of the derivation. Set one on purpose only if you want a specific number. ⚠ BELOW this there is a fourth state: YELLOW (WARN) whenever the fill has passed the bar's own ┃ time marker - i.e. you are spending faster than the clock. WARN has NO threshold key because it has no threshold: the marker IS the condition. It is colour only and changes nothing the gate does.",
   "_colour_warn_pct_zh": "只是「覆寫用」—— 不要寫它（或像這裡寫 null），它就會被推導成 soft_pct_5h 減 colour_lead_pct。長條圖和判定圓點在這個百分比以上變成「橘色」，也就是 PACE 的顏色。⛔ 在這裡填一個數字就等於把它「永久釘住」：你的顏色從此不再跟著你的門檻走，而那正是推導的用意。只有你真的想要某個特定數字時才設它。⚠ 在這個門檻「以下」還有第四個狀態：只要填滿超過長條圖自己的 ┃ 時間標記（也就是你花得比時鐘快），就是「黃色」的 WARN。WARN 沒有自己的門檻設定值，因為它沒有門檻 —— 那個標記本身就是條件。它只是顏色，不改變閘門做的任何事。",
