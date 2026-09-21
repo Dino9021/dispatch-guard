@@ -132,8 +132,10 @@ gate 會去 stat 它的提示詞要求建立的那些檔案，少了就說出來
 
 ### ⛔ `SPENT in ~N min` 那一行不會叫你收工
 
-那一行有時候會多印一句：`⛔ At the current rate the 5h window is SPENT in ~N min - M min
-BEFORE it resets.`
+那一行有時候會多印一句。判定是 GO 時長這樣：`ℹ At the current rate the 5h window would be
+SPENT in ~N min - M min BEFORE it resets. That figure only sizes the NEXT block; GO stands.`
+只有 PACE／STOP 才是 `⛔ … is SPENT in ~N min … Plan for the gap, not for the reset.`
+而視窗開了還不到 `burn_note_min_age_min`（30 分鐘）時，什麼都不印 —— 理由見下面（0.63.2）。
 
 **交接、寫 `HANDOFF.md`、預約續跑，只由 STOP 這個字觸發，其他什麼都不觸發** —— 不是 N，
 也不是 PACE；PACE 的意思只有「不要開新的一批」。
@@ -143,7 +145,8 @@ N 只回答一個問題：**我接下來要開的這一塊，塞得進 N 嗎？*
 ⚠ **N 最大聲的時候，正好是它最不可信的時候。** 燃燒速度的起點錨在這個視窗自己的開窗時間，
 所以視窗越年輕，任何花費看起來都越陡。2026-09-14 量到：**用掉 10%、開窗 10 分鐘**，
 那一行就印 `SPENT in ~90 min`；**同樣 10%、開窗 45 分鐘**，什麼都不印。
-⛔ 最大聲的地方，正好是餘裕最多的地方。
+⛔ 最大聲的地方，正好是餘裕最多的地方 —— 所以從 0.63.2 起，開窗前 30 分鐘不印這一句，
+GO 那一行帶的是 ℹ 不是 ⛔。
 
 ⭐ **剎車讀的是百分比，永遠不讀這個數字。** 這是 owner 在 2026-08-29 做的決定，
 `usage.py` 裡有檢查釘住它：這個燃燒數字**是一句話，不是一個決定**。

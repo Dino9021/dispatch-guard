@@ -115,6 +115,11 @@ To answer "what is still open?", search for DONE, never NOT-DONE; an unsettled i
 UNCONFIRMED, not open. A silently failed `cd` in a chain makes "no output" identical to
 "no matches".
 
+One control is the floor, not the ceiling. The pattern probe that must fire, the lookalike
+that must not, the fresh negative sentinel, the partition control, the calibrated threshold
+and the wrapped-line false zero are in `skills/cowork/reference/verification.md` Part 3 — a
+file this plugin ships whether or not `cowork` is loaded.
+
 ## 12. Generating content
 
 Never put a commit message on a command line (file + `-F`). Never hand-write long files
@@ -167,7 +172,8 @@ completely alone. Re-verify every cited line number at the moment of writing.
 
 ⛔ **USAGE IS A DIFFERENT TRIGGER, AND ONLY THE WORD PULLS IT.** **STOP** is the verdict that
 hands over — never the `SPENT in ~N min` sentence. That figure sizes the NEXT block and nothing
-else, and it is loudest early in a window when headroom is largest. `dispatch-protocol` carries
+else — and it used to be loudest early in a window, when headroom is largest; since 0.63.2 the
+first 30 minutes print nothing and a GO line carries ℹ, not ⛔. `dispatch-protocol` carries
 the full rule with its measurement; this paragraph is its scope line, and both have to stay.
 **At GO you keep working.**
 

@@ -1503,6 +1503,29 @@ VERB_WINDOW_CHARS = 200
 # a file the agent had been told to create. ⚠ A `.md` inside a path is NOT a sentence end,
 # because the period there is not followed by whitespace.
 _SENTENCE_END = re.compile(r"[.。！!?？]\s")
+# The tail of the text just before a `.md` candidate, when that candidate is a shell
+# redirect's target: `> x.md`, `>> x.md`, `| tee x.md`, with one optional quote or backtick.
+# ⛔ `tee` is MANDATORY after the pipe, and `>` must not be the head of a `->` arrow. The first
+# draft made `tee` optional, so a bare `|` matched - which is the text before a path in a
+# MARKDOWN TABLE CELL, and the review measured a real deliverables row in this repository's own
+# work orders (`| … | \`adr-review-01-adversarial.md\` |`) dropped. `cat a | b.md` runs b.md;
+# no command writes the file after a bare pipe, so the alternative bought nothing.
+_AFTER_REDIRECT = re.compile(r"(?:(?<!-)>>?|\|\s*tee(?:\s+-a)?)\s*[`'\"]?$")
+
+
+def _in_shell_example(window, start, end):
+    """Is the `.md` at window[start:end] inside an inline code span that carries a shell
+    operator (`>`, `|`)? Then it is a command's operand - `cat new.md | tee board.md` reads
+    one file and writes another - not a report the prompt asked the agent to produce.
+    ⚠ Only spans with an operator: `Create `agent-01.md`` has none and stays a demand."""
+    open_tick = window.rfind("`", 0, start)
+    if open_tick < 0 or "\n" in window[open_tick:start]:
+        return False
+    close_tick = window.find("`", end)
+    if close_tick < 0:
+        return False
+    span = window[open_tick + 1:close_tick]
+    return (">" in span) or ("|" in span)
 
 
 def _verb_window(text, start):
@@ -1647,6 +1670,16 @@ def demanded_files(root, cfg, prompt_text, folder=None):
         for hit in _MD_PATH.finditer(window):
             cand = hit.group(1)
             if ".." in cand.split("/"):
+                continue
+            # ⛔ A PATH RIGHT AFTER A SHELL REDIRECT IS AN EXAMPLE, NOT A DEMAND. Measured
+            # 2026-09-19: a review prompt said "write three small files … (vi) `echo x >>
+            # board.md`" and the gate reported `board.md` never created when the agent
+            # returned - the real report existed. The `.md` after `>`, `>>` or `|` (with an
+            # optional quote or backtick between) is what a command WRITES, not what the
+            # prompt asked the agent to produce. Measured against this repository's 33 work
+            # orders before shipping: no genuine report starts that way.
+            if _AFTER_REDIRECT.search(window[:hit.start()]) or \
+                    _in_shell_example(window, hit.start(), hit.end()):
                 continue
             at = ("/" + cand).find("/" + tr + "/")
             if at >= 0:

@@ -33,6 +33,47 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.63.2
+
+主人 2026-09-21 對 `Memory/PENDING.md` 五個項目的裁決，其中三個是程式碼：
+
+- ⛔ **`SPENT in ~N min` 那一句的 ⛔ 跟著判定字走，而且年輕的視窗不印。** 到 0.63.1 為止，只要
+  `burnout_min` 小於剩餘分鐘，那句就帶著 ⛔ 和「Plan for the gap」印出來 —— 在 **GO** 的那一行、
+  「Headroom available」旁邊也一樣。2026-09-14 量到 sessions 在 20–27% 就照它收工；2026-09-19 重量，
+  10% 在開窗 10 和 20 分鐘印 `SPENT in ~90 min`、45 和 90 分鐘不印 —— 餘裕最大的時候叫得最響。
+  現在：GO 印 `ℹ … would be SPENT in ~N min … That figure only sizes the NEXT block; GO stands`；
+  PACE／STOP 才印 ⛔ 和那句命令；視窗開了不到 `burn_note_min_age_min`（新鍵，預設 **30** 分鐘）什麼
+  都不印。⚠ selftest 的強制釘子（把 `burnout_min` 強制成 1、47% 仍是 GO 且句子要在）維持 —— 拿掉的是
+  符號和命令，不是句子。新增四個釘子：GO 沒有 ⛔、PACE 有、20 分鐘的年輕視窗沉默、鍵設 0 就印。
+  ⛔ 審查 01 在初稿抓到兩個錯，都在出貨前修掉：年齡門的變數蓋掉了「資料年齡」的 `age_min`，新鮮資料
+  在開了 55 分鐘的視窗印出 `[data 55 min old]`、40 分鐘舊的資料在年輕視窗反而沉默（改名
+  `window_age_min`）；符號跟的是 5h 的等級而不是印出來的字，5h 55% + 7d 96% 的 **PACE** 行以
+  「GO stands」結尾（句子移到 `level` 選定之後才組）。各加一根釘子，突變殺得掉。
+- ⭐ **`guard_agent_report_file` 不再把 shell 範例當成要建立的報告。** 反引號裡的 `.md` 若緊接在
+  `>`／`>>`／`| tee` 之後，或所在的反引號段含 `>` 或 `|`（`cat new.md | tee board.md`），就不算。
+  2026-09-19 的誤報：審查提示詞裡 `(vi) \`echo x >> board.md\`` 被報成「從未建立」。對 35 份真實工作單
+  量前後：58 個路徑一個都沒掉、沒有新增、誤報那一段 OLD 抓到 NEW 不抓（`scratch/B-measure/`）。
+  ⛔ 初稿接受光桿的 `|`，審查 01 量到它把 markdown **表格欄**裡的真報告
+  （`| write | \`adr-review-01-adversarial.md\` |`）當成管線目標丟掉；現在 `|` 後面一定要有 `tee`，
+  `->` 箭頭的 `>` 也不算重導。三根新釘子。
+  ⚠ 整檔量測看不到那個誤報，因為 `demanded_files` 每份提示詞最多回 8 個路徑，那份已有 8 個真報告。
+- ⭐ **cowork nag 的證據行。** `guard_cowork_first` 拒絕前先記一行 `COWORK-PEERS sid=<sid8> mine=<s>
+  <sid8>:alive=<s>,start=<s> …`；`peer_sessions()` 回三元組（多了 peer 的起始年齡）；`SKILL-SEEN` 行
+  也帶 `sid=`。新工具 `Tools/Debug/cowork_nag_report.py`（有 `--selftest`，進 `test_all`）從 state log
+  讀回每一次觸發，判 GHOST（peer 的心跳比這個 session 還舊 —— 從我開始它就沒動過）和 LOADED（**同一個
+  session** 在 300 秒內載入 skill，用 sid 配對）。⛔ 初稿只靠時間配對，審查 01 量到兩個 session 相隔一秒
+  觸發、一次載入算成 2/2 —— state log 是整台機器共用的一個檔。沒有 sid 的舊行退回時間配對，該列會標明。
+  主人大多在別的專案工作，資料自己累積，要看就跑那支。第一筆：2026-09-21 16:44，peer 是重開前的
+  自己（UNCONFIRMED），23 秒後載入。
+- **`unattended-work` §11 加一行指標**指向 `skills/cowork/reference/verification.md` Part 3（另外三道
+  對照、partition control、門檻校準、折行假 0）。方向：plugin 是正本，user-scope 的
+  `VERIFICATION-LESSONS.md` 指進來 —— 主人問「沒裝 dev-workstation 就少三條？」，答案是不能讓 plugin
+  依賴 user scope；`~/.claude/CLAUDE.md` 早已宣告 dispatch-guard 是 required dependency。
+- **`PROTOCOL.md` 拿掉 `delegated` 狀態**（主人撤回「拿去別的帳號跑」那整個流程；那個狀態從來沒有
+  東西會產生它）。dev-workstation 那邊的片段同日修。
+
+---
+
 ## 0.63.1
 
 ⛔ **第四位審查者（主人核准的第四輪，`code-review-D-fourth.md`）在 0.63.0 出貨後找到一個阻擋。**
@@ -2676,6 +2717,61 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.63.2
+
+The owner's rulings of 2026-09-21 on five `Memory/PENDING.md` items; three are code:
+
+- ⛔ **The `SPENT in ~N min` sentence's ⛔ now follows the WORD, and a young window prints
+  nothing.** Through 0.63.1 the sentence carried a ⛔ and "Plan for the gap" whenever
+  `burnout_min` was under the minutes remaining — on a **GO** line, beside "Headroom available".
+  Measured 2026-09-14: sessions wound down on it at 20–27%. Re-measured 2026-09-19: 10% used
+  prints `SPENT in ~90 min` at 10 and 20 minutes into the window and nothing at 45 and 90 — loudest
+  where the headroom is largest. Now: at GO the line reads `ℹ … would be SPENT in ~N min … That
+  figure only sizes the NEXT block; GO stands`; ⛔ and the imperative appear only at PACE/STOP;
+  and while the window is younger than `burn_note_min_age_min` (new key, default **30** minutes)
+  nothing is printed. ⚠ The selftest's forcing pin (burnout_min forced to 1 at 47% stays GO and
+  the sentence is present) is unchanged — the glyph and the imperative go, the sentence stays.
+  Four new pins: no ⛔ at GO, ⛔ at PACE, a 20-minute-old window silent, the key at 0 prints.
+  ⛔ Review 01 caught two defects in the first draft, both fixed before shipping: the age gate's
+  variable shadowed the DATA-age `age_min`, so fresh data in a 55-minute-old window printed
+  `[data 55 min old]` and 40-minute-old data in a young window printed nothing (renamed
+  `window_age_min`); and the glyph followed the 5h level, not the printed word, so 5h 55% + 7d 96%
+  gave a **PACE** line ending "GO stands" (the sentence is now built after `level` is chosen). One
+  pin each; a mutation of either kills its pin.
+- ⭐ **`guard_agent_report_file` no longer reads a shell example as a demanded report.** A `.md`
+  in backticks right after `>` / `>>` / `| tee`, or inside a backtick span that contains `>` or
+  `|` (`cat new.md | tee board.md`), does not count. The 2026-09-19 false alarm — a review prompt's
+  `(vi) \`echo x >> board.md\`` reported "never created" — reproduces on its paragraph with the old
+  code and not with the new. Measured over all 35 real work orders: 58 paths kept, none dropped,
+  none invented (`scratch/B-measure/`). ⚠ The whole-file pass cannot show the removal because
+  `demanded_files` caps at 8 paths per prompt and that prompt already yields 8 genuine reports.
+  ⛔ The first draft accepted a bare `|`, and review 01 measured it dropping a genuine report
+  written in a markdown **table cell** (`| write | \`adr-review-01-adversarial.md\` |`) as a pipe
+  target; `tee` is now mandatory after `|`, and the `>` of a `->` arrow is not a redirect. Three
+  new pins.
+- ⭐ **Evidence for the cowork nag.** `guard_cowork_first` logs `COWORK-PEERS sid=<sid8> mine=<s>
+  <sid8>:alive=<s>,start=<s> …` right before its refusal; `peer_sessions()` returns 3-tuples (the
+  peer's start age is new); the `SKILL-SEEN` line carries `sid=` too. `Tools/Debug/cowork_nag_report.py`
+  (new, `--selftest`, in `test_all`) reads every firing back from the state log and judges GHOST
+  (the peer's heartbeat is older than this session — it has not moved since this session began)
+  and LOADED (the skill invoked by the **same session** within 300 s, paired by sid). ⛔ The first
+  draft paired by time alone, and review 01 measured two sessions firing a second apart with one
+  load read as 2/2 — the state log is one file for the whole machine. Pre-0.63.2 lines without a
+  sid fall back to the time window, and the row says so. The owner works in other projects most days; the data accrues by itself
+  and the report is one command. First data point: 2026-09-21 16:44, the peer was most likely
+  this session's own pre-restart self (UNCONFIRMED), skill loaded 23 s later.
+- **`unattended-work` §11 gains one pointer** into `skills/cowork/reference/verification.md`
+  Part 3 (the other three controls, the partition control, the calibrated threshold, the
+  wrapped-line false zero). Direction settled: the plugin is the live copy and user-scope
+  `VERIFICATION-LESSONS.md` points IN — the owner asked what a machine without dev-workstation
+  would lose; the answer is that a plugin must not depend on user scope, and `~/.claude/CLAUDE.md`
+  already names dispatch-guard the required dependency.
+- **`PROTOCOL.md` drops the `delegated` status** (the owner withdrew the "run the prompts on
+  another account" flow; nothing ever produced that status). The dev-workstation snippet is
+  corrected the same day.
 
 ---
 

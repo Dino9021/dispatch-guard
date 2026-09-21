@@ -135,6 +135,14 @@ DEFAULTS = {
     # when nothing moved. That is the intended trade, not a regression. ⛔ Safe for exactly
     # one reason, the same one _burn_rate() names: NO BURN FIGURE REACHES GO/PACE/STOP.
     "burn_window_min": 10,
+    # ⛔ HOW OLD THE FIVE-HOUR WINDOW MUST BE, in minutes, before the "SPENT in ~N min" sentence
+    # is printed at all. The rate is anchored at the window's own open, so a young window
+    # makes any spend look steep: MEASURED 2026-09-14 and re-measured 2026-09-19 at the shipped
+    # defaults, 10% used fires `SPENT in ~90 min` at 10 and 20 minutes in and is silent at 45
+    # and 90 - the sentence was loudest exactly where the headroom was largest, and sessions
+    # stopped on it. The owner ruled 2026-09-21 that this is to be fixed. 30 covers both
+    # measured false alarms with room; the 45-minute case was already silent by arithmetic.
+    "burn_note_min_age_min": 30,
     # ⭐ THE BURN GAUGE'S COLOUR BANDS, as MULTIPLES OF CLOCK SPEED. Clock speed is
     # 100 / window minutes - 0.333 %/min for a five-hour window - and means "at this pace you
     # finish the window exactly as it resets". So 1.00 is "spending as fast as the clock",
@@ -2608,10 +2616,28 @@ def verdict(sdir, cfg, now=None, data=None, cheap=False):
         # the reset. It never tightens. See _relax().
         five_level, five_relaxed_stop = _relax(
             five_level, pct, remain_min, resets, now, FIVE_HOUR_SECONDS, cfg, "5h")
-    burn_note = ("" if not early else
-                 " ⛔ At the current rate the 5h window is SPENT in ~%d min - %d min BEFORE "
-                 "it resets. Plan for the gap, not for the reset."
-                 % (burn, remain_min - burn))
+    # ⛔ THE SENTENCE, NEVER THE DECISION - and since 0.63.2 its GLYPH follows the WORD.
+    # Measured 2026-09-14 and 2026-09-19 (Memory/PENDING.md, the wind-down item): a ⛔ on a GO
+    # line beside "Headroom available" read as a stop signal, and sessions at 20-27% armed a
+    # resume and stopped. The owner ruled 2026-09-21 that it is to be fixed. Two changes:
+    # (1) at GO the figure is printed as information with no ⛔ and no imperative - it only
+    # sizes the next block; ⛔ and "plan for the gap" appear only when the word is PACE/STOP;
+    # (2) inside the window's first `burn_note_min_age_min` minutes nothing is printed, because
+    # the whole-window anchor makes every young window look steep (10% at 10 min = 1 %/min).
+    # ⚠ The forcing pin in the selftest still requires "SPENT in ~N min" at GO - the sentence
+    # is kept, only its glyph and its imperative go.
+    # ⛔ `window_age_min`, NOT `age_min`: `age_min` above is how old the FETCHED DATA is and
+    # feeds the "[data N min old - may understate]" marker. The first draft of this block
+    # reused the name and the review measured the marker firing on fresh data at every window
+    # older than 15 minutes, and staying silent on 40-minute-stale data in a young window.
+    window_age_min = (FIVE_HOUR_SECONDS - max(0.0, resets - now)) / 60.0 if resets else 0.0
+    min_age = cfg.get("burn_note_min_age_min", DEFAULTS["burn_note_min_age_min"])
+    if not isinstance(min_age, (int, float)) or isinstance(min_age, bool) or min_age < 0:
+        min_age = DEFAULTS["burn_note_min_age_min"]
+    show_burn = early and window_age_min >= min_age
+    # ⚠ The sentence itself is built BELOW, after `level` is chosen, because the glyph must
+    # follow the PRINTED word - the stricter of the 5h and 7d levels - not the 5h level alone.
+    # Review measured 5h 55% + 7d 96%: a PACE line that ended "GO stands".
 
     # --------------------------------------------------------------- the seven-day window
     # ⛔ THE BRAKE USED TO IGNORE THIS ENTIRELY. The 7d figure produced a NOTE and nothing
@@ -2635,6 +2661,19 @@ def verdict(sdir, cfg, now=None, data=None, cheap=False):
         level, driver = five_level, "5h"
 
     stale = " [data %d min old - may understate]" % age_min if age_min > cfg["stale_min"] else ""
+
+    # The burn sentence, built here because the glyph follows the PRINTED word (`level`), not
+    # the 5h level - see the note beside `show_burn` above.
+    if not show_burn:
+        burn_note = ""
+    elif level in ("PACE", "STOP"):
+        burn_note = (" ⛔ At the current rate the 5h window is SPENT in ~%d min - %d min BEFORE "
+                     "it resets. Plan for the gap, not for the reset."
+                     % (burn, remain_min - burn))
+    else:
+        burn_note = (" ℹ At the current rate the 5h window would be SPENT in ~%d min - %d min "
+                     "BEFORE it resets. That figure only sizes the NEXT block; GO stands."
+                     % (burn, remain_min - burn))
 
     if level == "STOP" and driver == "7d":
         text = ("STOP - 7d at %d%% >= hard_pct_7d %d%%. ⛔ The 5h window is NOT the "
@@ -4164,6 +4203,59 @@ def selftest():
                                                   "resets_at": int(_near)}})
     assert _vn["burns_out_early"] is False, _vn
     assert "SPENT in ~" not in _vn["text"], _vn["text"]
+
+    # ⛔ THE GLYPH FOLLOWS THE WORD (0.63.2, the owner's ruling of 2026-09-21). `_v` above is a
+    # GO (55% under the soft threshold): the sentence is there, the ⛔ and the imperative are not.
+    assert _v["verdict"] == "GO", _v["verdict"]
+    assert "⛔" not in _v["text"] and "Plan for the gap" not in _v["text"], _v["text"]
+    assert "GO stands" in _v["text"], _v["text"]
+    # ...and at PACE the same rate prints the ⛔ and the imperative. 82% in 55 minutes burns the
+    # remaining 18 points in ~12 minutes, well inside the 245 that remain.
+    _plant([(_far - 5 * 3600, 0), (_bnow - 1, 82)], _far)
+    # ⚠ A PACE reaches _relax(), which the GO fixtures above never do, so the relax keys the
+    # minimal `_bcfg` omits are supplied here at their defaults.
+    _bcfg_relax = dict(_bcfg, relax_horizon_min=DEFAULTS["relax_horizon_min"],
+                       relax_ceiling_5h=DEFAULTS["relax_ceiling_5h"],
+                       relax_margin=DEFAULTS["relax_margin"])
+    _vp = verdict(_bt, _bcfg_relax, data={"ts": int(_bnow * 1000),
+                                          "five_hour": {"used_percentage": 82,
+                                                        "resets_at": int(_far)}})
+    assert _vp["verdict"] == "PACE" and _vp["burns_out_early"] is True, _vp
+    assert "⛔ At the current rate" in _vp["text"] and "Plan for the gap" in _vp["text"], _vp["text"]
+    # ⛔ AND A YOUNG WINDOW SAYS NOTHING. 10% at 20 minutes in is 0.5 %/min, burn-out in 180 of
+    # the 280 minutes that remain - `early` by arithmetic, and exactly the measured false alarm.
+    _yng = _bnow + 5 * 3600 - 20 * 60
+    _plant([(_yng - 5 * 3600, 0), (_bnow - 1, 10)], _yng)
+    _vy = verdict(_bt, _bcfg, data={"ts": int(_bnow * 1000),
+                                    "five_hour": {"used_percentage": 10,
+                                                  "resets_at": int(_yng)}})
+    assert _vy["burns_out_early"] is True, "the fixture is not early - it measures nothing: %r" % (_vy,)
+    assert "SPENT in ~" not in _vy["text"], "a 20-minute-old window printed the burn line: %r" % (_vy["text"],)
+    # ...and the age gate is the config key, not a constant: with it at 0 the young window prints.
+    _vy0 = verdict(_bt, dict(_bcfg, burn_note_min_age_min=0),
+                   data={"ts": int(_bnow * 1000),
+                         "five_hour": {"used_percentage": 10, "resets_at": int(_yng)}})
+    assert "SPENT in ~" in _vy0["text"] and "GO stands" in _vy0["text"], _vy0["text"]
+    # ⛔ THE AGE GATE READS THE WINDOW'S AGE, THE STALE MARKER READS THE DATA'S AGE, and the two
+    # never share a variable. Review 01 (2026-09-21) measured the first draft doing exactly that:
+    # fresh data in the 55-minute-old window printed "[data 55 min old]", and 40-minute-old data
+    # in the young window printed nothing. `_v` above IS fresh data in the old window.
+    assert "[data" not in _v["text"] and _v["age_min"] < 1, (_v["text"], _v["age_min"])
+    _vst = verdict(_bt, _bcfg, data={"ts": int((_bnow - 40 * 60) * 1000),
+                                     "five_hour": {"used_percentage": 10, "resets_at": int(_yng)}})
+    assert "[data 40 min old" in _vst["text"] and 39 <= _vst["age_min"] <= 41, (_vst["text"], _vst["age_min"])
+    _plant(_samples, _far)                                       # restore for the checks below
+    # ⛔ AND THE GLYPH FOLLOWS THE PRINTED WORD, NOT THE FIVE-HOUR LEVEL. 5h 55% is GO on its own;
+    # with 7d at 96% the line says PACE (or STOP), and review 01 measured the first draft ending
+    # that line with "GO stands". Same 5h fixture as `_v`, plus a binding seven-day window.
+    _bcfg7 = dict(_bcfg_relax, soft_pct_7d=DEFAULTS["soft_pct_7d"], hard_pct_7d=DEFAULTS["hard_pct_7d"],
+                  relax_ceiling_7d=DEFAULTS["relax_ceiling_7d"])
+    _v7 = verdict(_bt, _bcfg7, data={"ts": int(_bnow * 1000),
+                                     "five_hour": {"used_percentage": 55, "resets_at": int(_far)},
+                                     "seven_day": {"used_percentage": 96,
+                                                   "resets_at": int(_bnow) + 300000}})
+    assert _v7["verdict"] in ("PACE", "STOP") and _v7["burns_out_early"] is True, _v7
+    assert "⛔ At the current rate" in _v7["text"] and "GO stands" not in _v7["text"], _v7["text"]
 
     # ⛔ FLAT IS A MEASUREMENT, AND THIS ASSERTION IS REVERSED FROM WHAT IT SAID BEFORE
     # 2026-09-01. Nothing spent, from the window's open to now, means the window will not be

@@ -698,8 +698,14 @@ def _minutes(value, default):
 
 
 def peer_sessions(ctx, now=None):
-    """[(sid, age_seconds)] for every OTHER session whose `.alive` is within `peer_alive_min`
-    and whose START cwd resolves to this call's repository root.
+    """[(sid, alive_age_s, start_age_s)] for every OTHER session whose `.alive` is within
+    `peer_alive_min` and whose START cwd resolves to this call's repository root.
+
+    ⭐ `start_age_s` (0.63.2) is how long ago that session was stamped, from the `.start`
+    file's mtime; -1 when unreadable. It is what the DENY log line carries so the owner can
+    later tell a live peer from the ghost of a session that has exited but whose `.alive`
+    nobody clears - the first real firing (2026-09-21) was most likely this session's own
+    pre-restart self. Collected, not yet acted on: Memory/PENDING.md.
 
     ⭐ NORMCASE ON BOTH SIDES. Measured 2026-09-19: 3 of 118 real `.start` files spell the drive
     `C:` and the rest `c:`, two of the three in one repository - without normcase those peers
@@ -735,7 +741,11 @@ def peer_sessions(ctx, now=None):
         if not cwd:
             continue                      # a pre-0.56 stamp: no cwd recorded, not counted
         if os.path.normcase(os.path.abspath(ctx["repo_root"](cwd))) == root:
-            peers.append((sid, age))
+            try:
+                start_age = now - os.path.getmtime(os.path.join(state_dir, sid + ".start"))
+            except OSError:
+                start_age = -1
+            peers.append((sid, age, start_age))
     return peers
 
 
@@ -757,10 +767,21 @@ def cowork_first(payload, ctx, enabled=True, what="write to this tree"):
     if not peers:
         return None
     n = len(peers)
-    youngest = int(min(age for _, age in peers))
+    youngest = int(min(age for _, age, _s in peers))
     if not enabled:
         ctx["log"]("CMD-DISABLED(guard_cowork_first) would have refused: %d live peer(s)" % n)
         return None
+    # ⭐ THE EVIDENCE LINE (0.63.2), written before the refusal so the two are adjacent in the
+    # log: this session's own age, and each peer's heartbeat age and start age. A peer whose
+    # heartbeat is OLDER than this session is one that has not moved since this session began -
+    # the shape of a ghost. Tools/Debug/cowork_nag_report.py reads these lines back.
+    try:
+        mine = time.time() - os.path.getmtime(ctx["state"]("start"))
+    except OSError:
+        mine = -1
+    ctx["log"]("COWORK-PEERS sid=%s mine=%ds %s" % (
+        str(ctx.get("sid") or "?")[:8], mine,
+        " ".join("%s:alive=%ds,start=%ds" % (sid[:8], a, s) for sid, a, s in peers)))
     _write(mark, "1")
     plural = "" if n == 1 else "s"
     return _v(DENY, "guard_cowork_first",
@@ -946,7 +967,12 @@ def note_skill(payload, ctx):
     if not slug:
         return False
     _write(ctx["state"]("skill-seen-%s" % slug), name)
-    ctx["log"]("SKILL-SEEN %s" % name)
+    # ⭐ THE SESSION ID RIDES ON THE LINE (0.63.2). The state log is one file for every session
+    # on the machine, and Tools/Debug/cowork_nag_report.py pairs a refusal with the skill load
+    # that answered it - by time alone, review 01 measured two refusals a second apart and one
+    # load reported as 2/2 loaded. No code parses this line; test_guards tests the word in a
+    # systemMessage, not here.
+    ctx["log"]("SKILL-SEEN %s sid=%s" % (name, str(ctx.get("sid") or "?")[:8]))
     return True
 
 

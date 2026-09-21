@@ -712,6 +712,13 @@ def case_cowork_first(gate, sdir, root):
         assert "cowork" in reason(r) and "1 other live session" in reason(r), reason(r)
         assert r.get("systemMessage"), "the person should know the first write was refused"
         assert "CMD-DENY(guard_cowork_first)" in gitlog(root)[before:], gitlog(root)[-300:]
+        # ⭐ THE EVIDENCE LINE CARRIES THIS SESSION'S ID (0.63.2). Review 02 measured the first
+        # draft of the fix passing this case with `sid=` removed from both log lines - the
+        # behaviour was right and nothing pinned it. `cowork_nag_report.py` pairs a refusal with
+        # the skill load that answered it BY THIS ID, so the id has to be on both lines.
+        evidence = gitlog(root)[before:]
+        assert "COWORK-PEERS sid=%s mine=" % sid[:8] in evidence, evidence[-400:]
+        assert "p-live:alive=" in evidence, evidence[-400:]
         # ⚠ ONCE.
         assert decision(write()) is None, "it refused twice: %r" % (reason(write()),)
         # `git commit` is the shell trigger, for a fresh session.
@@ -720,9 +727,15 @@ def case_cowork_first(gate, sdir, root):
         r = run_gate(gate, bash(root, "git commit -F m.txt", sid=sid2))
         assert decision(r) == "deny" and "cowork" in reason(r), reason(r)
         # the skill seen -> silent.
-        sid3 = "s-cowork-loaded"
+        # ⚠ its first 8 characters differ from `sid`'s, or the sid assertion below cannot tell
+        # this session's SKILL-SEEN line from one written for the first session.
+        sid3 = "s-loaded-cowork"
+        assert sid3[:8] != sid[:8]
         stamp_session(gate, sdir, sid3)
+        before = len(gitlog(root))
         load_skills(gate, root, sid3, "dispatch-guard:cowork")
+        assert "SKILL-SEEN dispatch-guard:cowork sid=%s" % sid3[:8] in gitlog(root)[before:], \
+            gitlog(root)[before:][-400:]
         assert decision(write(sid3)) is None, "the Skill call was ignored"
     # its off switch logs, and does NOT spend the one refusal.
     sid4 = "s-cowork-off"
@@ -1840,6 +1853,26 @@ def case_agent_report_file(gate, sdir, root):
     assert demanded("Create Memory/tasks/../../escape.md") == []
     # A left boundary, so a directory merely ENDING in the task root is not one.
     assert demanded("Create MyMemory/tasks/%s/r.md" % task) == []
+
+    # ⛔ A `.md` RIGHT AFTER A SHELL REDIRECT IS AN EXAMPLE, NOT A DEMAND (0.63.2). Measured
+    # 2026-09-19: this exact prompt shape made the gate report `board.md` never created after
+    # the round-2 ADR review returned - the real report was there. The control beside it is the
+    # same filename as a genuine demand, which must still be seen.
+    assert demanded("write three small files in your scratch directory - one with `append-only` "
+                    "in its H1 - and work out on paper which the rule would refuse: (vi) `echo x "
+                    ">> board.md`; (vii) `echo x > board.md`; (viii) `cat new.md | tee board.md`.") \
+        == [], "a shell example's redirect target was read as a demanded report"
+    assert demanded("Create `board.md` as your FIRST action.") == ["board.md"], \
+        "the control - a genuine bare-filename demand - was lost"
+    # ⛔ ... AND A MARKDOWN TABLE CELL IS NOT A REDIRECT. Review 01 measured the first draft
+    # (bare `|` accepted) dropping a real deliverables row from this repository's work orders.
+    assert demanded("| Create | Memory/tasks/%s/r.md | first action |" % task) == ["r.md"], \
+        "a demand in a table cell was read as a pipe target"
+    assert demanded("| write | `adr-review-01-adversarial.md` | round 1, adversarial |") \
+        == ["adr-review-01-adversarial.md"], "a bare filename in a table cell was dropped"
+    # ... and a prose arrow `->` is not a `>` redirect either.
+    assert demanded("Write your report, as the last step -> Memory/tasks/%s/r.md" % task) == ["r.md"], \
+        "the `>` of a prose arrow was read as a redirect"
 
     # ⭐ THE LOG SEPARATES "demanded nothing" FROM "demanded something, path not recognised".
     # Those are the same silence, and one line for both would hide the coverage gap.

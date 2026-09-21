@@ -13,7 +13,7 @@ compatibility detection: first existing of `Memory/tasks`, `.agent-tasks`, `task
 
 | file | contents |
 |---|---|
-| `progress.md` | one row per sub-task: agent, model, status (`pending`/`running`/`done`/`failed`/`delegated`), output path |
+| `progress.md` | one row per sub-task: agent, model, status (`pending`/`running`/`done`/`failed`), output path. ⚠ A fifth status, `delegated` ("handed to another account"), was listed here until 0.63.2 with nothing that produced it; the owner withdrew that flow on 2026-09-21 |
 | `prompts*.md` | every sub-task's full prompt, written before any dispatch — each stating its `subagent_type` **and the capability that prompt needs from it** (`← needs Write: it must create its own report`) |
 | `agent-NN-<subtask>.md` | one report per sub-task, numbered to match `progress.md` |
 | `PARALLEL-APPROVED` | present only when the owner approved concurrency |
@@ -114,7 +114,7 @@ logs to `.claude/dispatch_gate.log` (fallback `%TEMP%/dispatch_gate_error.log`).
 | the `unattended-work` check refuses ONE dispatch, then stops | otherwise a broken skill loader deadlocks the session; it is also silent when `announce_unattended_work=false`. ⚠ It is what asks for that skill by default, since `require_unattended_work` is false. Turn that on and this never fires — the hard rule answers first |
 | the skill requirement CAN deadlock a session if the skill registry is broken | stated rather than hidden: that is what `require_dispatch_protocol: false` is for, and it belongs to the owner. The refusal does not name it, because a rule that names its own off switch gets switched off. ⭐ From the third refusal in a session the message names the other possibility — that the harness is not reporting `Skill` calls at all |
 | the gate cannot tell an INVOKED skill from an ADOPTED one | the `Skill` tool call is recorded; whether the agent then followed the skill is not knowable from a hook. `unattended-work`'s own ACTIVE line is the second half of that answer |
-| the demanded-file check reads a prompt with a REGEX, and a deliberately conservative one | a whole-word creation verb, then a `.md` path within 200 characters — the reach stops at the end of the sentence or after one line break, whichever comes first. A bare filename resolves against the dispatch's own task folder. ⭐ Measured against this repository's 18 real work orders: **19 paths, every one a genuine report file, no false positives**; the first version, which scanned line by line, saw two of eighteen. ⚠ Still missed: "Create **that file**" with the path named on an earlier line. That direction is chosen — a missed path costs nothing, a false alarm gets the guard switched off |
+| the demanded-file check reads a prompt with a REGEX, and a deliberately conservative one | a whole-word creation verb, then a `.md` path within 200 characters — the reach stops at the end of the sentence or after one line break, whichever comes first. A bare filename resolves against the dispatch's own task folder. A `.md` right after `>` / `>>` / `\| tee`, or inside a backtick span that contains `>` or `\|`, is a shell example's target and does not count (0.63.2). ⭐ Measured against this repository's 35 real work orders: **58 paths, every one a genuine report file, no false positives**; the first version, which scanned line by line, saw two of eighteen. ⚠ Still missed: "Create **that file**" with the path named on an earlier line; a path inside a backtick span whose `>` sits in prose between two other spans; and a shell example with no operator (`Set-Content board.md`, `python w.py board.md`, `cp a.md board.md`), which still reads as a demand. That direction is chosen — a missed path costs nothing, a false alarm gets the guard switched off |
 | an agent that writes its report SOMEWHERE ELSE is reported as missing | correct, and the note says the summary is unverified rather than that the agent failed |
 | neither half ever refuses | deliberate. A read-only agent whose prompt merely names a path to READ is legitimate, and denying that would make the gate wrong more often than the dispatcher is |
 | the read-only type table is a dated snapshot | `Explore`, `Plan`, `claude-code-guide`, `statusline-setup`, `feature-dev:code-{architect,explorer,reviewer}`, taken 2026-08-31. A type defined in `.claude/agents/` is read from its `tools:` line instead; anything else is UNKNOWN and warns about nothing. The `PostToolUse` half covers it regardless |
@@ -159,8 +159,8 @@ transcript is a fallback, not a plan — the resumed run reads parts of it only 
 
 Pick the cheapest capable model per sub-task; a cheaper model stretches the same allowance
 across more sub-tasks. To resume an interrupted batch: read `progress.md` first — `done`
-items are reused from their output files, `delegated` items checked for their file, only
-`failed`/unfinished items re-dispatched, one at a time, no approval needed.
+items are reused from their output files, only `failed`/unfinished items re-dispatched, one
+at a time, no approval needed.
 
 ## 7. Fan-out skills
 

@@ -139,8 +139,11 @@ finish what is in flight, no new wave. **STOP** = wrap up, write `HANDOFF.md`, a
 (both routes the gate prints), end the turn. **NO-DATA** = report usage as UNKNOWN, never a
 number. Never compute headroom from raw percentages.
 
-⭐ **The line sometimes ADDS when the window empties at the recent rate** — `⛔ At the current
-rate the 5h window is SPENT in ~N min - M min BEFORE it resets.`
+⭐ **The line sometimes ADDS when the window empties at the recent rate.** At GO it reads
+`ℹ At the current rate the 5h window would be SPENT in ~N min - M min BEFORE it resets. That
+figure only sizes the NEXT block; GO stands.` Only at PACE/STOP does it read `⛔ … is SPENT in
+~N min … Plan for the gap, not for the reset.` And while the window is younger than
+`burn_note_min_age_min` (30 minutes) it says nothing at all — see below for why (0.63.2).
 
 ⛔ **N NEVER WINDS YOU DOWN.** Handing over, writing `HANDOFF.md` and arming a resume are
 triggered by the word **STOP**, and by nothing else — not by N, and not by PACE either, which
@@ -150,8 +153,9 @@ is the whole of it. **At GO you keep working, however small N is.**
 
 ⚠ **N SHOUTS LOUDEST WHERE IT IS LEAST TRUSTWORTHY.** The rate is anchored at the window's own
 open, so a young window makes any spend look steep. Measured 2026-09-14: at **10% used, 10
-minutes in**, the line fires with `SPENT in ~90 min`; the **same 10%, 45 minutes in**, prints
-nothing at all. The ⛔ is loudest exactly where the headroom is largest.
+minutes in**, the line fired with `SPENT in ~90 min`; the **same 10%, 45 minutes in**, printed
+nothing at all. The ⛔ was loudest exactly where the headroom was largest — which is why, since
+0.63.2, the first 30 minutes of a window print no burn sentence and a GO line carries ℹ, not ⛔.
 
 ⭐ **The brake reads the PERCENTAGE, never this figure** — a deliberate decision, recorded by
 the owner on 2026-08-29 and pinned by a check in `usage.py`: the burn figure is *a sentence,

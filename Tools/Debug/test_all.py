@@ -55,6 +55,10 @@ CHECKS = [
     # not reported. It touches no VS Code state - it diffs two fixtures in a temp
     # directory - so it is safe in the suite.
     ("vscode snapshot", [os.path.join(DEBUG_DIR, "vscode_snapshot.py"), "--selftest"]),
+    # ⚠ The cowork nag's evidence reader. Its selftest parses a fixture log and judges GHOST /
+    # LOADED for two firings; a parser that silently matched nothing would report "0 firings"
+    # for ever and the owner's collect-first decision would rest on an empty page.
+    ("cowork nag report", [os.path.join(DEBUG_DIR, "cowork_nag_report.py"), "--selftest"]),
 ]
 
 # ⚠ Per check, not for the whole run. The slowest of these takes seconds; anything near this
