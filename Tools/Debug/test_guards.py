@@ -458,6 +458,17 @@ def case_append_only(gate, sdir, root):
     assert cmd_guards.append_only_marker(board) == "# Claims board (append-only)"
     assert cmd_guards.append_only_marker(commented) == "<!-- append-only -->"
     assert cmd_guards.append_only_marker(plain) is None, "body text must not mark a file"
+    # ⛔ AND A DOCUMENT THAT MENTIONS THE COMMENT INLINE IS NOT MARKED. The installed 0.63.0 hook
+    # refused an Edit of skills/cowork/SKILL.zh-TW.md because its rule 3 says `<!-- append-only -->`
+    # in backticks inside the first 2 KB. The comment has to stand on a line of its own.
+    doc = os.path.join(d, "doc.md")
+    write_text(doc, "# How the marker works\n\nA record carries `<!-- append-only -->` on a line "
+                    "of its own, or says append-only in its first heading.\n")
+    assert cmd_guards.append_only_marker(doc) is None, \
+        "a document describing the marker inline was marked: %r" % (cmd_guards.append_only_marker(doc),)
+    write_text(doc, "# Notes\n  <!-- append-only -->  \nbody\n")
+    assert cmd_guards.append_only_marker(doc) == "<!-- append-only -->", \
+        "an own-line comment with surrounding spaces was not marked"
     assert cmd_guards.append_only_marker(os.path.join(d, "missing.md")) is None
 
     # -- Write: create, append (LF and CRLF) allowed; a rewrite refused; unmarked untouched.
@@ -515,6 +526,20 @@ def case_append_only(gate, sdir, root):
     write_text(fm, "---\n# Board (append-only)\nentry\n---\nentry\n---\n")
     assert cmd_guards.append_only_marker(fm) == "# Board (append-only)", \
         "a leading horizontal rule hid the marked heading"
+    # ⛔ ... and frontmatter that BEGINS with a `# comment` IS still frontmatter (review D, D7):
+    # the key-on-line-2 rule read the comment as the file's first heading, both ways.
+    write_text(fm, "---\n# generated, append-only in passing\ntitle: x\n---\n# Notes\nbody\n")
+    assert cmd_guards.append_only_marker(fm) is None, "a comment-first frontmatter marked the file"
+    write_text(fm, "---\n# generated\ntitle: x\n---\n# Log (append-only)\nbody\n")
+    assert cmd_guards.append_only_marker(fm) == "# Log (append-only)", \
+        "a comment-first frontmatter hid the marked heading"
+    # ⛔ THE ONE RAW OCCURRENCE MUST BE AT THE END (review D, D2): the last line repeats an
+    # earlier line's text but lacks its newline, so the raw count is 1 - for the EARLIER copy.
+    mid = os.path.join(d, "mid.md")
+    write_text(mid, "# Mid (append-only)\n[S1] took B\n---\n[S2] took B\n---")
+    r = ft("Edit", mid, old_string="took B\n---\n", new_string="took B\n---\n[S3] took C\n---\n")
+    assert decision(r) == "deny" and "not at the end" in reason(r), \
+        "a mid-file insertion via a raw-unique anchor was allowed: %r" % (reason(r),)
     # -- MultiEdit: a single trailing append passes; an earlier edit anywhere does not.
     grow = {"old_string": "took B\n---", "new_string": "took B\n---\n[10:10][S3] took C\n---"}
     assert decision(ft("MultiEdit", board, edits=[grow])) is None
@@ -542,9 +567,16 @@ def case_append_only(gate, sdir, root):
                 'echo x > "board/board dir/BOARD.md"', "echo x >'board/board dir/BOARD.md'",
                 "cd board && echo x > BOARD.md", "Set-Content -Value x %s" % rel,
                 "mv %s board/old.md" % rel,
-                # review C: b1 (a QUOTED cd target - the F1 shape again), d2 (PowerShell moves)
-                'cd "board" && echo x > BOARD.md', "Move-Item %s board/old.md" % rel,
-                "Rename-Item -Path %s -NewName old.md" % rel, "Copy-Item new.md %s" % rel):
+                # review C: b1 (a QUOTED cd target WITH A SPACE - the F1 shape again; review D
+                # measured the earlier fixture `cd "board"` passing under the OLD regex, so it
+                # pinned nothing), d2 (PowerShell moves)
+                'cd "board/board dir" && echo x > BOARD.md', "Move-Item %s board/old.md" % rel,
+                "Rename-Item -Path %s -NewName old.md" % rel, "Copy-Item new.md %s" % rel,
+                # review D: D1 (positional source + named parameter - the ordinary spelling),
+                # D3 (two cds in sequence), D4 (uppercase and the PowerShell spellings)
+                "Rename-Item %s -NewName old.md" % rel, "Move-Item %s -Destination board/old.md" % rel,
+                "cd board && cd .. && echo x > %s" % rel, "CD board && echo x > BOARD.md",
+                "Set-Location board && echo x > BOARD.md", "sl board && echo x > BOARD.md"):
         r = run_gate(gate, bash(root, cmd, sid=sid))
         assert decision(r) == "deny", "shell rewrite allowed: %r -> %r" % (cmd, reason(r))
         assert "declares itself append-only" in reason(r), \
@@ -572,6 +604,18 @@ def case_append_only(gate, sdir, root):
     assert decision(r) is None and "append-only" not in reason(r), \
         "refused on a file in the cwd that the command never touches: %r" % (reason(r),)
     os.remove(os.path.join(root, "BOARD.md"))
+    # ⛔ AND TWO cds IN SEQUENCE (review D, D3): from `board` then `..`, BOARD.md is the cwd's,
+    # which does not exist here - so no refusal on board/BOARD.md, a file never touched.
+    r = run_gate(gate, bash(root, "cd board && cd .. && echo x > BOARD.md", sid=sid))
+    assert decision(r) is None and "append-only" not in reason(r), \
+        "the second cd was ignored and a file the command never touches was refused: %r" % (reason(r),)
+    # Allowed controls for the PowerShell moves: copying or moving OUT, and a rename of a
+    # different file, must pass (review D's fix-prototype controls).
+    for cmd in ("Copy-Item %s -Destination board/before2.md" % rel,
+                "Rename-Item board/notes.md -NewName notes2.md",
+                "Move-Item new.md -Destination other.md -Force"):
+        r = run_gate(gate, bash(root, cmd, sid=sid))
+        assert decision(r) is None, "innocent PowerShell command refused: %r -> %r" % (cmd, reason(r))
     # -- a token the gate cannot expand is allowed and named as an allow in the log.
     before = len(gitlog(root))
     assert decision(run_gate(gate, bash(root, "echo x > $OUT/BOARD.md", sid=sid))) is None
@@ -617,7 +661,7 @@ def case_append_only(gate, sdir, root):
     finally:
         cmd_guards.GUARDS, cmd_guards.FILE_GUARDS = keep_g, keep_f
     assert decision(ft("Write", board, content="rewritten")) == "deny", "the guard did not come back"
-    print("ok - an append-only file may only grow: Write/Edit/MultiEdit and 23 shell shapes "
+    print("ok - an append-only file may only grow: Write/Edit/MultiEdit and 29 shell shapes "
           "refused, appends allowed, off switch and fail-open logged, mutation-checked")
 
 

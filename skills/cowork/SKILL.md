@@ -29,8 +29,8 @@ If you read nothing else, these are the ones whose absence caused real damage.
 3. **One append-only shared record, and correct it by appending.** Never edit an earlier
    entry, not even your own. The fact that a wrong answer was once believed is usually the
    most useful thing in the file. ⭐ **Enforced:** a file whose first heading says
-   `append-only` (or that carries `<!-- append-only -->`) may only grow - see *What the hook
-   enforces* below.
+   `append-only` (or that carries `<!-- append-only -->` on a line of its own) may only grow -
+   see *What the hook enforces* below.
 4. **Funnel questions to the owner through one session, and back the funnel with a file.**
    The funnel stops the owner answering the same thing three times. The file stops every
    pending question dying with that session.
@@ -97,7 +97,8 @@ started before the plugin was installed, log every decision, and have their own 
 
 **`guard_append_only` (rule 3).** A file declares itself append-only when, inside its first
 2 048 bytes, its first heading line contains `append-only` / `append only`, or an HTML comment
-`<!-- append-only -->` appears. Body text does not count. For such a file the hook refuses:
+`<!-- append-only -->` stands on a line of its own. Body text - including this sentence, which
+merely mentions the comment - does not count. For such a file the hook refuses:
 
 - a `Write` whose content does not start with the file's current text;
 - an `Edit` whose `old_string` is not the end of the file, or whose `new_string` does not start
@@ -107,19 +108,20 @@ started before the plugin was installed, log every decision, and have their own 
 - a shell command that truncates, rewrites in place or removes it: `> path` (quoted paths
   included), `sed -i`, `tee` without `-a`, `rm`, `truncate`, `cp` *onto* it, `mv` *from or onto*
   it, `Set-Content`, `Out-File` without `-Append`, `Clear-Content`, `Remove-Item`, `Move-Item`,
-  `Rename-Item`, `Copy-Item` *onto* it; a leading `cd x &&` in the same command is honoured when
-  the path is resolved.
+  `Rename-Item`, `Copy-Item` *onto* it; a leading `cd x &&` (or `Set-Location`, `pushd`) in the
+  same command *replaces* the directory the path is resolved against.
 
 Allowed: creating the file; `>>`, `tee -a`, `Add-Content`; an `Edit` whose `old_string` is the
-last line and whose `new_string` starts with it; copying the file *out*. ⚠ A copy inherits the
+file's last *entry* (long enough to occur once, ending at the file's end) and whose
+`new_string` starts with it; copying the file *out*. ⚠ A copy inherits the
 marker - snapshot to a new name, and never copy back onto the record. ⚠ A program that rewrites
 the file in place (`python fix.py board.md`), or removing the directory that holds it, is not
 seen; the guard reads shell operators and file-tool inputs, not what a program does.
 
 **`guard_cowork_first` (rules 1-2).** When another session's heartbeat in this repository is
 younger than `peer_alive_min` (default 15 minutes) and this session has not invoked
-`dispatch-guard:cowork`, the first `Write` / `Edit` / `git commit` is refused **once**, naming
-the peer count. Invoke the skill and retry; the next call goes through either way. A session
+`dispatch-guard:cowork`, the first `Write` / `Edit` (any file tool) / `git commit` is refused
+**once**, naming the peer count. Invoke the skill and retry; the next call goes through either way. A session
 idle at a prompt stops heartbeating, so an idle peer past 15 minutes is not counted; a peer
 that just exited is counted for up to 15 minutes - once, then never again for that session.
 

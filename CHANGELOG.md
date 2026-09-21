@@ -33,6 +33,33 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.63.1
+
+⛔ **第四位審查者（主人核准的第四輪，`code-review-D-fourth.md`）在 0.63.0 出貨後找到一個阻擋。**
+`Rename-Item board/BOARD.md -NewName old.md` 和 `Move-Item board/BOARD.md -Destination old.md` ——
+這兩個 cmdlet 最常見的寫法，位置路徑加具名參數 —— 被**放行**：`_ps_path` 回「具名值**或**位置參數」，
+一旦有任何參數具名，位置來源就被丟掉；而五份規格都寫這兩個 cmdlet 會拒。現在跟 `mv` 分支一樣，
+每個非旗標 token 都算。
+
+另外四個非阻擋一起修：（D2）C-c1 只修了一半 —— 錨點原始位元組只出現一次、但那一次是**前面**的一行
+（檔尾那行重複了文字卻少了換行），工具會插進檔案中間；現在要求那一次出現必須在檔尾。（D3）只認第一個
+`cd`，`cd board && cd .. && echo x > BOARD.md` 對 `board/BOARD.md` 誤拒；現在每個開頭的 cd 依序套用。
+（D4）`CD`、`Set-Location`、`sl`、`chdir`、`pushd` 沒被認得；現在不分大小寫、都認。（D7）以 `# 註解`
+開頭的 frontmatter 不再被跳過，那行註解變成「第一個標題」—— 兩個方向都錯；現在先跳過空行和註解行再找
+`key:`。（D9）C-b1 的「釘住測試」用的是 `cd "board"`（沒有空格），舊正規式本來就抓得到，等於沒釘；
+改成 `cd "board/board dir"`。文件：`PROTOCOL.md` §3/§4 三列改寫（D3/D5/D8/D11/D14）、SKILL.md 兩種語言
+「放行的 Edit 是最後**一則**不是最後一行」（D12）、「`cd` 取代目錄」（D13）、0.63.0 條目裡殘留的「14 種」
+（D15）。`case_append_only` 拒絕形狀 23 → 29，放行加三個 PowerShell 對照。
+
+⛔ **而且 gate 自己在這一輪抓到 D 沒抓到的一個：** 修 D12 時，裝好的 0.63.0 hook **拒絕了**對
+`skills/cowork/SKILL.zh-TW.md` 的 Edit —— 它把那個檔判成 append-only，因為第 3 條在前 2 KB 內用反引號
+提到 `<!-- append-only -->`。一份**描述**標記的文件不是帶標記的紀錄。現在 HTML 註解要**獨佔一行**才算；
+行內引用不算。這正是 ADR R1 寫的觸發條件，第一天就發生了。那兩個 zh-TW 編輯是用 Python 腳本逐位元組
+取代完成的（`PROTOCOL.md` §4 記載的缺口，hook 跑的是安裝快取不是工作樹），commit 訊息講明。
+⚠ D 的修正沒有第五輪。
+
+---
+
 ## 0.63.0
 
 ⭐ **第三個 skill：`cowork`** —— 幾個 session 共用一棵工作樹、替同一個主人工作的規則。由四個
@@ -62,7 +89,8 @@ session 在 2026-09-19 一個晚上寫成，每一條規則都在寫它的那一
     repo，不折大小寫它們彼此看不見。子 agent 帶父層 id，永遠不算 peer。六個性質與
     `guard_unattended_first` 相同：一次、有標記、關閉會記 `CMD-DISABLED` 且不花掉那一次、skill 叫過
     就安靜、沒蓋章只提醒。
-  - 兩個都 fail open、每個決定進 log、各有開關。`case_append_only`（14 種 shell 形狀拒、11 種放行、
+  - 兩個都 fail open、每個決定進 log、各有開關。`case_append_only`（出貨時 14 種 shell 形狀拒、11 種放行；
+    審查後增為 29 種，見 0.63.1、
     LF/CRLF 附加、`replace_all`、MultiEdit、fail-open、關閉、兩表都拆掉的突變）與 `case_cowork_first`
     （別的 repo／過期心跳／skill 已叫都安靜；磁碟代號反大小寫仍算 peer；commit 也觸發；拿掉 peer
     的突變）。
@@ -2651,6 +2679,41 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.63.1
+
+⛔ **A fourth reviewer (the owner approved a fourth round, `code-review-D-fourth.md`) found one
+blocker after 0.63.0 shipped.** `Rename-Item board/BOARD.md -NewName old.md` and
+`Move-Item board/BOARD.md -Destination old.md` — the ordinary spelling of both cmdlets, a
+positional path plus a named parameter — were **allowed**: `_ps_path` returned the named values
+**or** the positionals, so once any parameter was named the positional source was dropped, while
+five spec copies promised both cmdlets refused. Now every non-flag token counts, exactly the `mv`
+branch.
+
+Four non-blocking items fixed with it: (D2) C-c1 was taken by half — a raw-unique anchor whose one
+occurrence is an **earlier** line (the last line repeats the text but lacks the newline) let the
+tool insert mid-file; the single occurrence must now be at the end. (D3) only the first `cd` was
+honoured, so `cd board && cd .. && echo x > BOARD.md` falsely refused `board/BOARD.md`; every
+leading cd is applied in turn. (D4) `CD`, `Set-Location`, `sl`, `chdir`, `pushd` were unseen; all
+recognised, case-insensitive. (D7) frontmatter beginning with a `# comment` was no longer skipped
+and its comment became the "first heading", wrong in both directions; blank and comment lines are
+skipped before the `key:` test. (D9) C-b1's "pinning test" used `cd "board"` — no space — which the
+old regex already refused, so it pinned nothing; now `cd "board/board dir"`. Docs: three
+`PROTOCOL.md` §3/§4 rows rewritten (D3/D5/D8/D11/D14), SKILL.md in both languages says the allowed
+Edit anchors on the last **entry**, not the last line (D12), and that `cd` **replaces** the
+directory (D13), and the stale "14 shapes" inside the 0.63.0 entry (D15). `case_append_only`:
+23 → 29 refused shapes, plus three PowerShell allowed controls.
+
+⛔ **And the gate caught one D did not, in the same round:** while fixing D12, the installed
+0.63.0 hook **refused** an Edit of `skills/cowork/SKILL.zh-TW.md` — it judged the file
+append-only because rule 3 quotes `<!-- append-only -->` in backticks within the first 2 KB. A
+document that DESCRIBES the marker is not a record that carries it. The HTML comment must now
+stand on a line of its own; an inline mention does not count. That is exactly the trigger ADR R1
+names, on day one. The two zh-TW edits were applied by a Python script doing a byte-exact
+replace (the gap `PROTOCOL.md` §4 records — the hook runs the installed cache, not the working
+tree), and the commit message says so. ⚠ No fifth round on D's fixes.
+
+---
+
 ## 0.63.0
 
 ⭐ **A third skill: `cowork`** — the rules for several sessions sharing one working tree for one
@@ -2689,7 +2752,7 @@ in `Memory/tasks/20260919-204317-cowork-skill-and-hooks/`.
     off switch logs `CMD-DISABLED` and does not spend the mark, silent once the skill was seen,
     advisory when unstamped.
   - Both fail open, log every decision, and have their own switch. `case_append_only` (14 shell
-    shapes refused, 11 allowed, LF/CRLF appends, `replace_all`, MultiEdit, fail-open, the off
+    shapes refused and 11 allowed as shipped; 29 refused after the reviews, see 0.63.1, LF/CRLF appends, `replace_all`, MultiEdit, fail-open, the off
     switch, a mutation that removes the guard from both tables) and `case_cowork_first` (another
     repository / a stale heartbeat / the skill seen stay silent; a flipped drive-letter case still
     counts; commit triggers too; the peer-removal mutation).

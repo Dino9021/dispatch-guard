@@ -25,7 +25,7 @@
 2. **只登記自己，絕不代登記別人。** session 名字會無聲過期，而過期的名冊看起來跟現行的一模一樣。
    要知道「現在」誰負責某個角色，查活的來源。名冊記的是誰在何時認領了什麼 —— 它是歷史，不是通訊錄。
 3. **一份只能追加的共用紀錄，更正也用追加。** 不改先前的任何一則，連自己的也不改。「某個錯答案
-   曾經被相信過」通常是檔案裡最有用的資訊。⭐ **有 hook 強制：** 第一個標題含 `append-only`（或帶
+   曾經被相信過」通常是檔案裡最有用的資訊。⭐ **有 hook 強制：** 第一個標題含 `append-only`（或有一行只寫
    `<!-- append-only -->` 註解）的檔案只能變大 —— 見下方「hook 強制什麼」。
 4. **問主人的問題經由單一 session 匯集，並用一個檔案備援那個匯集點。** 匯集讓主人不必同一題答三次；
    檔案讓待答的問題不會跟著那個 session 一起死掉。
@@ -78,7 +78,8 @@ dispatch-guard 的 hook 看得到這台機器上每個 session 的每一次工�
 會記錄並放行）、對 plugin 安裝前就開始的 session 只提醒不拒絕、每個決定都寫進 log、各有自己的開關。
 
 **`guard_append_only`（第 3 條）。** 一個檔案在前 2 048 位元組內，第一個標題行含 `append-only` /
-`append only`，或出現 HTML 註解 `<!-- append-only -->`，就是它自己宣告只能追加。正文提到這幾個字不算。
+`append only`，或 HTML 註解 `<!-- append-only -->` **獨佔一行**，就是它自己宣告只能追加。正文提到這幾個字
+不算 —— 包括這一句在句子裡引用那個註解，也不算。
 對這種檔案 hook 會拒絕：
 
 - 內容不是以檔案現有文字開頭的 `Write`；
@@ -88,15 +89,15 @@ dispatch-guard 的 hook 看得到這台機器上每個 session 的每一次工�
 - 會截斷、就地改寫或移除它的 shell 指令：`> path`（含帶引號的路徑）、`sed -i`、沒有 `-a` 的 `tee`、
   `rm`、`truncate`、`cp` **蓋到它身上**、`mv` **來源或目的是它**、`Set-Content`、沒有 `-Append` 的
   `Out-File`、`Clear-Content`、`Remove-Item`、`Move-Item`、`Rename-Item`、`Copy-Item` **蓋到它身上**；
-  同一條指令開頭的 `cd x &&` 也算進路徑解析。
+  同一條指令開頭的 `cd x &&`（或 `Set-Location`、`pushd`）會**取代**路徑解析用的目錄。
 
-放行：建立這個檔案；`>>`、`tee -a`、`Add-Content`；`old_string` 是最後一行、`new_string` 以它開頭的
-`Edit`；把檔案**複製出去**。⚠ 複本會繼承標記 —— 快照請用新名字，也絕不複製回紀錄上。⚠ 一個就地
+放行：建立這個檔案；`>>`、`tee -a`、`Add-Content`；`old_string` 是檔案的最後**一則**（長到只出現一次、
+且結束在檔尾）、`new_string` 以它開頭的 `Edit`；把檔案**複製出去**。⚠ 複本會繼承標記 —— 快照請用新名字，也絕不複製回紀錄上。⚠ 一個就地
 改寫檔案的程式（`python fix.py board.md`）、或刪掉它所在的整個目錄，看不到；guard 讀的是 shell 運算子
 和檔案工具的輸入，不是程式做了什麼。
 
 **`guard_cowork_first`（第 1–2 條）。** 當這個 repository 裡另一個 session 的心跳比 `peer_alive_min`
-（預設 15 分鐘）新，而這個 session 沒有叫過 `dispatch-guard:cowork`，第一次 `Write` / `Edit` /
+（預設 15 分鐘）新，而這個 session 沒有叫過 `dispatch-guard:cowork`，第一次 `Write` / `Edit`（任何檔案工具）/
 `git commit` 會被拒絕**一次**，並說出 peer 數量。叫那支 skill 再重試；下一次呼叫無論如何都放行。
 停在提示等輸入的 session 不會心跳，所以閒置超過 15 分鐘的 peer 不算；剛離開的 peer 會被算到最多
 15 分鐘 —— 一次，之後對那個 session 不再。

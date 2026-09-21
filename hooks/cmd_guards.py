@@ -422,7 +422,12 @@ def g_relative_cd(payload, ctx, segs):
 APPEND_ONLY_HEAD = 2048
 FILE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 _AO_WORD = re.compile(r"append[- ]only", re.I)
-_AO_COMMENT = re.compile(r"<!--\s*append[- ]only\s*-->", re.I)
+# ⛔ THE COMMENT MUST STAND ON A LINE OF ITS OWN. The first version matched it anywhere in the
+# head - and the installed 0.63.0 hook then refused an Edit of the cowork skill's OWN reading
+# copy, because its rule 3 mentions `<!-- append-only -->` in backticks within the first 2 KB.
+# A document that DESCRIBES the marker is not a record that carries it (0.63.1, review D's
+# session, found by the gate itself).
+_AO_COMMENT = re.compile(r"^[ \t]*<!--\s*append[- ]only\s*-->[ \t]*$", re.I | re.M)
 # A single `>` that is not half of `>>`, optional space, then EITHER a double-quoted token,
 # a single-quoted token, or a bare one. `2>x` and `&>x` truncate too and are meant to match;
 # `2>&1` yields `&1`, which is no file. ⛔ Three alternations, not one optional quote with a
@@ -437,13 +442,21 @@ _REDIRECT = re.compile(r"""(?<!>)>(?!>)\s*(?:"([^"]+)"|'([^']+)'|([^\s"'|;&]+))"
 # measured the first version (optional quote + backreference) blind to `cd "board dir" && …`,
 # the exact shape F1 condemned one commit earlier. ⚠ Only the FIRST segment's cd is honoured;
 # `cd a && cd .. && …`, `pushd`, `cd --` and `(cd x && …)` are unseen - PROTOCOL.md §4.
-_CD_FIRST = re.compile(r"""^cd\s+(?:"([^"]+)"|'([^']+)'|([^\s"'|;&]+))\s*$""")
+# ⚠ EVERY leading cd segment is honoured in sequence (0.63.1): review D measured
+# `cd board && cd .. && echo x > BOARD.md` refused on board/BOARD.md when only the first was.
+# Case-insensitive, and the PowerShell spellings too - `CD`, `Set-Location`, `sl`, `chdir`,
+# `pushd` all resolved against the payload cwd before (review D, D4).
+_CD_FIRST = re.compile(r"""^(?:cd|chdir|sl|set-location|pushd)\s+(?:"([^"]+)"|'([^']+)'|([^\s"'|;&]+))\s*$""",
+                       re.I)
 # YAML frontmatter at the top of a file: skipped before looking for the first `#` line, so a
 # `# comment` inside the block is not read as the file's first heading (review A, F7).
-# ⛔ Only when the line after the opening `---` looks like a YAML key. Review C measured the
-# unguarded version eating a Markdown horizontal rule on line 1 together with the marked H1
-# below it, so the file read as unmarked and a rewrite passed.
-_FRONTMATTER = re.compile(r"\A---\r?\n(?=[A-Za-z_][\w.-]*\s*:).*?\r?\n---\r?\n", re.S)
+# ⛔ Only when the block looks like YAML - the first non-blank, non-comment line after the
+# opening `---` is a key. Review C measured the unguarded version eating a Markdown horizontal
+# rule on line 1 together with the marked H1 below it; review D measured the key-on-line-2
+# version NOT skipping frontmatter that begins with a `# generated` comment, whose comment then
+# became the file's "first heading" in both directions (false mark, and a hidden real H1).
+_FRONTMATTER = re.compile(
+    r"\A---\r?\n(?=(?:[ \t]*(?:#[^\n]*)?\r?\n)*[ \t]*[A-Za-z_][\w.-]*\s*:).*?\r?\n---\r?\n", re.S)
 UNREADABLE = "unreadable"   # append_only_marker's answer when the file cannot be opened
 # A token the gate cannot expand: a variable, a glob, a home. Skipped and logged, never guessed.
 _UNRESOLVABLE = re.compile(r"[$%~*?\[\]{}]")
@@ -471,7 +484,7 @@ def append_only_marker(path):
         return UNREADABLE
     m = _AO_COMMENT.search(head)
     if m:
-        return m.group(0)
+        return m.group(0).strip()
     head = _FRONTMATTER.sub("", head, count=1)
     for line in head.splitlines():
         if line.lstrip().startswith("#"):
@@ -513,6 +526,14 @@ def _edit_reason(current, edit):
         return ("the anchor occurs %d times - the tool edits one occurrence and the guard cannot "
                 "tell which, and with `replace_all` every earlier one would be rewritten. Make "
                 "the anchor longer (the whole last entry, not its last line)" % current.count(raw))
+    # ⛔ AND THE ONE OCCURRENCE MUST BE AT THE END. Review D measured a file whose last line
+    # repeats an earlier line's TEXT but lacks the trailing newline: the raw count is 1 (only the
+    # earlier copy carries the `\n`), the rstripped suffix test passes, and the tool inserts in
+    # the MIDDLE. The other half of review C's c1 fix, taken now (0.63.1).
+    at = current.find(raw)
+    if at >= 0 and current[at + len(raw):].strip():
+        return ("the anchor's one occurrence is not at the end of the file, so the Edit would "
+                "insert in the middle - include the file's final line in the anchor")
     return None
 
 
@@ -615,8 +636,12 @@ def append_only_targets(seg):
         if not any(a.lower().startswith("-append") for a in args):
             out += _ps_path(args)
     elif head in ("move-item", "rename-item"):
-        # source AND destination, like mv (review C, d2)
-        out += _ps_path(args, ("-path", "-literalpath", "-destination", "-newname"))
+        # ⛔ EVERY non-flag token, exactly the mv branch - source AND destination, positional or
+        # named. Review D measured `Rename-Item board/BOARD.md -NewName old.md` (the ordinary
+        # spelling) ALLOWED under a named-OR-positional rule: once one parameter was named the
+        # positional source was dropped. A named value is itself a non-flag token, and the
+        # caller's isfile+marker test discards a value that is not a file (0.63.1, D1).
+        out += pos
     elif head == "copy-item":
         dest = _ps_path(args, ("-destination",))
         out += dest if any(a.lower() == "-destination" for a in args) else dest[-1:]
@@ -627,15 +652,20 @@ def g_append_only(payload, ctx, segs):
     """A shell command that would truncate, rewrite in place or remove a file that declares
     itself append-only. The file-tool half is check_file_tool(); both share the rule above."""
     base = payload.get("cwd") or ctx.get("root") or "."
-    m = _CD_FIRST.match(segs[0]) if segs else None
-    if m:
+    rest = list(segs)
+    while rest:
+        m = _CD_FIRST.match(rest[0])
+        if not m:
+            break
         target = next(g for g in m.groups() if g)
-        if not _UNRESOLVABLE.search(target):
-            # `cd x && …`: later segments run in x, so x REPLACES the base. ⛔ Not "try both":
-            # review C measured `cd sub && echo x > BOARD.md` refused on the cwd's BOARD.md,
-            # a file the command never touches.
-            base = target if os.path.isabs(target) else os.path.join(base, target)
-    for s in segs:
+        if _UNRESOLVABLE.search(target):
+            break
+        # `cd x && …`: later segments run in x, so x REPLACES the base. ⛔ Not "try both":
+        # review C measured `cd sub && echo x > BOARD.md` refused on the cwd's BOARD.md, a
+        # file the command never touches. Every leading cd is applied in turn (review D, D3).
+        base = os.path.normpath(target if os.path.isabs(target) else os.path.join(base, target))
+        rest.pop(0)
+    for s in rest:
         for tok in append_only_targets(s):
             if _UNRESOLVABLE.search(tok):
                 # ⭐ AN ALLOW, AND NAMED AS ONE. The skip is logged under CMD-ALLOW so the
