@@ -49,6 +49,7 @@ import hashlib
 import os
 import re
 import subprocess
+import time
 
 # ⭐ EVERY GUARD HAS ITS OWN SWITCH, defaulting to on. A guard that cannot be turned off gets
 # the whole plugin uninstalled the first time it is wrong, and these are heuristics over
@@ -62,7 +63,19 @@ GUARD_DEFAULTS = {
     "guard_relative_cd": True,          # warn: `cd <relative> && …`
     "guard_unattended_first": True,     # deny once: dispatch before unattended-work loaded
     "guard_unpushed": True,             # note: older unpushed commits on this branch
+    # ⭐ THE TWO COWORK GUARDS (0.63.0) - rules about several sessions sharing one tree, from
+    # the `cowork` skill. Both keep this file's contract: fail open, advisory when unstamped,
+    # every decision logged, one switch each. ADR: Memory/tasks/20260919-204317-cowork-skill-and-hooks.
+    "guard_append_only": True,          # deny: a rewrite of a file that declares itself append-only
+    "guard_cowork_first": True,         # deny once: a write while a live peer shares this repo
 }
+
+# ⭐ HOW FRESH A PEER'S HEARTBEAT MUST BE to count it as live, in minutes. The gate touches
+# `state/<sid>.alive` on every hook event, so a session idle at a prompt stops touching it -
+# 15 is long enough to bridge a think, short enough that yesterday's sessions are gone.
+# ⚠ Both directions fail open in the ADVISORY sense: an idle peer past 15 min is not counted
+# (no nag), and a peer that exited keeps a fresh file for up to 15 min (one nag, once).
+PEER_ALIVE_MIN = 15
 
 # ⭐ WHICH SKILLS A SESSION MUST HAVE INVOKED BEFORE IT MAY DISPATCH ANYTHING - two booleans,
 # and the split between them is the point.
@@ -302,10 +315,15 @@ def g_commit_branch(payload, ctx, segs):
               "⛔ Do NOT switch it back - that breaks their work in flight. Commit from a "
               "throwaway clone instead: `git clone . ../dg-tmp`, commit and push there, then "
               "delete it. ⚠ Say this to the user before doing anything else: two sessions are "
-              "sharing one working tree, and each one needs its own worktree."
+              "sharing one working tree and it moved under you."
+              # ⛔ NOT "each one needs its own worktree" - that sentence shipped until 0.62.0
+              # and said the opposite of the owner's rule ("no worktree workaround") and of
+              # the cowork skill ("do not give each session its own copy of the work"). One
+              # shared tree, one owner of the irreversible operations, a throwaway clone for
+              # the commit that cannot land here. Pinned by test_guards.py.
               % (recorded, actual),
               # ⭐ ON THE SCREEN TOO: this one means somebody else's branch nearly received
-              # a commit, and only a person can decide to give the sessions separate trees.
+              # a commit, and only a person can decide how the two sessions share the tree.
               "dispatch-guard: `git commit` REFUSED - this session picked `%s`, the tree is "
               "on `%s`. Another session moved it. Nothing was committed." % (recorded, actual))
 
@@ -393,44 +411,421 @@ def g_relative_cd(payload, ctx, segs):
                  else "(It does exist under %s.)" % here))
 
 
+# ------------------------------------------------------- append-only records (cowork rule 3)
+
+# ⭐ THE FILE DECLARES ITSELF. No configured path list: cowork's rule 3 is "one append-only
+# shared record", and the record its four authors actually kept carries the word in its H1
+# (`# cowork skill — 認領板（append-only）`). A list in config is one more thing that drifts.
+# ⛔ THE FIRST HEADING, OR AN EXPLICIT COMMENT - NOT "ANYWHERE IN THE HEAD". Measured 2026-09-19
+# over 21 979 files: the loose rule marked the skill's own SKILL.md (rule 1's prose) and the
+# ADR that proposed it, both files that must be edited in place. The heading rule marked one.
+APPEND_ONLY_HEAD = 2048
+FILE_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+_AO_WORD = re.compile(r"append[- ]only", re.I)
+_AO_COMMENT = re.compile(r"<!--\s*append[- ]only\s*-->", re.I)
+# A single `>` that is not half of `>>`, optional space, then EITHER a double-quoted token,
+# a single-quoted token, or a bare one. `2>x` and `&>x` truncate too and are meant to match;
+# `2>&1` yields `&1`, which is no file. ⛔ Three alternations, not one optional quote with a
+# backreference: the first version (0.63.0 as committed) wrote `([\"']?)([^\s\"']+)\1`, whose
+# middle group excluded whitespace - so a quoted path CONTAINING A SPACE, the one case where
+# the quotes are needed, never matched, and `echo x > "board dir/BOARD.md"` truncated a marked
+# file with CMD-ALLOW. Found by code review A, 2026-09-21, against 17 shapes.
+_REDIRECT = re.compile(r"""(?<!>)>(?!>)\s*(?:"([^"]+)"|'([^']+)'|([^\s"'|;&]+))""")
+# A leading `cd <dir>` in the SAME command: later segments resolve against it INSTEAD of the
+# payload cwd - that is where they run. Code review A measured `cd board && echo x > BOARD.md`
+# passing with only the relative-cd WARN. ⛔ Same three alternations as _REDIRECT: review C
+# measured the first version (optional quote + backreference) blind to `cd "board dir" && …`,
+# the exact shape F1 condemned one commit earlier. ⚠ Only the FIRST segment's cd is honoured;
+# `cd a && cd .. && …`, `pushd`, `cd --` and `(cd x && …)` are unseen - PROTOCOL.md §4.
+_CD_FIRST = re.compile(r"""^cd\s+(?:"([^"]+)"|'([^']+)'|([^\s"'|;&]+))\s*$""")
+# YAML frontmatter at the top of a file: skipped before looking for the first `#` line, so a
+# `# comment` inside the block is not read as the file's first heading (review A, F7).
+# ⛔ Only when the line after the opening `---` looks like a YAML key. Review C measured the
+# unguarded version eating a Markdown horizontal rule on line 1 together with the marked H1
+# below it, so the file read as unmarked and a rewrite passed.
+_FRONTMATTER = re.compile(r"\A---\r?\n(?=[A-Za-z_][\w.-]*\s*:).*?\r?\n---\r?\n", re.S)
+UNREADABLE = "unreadable"   # append_only_marker's answer when the file cannot be opened
+# A token the gate cannot expand: a variable, a glob, a home. Skipped and logged, never guessed.
+_UNRESOLVABLE = re.compile(r"[$%~*?\[\]{}]")
+_QUOTED_TOKEN = re.compile(r"\"[^\"]*\"|'[^']*'|\S+")
+AO_SKIP = "skip"        # an input shape the rule cannot judge: allowed, and logged as such
+
+
+def append_only_marker(path):
+    """The line that declares `path` append-only; None when unmarked; UNREADABLE when the
+    file could not be opened - so the callers can LOG that, because "could not read" and
+    "unmarked" must not look the same (review A, F6).
+
+    Marked when, inside the first APPEND_ONLY_HEAD bytes, EITHER an HTML comment
+    `<!-- append-only -->` appears OR the first line that starts with `#` contains the words.
+    A leading YAML frontmatter block is skipped first. ⚠ Any heading level counts, and so does
+    a `#` line inside a leading code fence - both are the narrowing steps the ADR names if a
+    false refusal is ever measured (R1).
+    """
+    if not os.path.isfile(path):
+        return None                       # absent is "unmarked", not "unreadable"
+    try:
+        with open(path, "rb") as f:
+            head = f.read(APPEND_ONLY_HEAD).decode("utf-8-sig", "replace")
+    except (OSError, ValueError):
+        return UNREADABLE
+    m = _AO_COMMENT.search(head)
+    if m:
+        return m.group(0)
+    head = _FRONTMATTER.sub("", head, count=1)
+    for line in head.splitlines():
+        if line.lstrip().startswith("#"):
+            return line.strip() if _AO_WORD.search(line) else None
+    return None
+
+
+def _norm(text):
+    """CRLF folded to LF and a BOM dropped - the two ways a tool re-encodes what it read."""
+    if isinstance(text, bytes):
+        text = text.decode("utf-8-sig", "replace")
+    return text.replace("\r\n", "\n").lstrip("﻿")
+
+
+def _edit_reason(current, edit):
+    """None when this Edit APPENDS to `current`; AO_SKIP on a shape it cannot judge; else why not.
+
+    ⭐ Both operands rstrip()ed, so an old_string with or without its trailing newline is the
+    same anchor. ⛔ An anchor that ALSO occurs earlier is refused whether or not `replace_all`
+    is set: with it, every earlier copy is rewritten; without it, the tool edits ONE occurrence
+    and the guard cannot tell which - the Edit tool's own rule is that old_string must be
+    unique, so this can never refuse an Edit the tool would perform (review A, F3; the first
+    version keyed on `replace_all` alone, ADR round 1 N4).
+    """
+    old, new = edit.get("old_string"), edit.get("new_string")
+    if not isinstance(old, str) or not isinstance(new, str):
+        return AO_SKIP
+    raw = _norm(old)
+    o, n, c = raw.rstrip(), _norm(new).rstrip(), current.rstrip()
+    if not o or not c.endswith(o):
+        return "the Edit's old_string is not the end of the file, so it changes an earlier entry"
+    if not n.startswith(o):
+        return ("the Edit's new_string does not start with its old_string, so it rewrites the "
+                "anchor instead of adding after it")
+    # ⛔ THE RAW operand is counted, not the rstripped one: review C measured the rstripped count
+    # refusing `old_string="---\n"` on a file `see A---B\nfoo\n---\n`, where the tool itself
+    # counts ONE match and would perform the Edit. The tool's uniqueness test is on exact bytes.
+    if current.count(raw) > 1:
+        return ("the anchor occurs %d times - the tool edits one occurrence and the guard cannot "
+                "tell which, and with `replace_all` every earlier one would be rewritten. Make "
+                "the anchor longer (the whole last entry, not its last line)" % current.count(raw))
+    return None
+
+
+def file_tool_reason(path, tool, tool_input):
+    """Why this file-tool call is NOT an append to `path`: None when it is, AO_SKIP when the
+    shape cannot be judged, otherwise one sentence for the refusal."""
+    try:
+        with open(path, "rb") as f:
+            current = _norm(f.read())
+    except OSError:
+        return AO_SKIP
+    if tool == "Write":
+        content = tool_input.get("content")
+        if not isinstance(content, str):
+            return AO_SKIP
+        if _norm(content).rstrip().startswith(current.rstrip()):
+            return None
+        return "a Write replaces the file, and this content does not start with the file's current text"
+    if tool == "Edit":
+        return _edit_reason(current, tool_input)
+    if tool == "MultiEdit":
+        # ⚠ Defensive: not in every harness's tool list. Every element must itself be an append
+        # to the file AS IT STANDS after the elements before it - so only trailing appends pass.
+        edits = tool_input.get("edits")
+        if not isinstance(edits, list) or not edits:
+            return AO_SKIP
+        work = current
+        for e in edits:
+            if not isinstance(e, dict):
+                return AO_SKIP
+            why = _edit_reason(work, e)
+            if why:
+                return why
+            o, n, c = _norm(e["old_string"]).rstrip(), _norm(e["new_string"]).rstrip(), work.rstrip()
+            work = c[:len(c) - len(o)] + n
+        return None
+    return AO_SKIP                        # NotebookEdit, and anything newer than this file
+
+
+def _ao_verdict(path, marker, tool, why):
+    return _v(DENY, "guard_append_only",
+              "dispatch gate: %s REFUSED - `%s` declares itself append-only (%s), and %s. An "
+              "append-only record may only GROW: correct an earlier entry by appending a new one "
+              "that says what was wrong, never by rewriting it. Append with `>>`, `tee -a`, "
+              "`Add-Content`, or an Edit whose old_string is the file's last ENTRY (long enough "
+              "to occur once) and whose new_string starts with it; then check "
+              "`after == before + body`. ⚠ A copy of this "
+              "file inherits the marker - snapshot to a NEW name, and never copy back onto it."
+              % (tool, path, marker, why),
+              "dispatch-guard: %s on append-only `%s` refused. Nothing was written."
+              % (tool, os.path.basename(path)))
+
+
+def _tokens(seg):
+    return [t[1:-1] if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'" else t
+            for t in _QUOTED_TOKEN.findall(seg)]
+
+
+def _ps_path(args, names=("-path", "-filepath", "-literalpath")):
+    """The paths a PowerShell file cmdlet may act on: the values of the named parameters, else
+    EVERY positional argument - `Set-Content -Value x file` puts the value first, and the
+    caller's isfile+marker test discards a value that is not a file for free (review A, F4)."""
+    low = [a.lower() for a in args]
+    named = [args[i + 1] for i, a in enumerate(low) if a in names and i + 1 < len(args)]
+    return named or [a for a in args if not a.startswith("-")]
+
+
+def append_only_targets(seg):
+    """The paths a bare segment would TRUNCATE, REWRITE IN PLACE or REMOVE - never the ones it
+    appends to or reads.
+
+    ⚠ Destination operand ONLY for cp: copying the record OUT is the `before` step of the
+    append check the refusal itself recommends. ⛔ For mv, SOURCE operands too - a move is a
+    removal at the source (review A, F5). ⚠ Quoting is not honoured by `segments()`, so a `>`
+    inside a quoted string is seen; its token is then prose that resolves to no file.
+    """
+    out = [next(g for g in m.groups() if g) for m in _REDIRECT.finditer(seg)]
+    toks = _tokens(seg)
+    if not toks:
+        return out
+    head = _head(seg)
+    args = toks[1:]
+    pos = [a for a in args if not a.startswith("-")]
+    if head == "tee":
+        if not any(a == "--append" or (a.startswith("-") and not a.startswith("--")
+                                       and "a" in a[1:]) for a in args):
+            out += pos
+    elif head == "sed":
+        if any(a == "-i" or a.startswith("-i") or a.startswith("--in-place") for a in args) and pos:
+            out.append(pos[-1])
+    elif head in ("rm", "truncate", "del", "erase"):
+        out += pos
+    elif head in ("mv", "move") and len(pos) >= 2:
+        out += pos
+    elif head in ("cp", "copy") and len(pos) >= 2:
+        out.append(pos[-1])
+    elif head in ("clear-content", "remove-item"):
+        out += _ps_path(args)
+    elif head in ("set-content", "out-file"):
+        if not any(a.lower().startswith("-append") for a in args):
+            out += _ps_path(args)
+    elif head in ("move-item", "rename-item"):
+        # source AND destination, like mv (review C, d2)
+        out += _ps_path(args, ("-path", "-literalpath", "-destination", "-newname"))
+    elif head == "copy-item":
+        dest = _ps_path(args, ("-destination",))
+        out += dest if any(a.lower() == "-destination" for a in args) else dest[-1:]
+    return out
+
+
+def g_append_only(payload, ctx, segs):
+    """A shell command that would truncate, rewrite in place or remove a file that declares
+    itself append-only. The file-tool half is check_file_tool(); both share the rule above."""
+    base = payload.get("cwd") or ctx.get("root") or "."
+    m = _CD_FIRST.match(segs[0]) if segs else None
+    if m:
+        target = next(g for g in m.groups() if g)
+        if not _UNRESOLVABLE.search(target):
+            # `cd x && …`: later segments run in x, so x REPLACES the base. ⛔ Not "try both":
+            # review C measured `cd sub && echo x > BOARD.md` refused on the cwd's BOARD.md,
+            # a file the command never touches.
+            base = target if os.path.isabs(target) else os.path.join(base, target)
+    for s in segs:
+        for tok in append_only_targets(s):
+            if _UNRESOLVABLE.search(tok):
+                # ⭐ AN ALLOW, AND NAMED AS ONE. The skip is logged under CMD-ALLOW so the
+                # terminal-isolation check reads it as a live session's traffic, which it is.
+                ctx["log"]("CMD-ALLOW(guard_append_only unresolved) %s" % tok[:60])
+                continue
+            p = tok if os.path.isabs(tok) else os.path.join(base, tok)
+            if not os.path.isfile(p):
+                continue
+            marker = append_only_marker(p)
+            if marker == UNREADABLE:
+                ctx["log"]("CMD-ALLOW(guard_append_only unreadable) %s" % p[-60:])
+            elif marker:
+                return _ao_verdict(p, marker, "this command",
+                                   "it would truncate, rewrite or remove it (`%s`)" % s[:60])
+    return None
+
+
+# --------------------------------------------------- a live peer in this tree (cowork rule 1)
+
+def _minutes(value, default):
+    """A positive number of minutes out of a config value, else `default`."""
+    if isinstance(value, bool):
+        return default
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return default
+    return v if v > 0 else default
+
+
+def peer_sessions(ctx, now=None):
+    """[(sid, age_seconds)] for every OTHER session whose `.alive` is within `peer_alive_min`
+    and whose START cwd resolves to this call's repository root.
+
+    ⭐ NORMCASE ON BOTH SIDES. Measured 2026-09-19: 3 of 118 real `.start` files spell the drive
+    `C:` and the rest `c:`, two of the three in one repository - without normcase those peers
+    are invisible to each other. ⚠ This session's root follows the payload cwd; a peer's is its
+    START cwd. In a marked tree both resolve to the same directory; in a marker-less tree two
+    sessions in different subdirectories are NOT peers (a false negative, stated in the ADR).
+    ⚠ `.alive` files are pruned by COUNT at session start (dispatch_gate.STATE_KEEP_ALIVE), so a
+    live peer beyond the newest 20 is not seen either. Sub-agents share the parent's id and are
+    never peers.
+    """
+    cfg = ctx.get("cfg") or {}
+    limit = _minutes(cfg.get("peer_alive_min"), PEER_ALIVE_MIN) * 60
+    now = time.time() if now is None else now
+    mine = ctx["state"]("alive")
+    state_dir = os.path.dirname(mine)
+    root = os.path.normcase(os.path.abspath(ctx["root"]))
+    peers = []
+    try:
+        names = os.listdir(state_dir)
+    except OSError:
+        return peers
+    for n in names:
+        if not n.endswith(".alive") or n == os.path.basename(mine):
+            continue
+        sid = n[:-len(".alive")]
+        try:
+            age = now - os.path.getmtime(os.path.join(state_dir, n))
+        except OSError:
+            continue
+        if age > limit:
+            continue
+        cwd = ctx["session_cwd"](sid)
+        if not cwd:
+            continue                      # a pre-0.56 stamp: no cwd recorded, not counted
+        if os.path.normcase(os.path.abspath(ctx["repo_root"](cwd))) == root:
+            peers.append((sid, age))
+    return peers
+
+
+def cowork_first(payload, ctx, enabled=True, what="write to this tree"):
+    """Refuse ONE write or commit when another live session shares this repository and this
+    session never invoked the `cowork` skill. The same six properties as unattended_first():
+    silent once the skill was seen, one mark, off switch logs and does not spend the mark.
+
+    ⚠ ONCE, not until loaded: a Write happens hundreds of times a session, and a skill that
+    fails to load would otherwise stop all work. Whether one refusal changes behaviour is NOT
+    measured - the ADR's R5 reads the answer out of the gate log.
+    """
+    if skill_seen(ctx, "cowork"):
+        return None
+    mark = ctx["state"]("cowork-nagged")
+    if os.path.exists(mark):
+        return None
+    peers = peer_sessions(ctx)
+    if not peers:
+        return None
+    n = len(peers)
+    youngest = int(min(age for _, age in peers))
+    if not enabled:
+        ctx["log"]("CMD-DISABLED(guard_cowork_first) would have refused: %d live peer(s)" % n)
+        return None
+    _write(mark, "1")
+    plural = "" if n == 1 else "s"
+    return _v(DENY, "guard_cowork_first",
+              "dispatch gate: refused ONCE - %d other live session%s %s working in this "
+              "repository (youngest heartbeat %ds ago), and this session never invoked the "
+              "`cowork` skill. Invoke `dispatch-guard:cowork` now, then retry; the next call is "
+              "allowed either way. It says how to claim work before producing it, register "
+              "yourself, write to the shared record, and never overwrite a peer - all of which "
+              "apply to the %s you are about to make."
+              % (n, plural, "is" if n == 1 else "are", youngest, what),
+              "dispatch-guard: first write refused - %d other session%s live in this repository "
+              "and the agent had not loaded the cowork skill. It is being asked to load it. "
+              "This happens at most once per session." % (n, plural))
+
+
+def g_cowork_first_commit(payload, ctx, segs):
+    """The shell half of cowork_first: a `git commit` is the irreversible operation cowork's
+    ownership rule is about."""
+    if not any(_COMMIT.match(s) for s in segs):
+        return None
+    cfg = ctx.get("cfg") or {}
+    return cowork_first(payload, ctx,
+                        enabled=cfg.get("guard_cowork_first", GUARD_DEFAULTS["guard_cowork_first"]),
+                        what="commit")
+
+
+# --------------------------------------------------------------------- the file-tool guards
+# Same shape as the shell guards, with the tool, the resolved path and the tool_input passed
+# in: (payload, ctx, tool, path, tool_input) -> a verdict or None.
+
+def f_append_only(payload, ctx, tool, path, tool_input):
+    if not path or not os.path.isfile(path):
+        return None                       # creating a file is always an append
+    marker = append_only_marker(path)
+    if marker == UNREADABLE:
+        ctx["log"]("CMD-ALLOW(guard_append_only unreadable) %s" % path[-60:])
+        return None
+    if not marker:
+        return None
+    why = file_tool_reason(path, tool, tool_input)
+    if why is None:
+        return None
+    if why == AO_SKIP:
+        ctx["log"]("CMD-ALLOW(guard_append_only %s shape not judged) %s" % (tool, path[-60:]))
+        return None
+    return _ao_verdict(path, marker, tool, why)
+
+
+def f_cowork_first(payload, ctx, tool, path, tool_input):
+    cfg = ctx.get("cfg") or {}
+    return cowork_first(payload, ctx,
+                        enabled=cfg.get("guard_cowork_first", GUARD_DEFAULTS["guard_cowork_first"]),
+                        what="%s to `%s`" % (tool, os.path.basename(path or "?")))
+
+
 # ⭐ THE TABLE IS THE GUARD LIST. Ordered most-damaging first, and the first verdict wins:
 # one refusal an agent can act on beats four it has to unpick. Deleting an entry disables
 # that guard completely, which is how the checks in Tools/Debug/test_guards.py mutation-test
 # each one - remove the row, drive the same payload through main(), watch the check fail.
+# ⚠ The cowork nag sits BEFORE the relative-cd WARNING: a warning is also a verdict, and the
+# first verdict wins, so a `cd x && git commit` would otherwise never reach the nag.
 GUARDS = (
     ("guard_commit_branch", g_commit_branch),
     ("guard_add_all", g_add_all),
     ("guard_commit_message_file", g_commit_message_file),
+    ("guard_append_only", g_append_only),
     ("guard_silenced_search", g_silenced_search),
+    ("guard_cowork_first", g_cowork_first_commit),
     ("guard_relative_cd", g_relative_cd),
+)
+
+# The file-tool table. `Write`, `Edit`, `MultiEdit`, `NotebookEdit` reach these from main().
+FILE_GUARDS = (
+    ("guard_append_only", f_append_only),
+    ("guard_cowork_first", f_cowork_first),
 )
 
 
 # ---------------------------------------------------------------------------- entry points
 
-def check(payload, ctx):
-    """Run the command guards over a PreToolUse payload. Returns a verdict or None.
+def _run(guards, ctx, label, call):
+    """Drive one guard table. Returns the first verdict, or None after logging the allow.
 
     ⛔ LOGS EVERY DECISION - allow, deny, disabled and error alike. "No denial appeared" and
     "no guard ever ran" must not look the same in the log, because that is precisely how this
     plugin was silently advisory for five releases.
     """
-    cmd = command_of(payload)
-    if not cmd:
-        return None
-    if not ctx.get("stamped"):
-        # See point 2 in the module docstring: never mid-flight in a session already running.
-        ctx["log"]("CMD-ADVISORY(no-session-stamp) %s" % cmd[:60])
-        return None
     cfg = ctx.get("cfg") or {}
-    segs = [bare(s) for s in segments(cmd)]
     off = []
-    for key, fn in GUARDS:
+    for key, fn in guards:
         enabled = cfg.get(key, GUARD_DEFAULTS.get(key, True))
         if not enabled:
             off.append(key)
         try:
-            v = fn(payload, ctx, segs)
+            v = call(fn)
         except Exception as exc:
             # ⛔ FAIL OPEN, LOUDLY IN THE LOG AND SILENTLY ON SCREEN. A guard that breaks
             # must not block work; a guard that breaks unnoticed must not happen either.
@@ -441,13 +836,48 @@ def check(payload, ctx):
         if not enabled:
             # ⭐ RUN EVEN WHEN OFF, so the log says what the off switch actually cost. A
             # disabled guard that stays quiet is invisible; this one at least leaves a trace.
-            ctx["log"]("CMD-DISABLED(%s) would have refused: %s" % (key, cmd[:60]))
+            ctx["log"]("CMD-DISABLED(%s) would have refused: %s" % (key, label))
             continue
-        ctx["log"]("CMD-%s(%s) %s" % (v["kind"].upper(), key, cmd[:60]))
+        ctx["log"]("CMD-%s(%s) %s" % (v["kind"].upper(), key, label))
         return v
     ctx["log"]("CMD-ALLOW(checked=%d off=%s) %s"
-               % (len(GUARDS), ",".join(off) or "-", cmd[:60]))
+               % (len(guards), ",".join(off) or "-", label))
     return None
+
+
+def check(payload, ctx):
+    """Run the command guards over a PreToolUse payload. Returns a verdict or None."""
+    cmd = command_of(payload)
+    if not cmd:
+        return None
+    if not ctx.get("stamped"):
+        # See point 2 in the module docstring: never mid-flight in a session already running.
+        ctx["log"]("CMD-ADVISORY(no-session-stamp) %s" % cmd[:60])
+        return None
+    segs = [bare(s) for s in segments(cmd)]
+    return _run(GUARDS, ctx, cmd[:60], lambda fn: fn(payload, ctx, segs))
+
+
+def check_file_tool(payload, ctx):
+    """Run the file-tool guards over a PreToolUse payload for Write/Edit/MultiEdit/NotebookEdit.
+
+    ⭐ THE SAME CONTRACT AS check(): every decision logged, advisory when the session is
+    unstamped, and a guard that raises is logged and skipped. A relative `file_path` resolves
+    against the payload's cwd - the only cwd the gate has.
+    """
+    tool = payload.get("tool_name")
+    if tool not in FILE_TOOLS:
+        return None
+    tool_input = payload.get("tool_input") or {}
+    path = tool_input.get("file_path")
+    path = str(path) if path else ""
+    if path and not os.path.isabs(path):
+        path = os.path.join(payload.get("cwd") or ctx.get("root") or ".", path)
+    label = "%s %s" % (tool, path[-60:] if path else "(no path)")
+    if not ctx.get("stamped"):
+        ctx["log"]("CMD-ADVISORY(no-session-stamp) %s" % label)
+        return None
+    return _run(FILE_GUARDS, ctx, label, lambda fn: fn(payload, ctx, tool, path, tool_input))
 
 
 def skill_slug(name):

@@ -33,6 +33,72 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.63.0
+
+⭐ **第三個 skill：`cowork`** —— 幾個 session 共用一棵工作樹、替同一個主人工作的規則。由四個
+session 在 2026-09-19 一個晚上寫成，每一條規則都在寫它的那一小時裡被寫的人違反過至少一次；
+整併進這個外掛的 ADR 走了兩輪對抗審查（第一輪 REJECT、四個阻擋；第二輪 ACCEPT、0 阻擋），紀錄在
+`Memory/tasks/20260919-204317-cowork-skill-and-hooks/`。
+
+- `skills/cowork/SKILL.md`（入口：十二條規則、24 列失效形狀目錄、hook 強制什麼）、`SKILL.zh-TW.md`
+  （給人讀的對照）、`reference/` 五個英文檔。⛔ **一條規則只有一份正本**：已經在 `unattended-work`
+  §9／§10／§11／§12 或 `dispatch-protocol` 的，cowork 只指過去、不重述；而且只指向 plugin 裡出貨的
+  檔案，絕不指向只有某台機器才有的 user-scope 檔（第一輪抓到兩處指向 `~/.claude/CLAUDE.md`）。
+  `test_guards.py` 新增 `case_cowork_restates_nothing`：相似度掃描（門檻 0.25，正負對照同跑）
+  加**正規化標題比對** —— 因為第一版合併留下一節與 `unattended-work` §9 標題一字不差、相似度卻只有
+  0.167，單靠分數看不到。兩個突變都殺掉。
+- ⭐ **兩條規則變成閘門**（`hooks/cmd_guards.py`，`dispatch_gate.py` 的 `main()` 多一個檔案工具分支）：
+  - **`guard_append_only`** —— 第一個標題含 `append-only`（或帶 `<!-- append-only -->`）的檔案只能
+    變大。`Write` 要以現有內容開頭；`Edit` 的 `old_string` 要在檔尾、`new_string` 要以它開頭、對前面
+    也出現過的錨點設 `replace_all` 會被拒；shell 的 `> path`、`sed -i`、無 `-a` 的 `tee`、`rm`、
+    `truncate`、`cp`/`mv` 蓋到它、`Set-Content`、無 `-Append` 的 `Out-File`、`Clear-Content`、
+    `Remove-Item` 都拒。⛔ **標記看「第一個標題」，不看正文** —— 掃過 21 979 個檔實測，寬鬆規則會
+    把 skill 自己的 SKILL.md 和提出它的 ADR 都鎖成只能追加。展不開的 token（`$VAR`、萬用字元）記成
+    `CMD-ALLOW(guard_append_only unresolved)` 放行 —— 命名成 CMD-ALLOW 是刻意的，terminal 隔離那個
+    檢查只放行這個字首。
+  - **`guard_cowork_first`** —— 同一個 repo 裡另一個 session 的 `.alive` 比 `peer_alive_min`（15
+    分鐘，新鍵）新，而這個 session 沒叫過 `cowork`，第一次 `Write`／`Edit`／`git commit` 拒絕一次。
+    peer 的根用 `normcase` 比 —— 118 個真實 `.start` 檔裡有 3 個磁碟代號大寫，其中兩個在同一個
+    repo，不折大小寫它們彼此看不見。子 agent 帶父層 id，永遠不算 peer。六個性質與
+    `guard_unattended_first` 相同：一次、有標記、關閉會記 `CMD-DISABLED` 且不花掉那一次、skill 叫過
+    就安靜、沒蓋章只提醒。
+  - 兩個都 fail open、每個決定進 log、各有開關。`case_append_only`（14 種 shell 形狀拒、11 種放行、
+    LF/CRLF 附加、`replace_all`、MultiEdit、fail-open、關閉、兩表都拆掉的突變）與 `case_cowork_first`
+    （別的 repo／過期心跳／skill 已叫都安靜；磁碟代號反大小寫仍算 peer；commit 也觸發；拿掉 peer
+    的突變）。
+- ⛔ **`g_commit_branch` 的拒絕訊息少了一句。** 到 0.62.0 它結尾寫「each one needs its own
+  worktree」—— 跟主人的規則（「no worktree workaround」）和旁邊出貨的 cowork（「不要給每個 session
+  自己的一份」）相反。一個 plugin 兩套對的規則，正是 cowork 目錄裡那個失效形狀。刪掉那一句，
+  `case_branch` 釘住。`PROTOCOL.md` §4 同一句話的另一份（「give each a worktree」）一併改掉。
+- `config.example.json` 三個新鍵（雙語註解）；`PROTOCOL.md` §3 兩列、§4 四列誠實缺口；README 兩種
+  語言各一節。
+- ⛔ **發佈前的兩位審查者各找到一個阻擋，都在 0.63.0 出貨前修掉**（`code-review-A-guards.md`、
+  `code-review-B-content.md`）。A：`_REDIRECT` 對**帶空格的引號路徑**永遠不命中 —— 引號存在的唯一
+  理由就是空格，所以 `echo x > "board dir/BOARD.md"` 帶著 CMD-ALLOW 把紀錄截斷了；改成三個交替式。
+  順帶修：同一條指令開頭的 `cd x &&` 也納入路徑解析；重複出現的錨點**不論有沒有** `replace_all`
+  都拒（工具本來就要求唯一，所以不會多拒任何工具做得到的 Edit）；`Set-Content -Value x file`
+  看得到了；`mv` 的**來源**也算移除；讀不到的檔記 `CMD-ALLOW(guard_append_only unreadable)` 而不是
+  裝成沒標記；YAML frontmatter 裡的 `# 註解` 不算第一個標題。B：去重時掉了「substring match 不是
+  token match」這一句 —— 它唯一的另一份在 user-scope，正是 ADR 說要留在 cowork 的情況；補回。
+  順帶修：8.1 指向一個 `dispatch-protocol` 沒寫的規則（改指 `require_handoff_past_soft`）、8.2 少了
+  兩項、8.5 重述了 PACE/STOP、verification.md 在指向 §9 的那句裡又重述了 §9。測試補強：拒絕的 shell
+  形狀（14 → 23 種）現在連**拒絕理由**一起斷言（只斷言 `deny` 的話別的 guard 也能讓它綠），放行的形狀
+  斷言 guard 真的跑過（`checked=`）。
+- ⛔ **第三位審查者反駁那批修正，又找到 12 個非阻擋**（`code-review-C-refute.md`），四個發佈前修：
+  `cd "board dir" &&` 的引號正規式犯了 F1 同一個錯（改成同樣三個交替式）；`cd x &&` 的目標**取代**
+  cwd 而不是兩邊都試（兩邊都試會對指令沒碰到的檔誤拒）；錨點計數改算**原始**位元組（rstrip 過的
+  計數會拒掉工具本身找得到一次的 Edit）；frontmatter 跳過只在第二行像 YAML key 時才做（否則第一行的
+  `---` 水平線會連同下面的標題一起被吃掉，檔案變成沒標記）。加 `Move-Item`、`Rename-Item`、
+  `Copy-Item`。**記下不修的**：A-F9（`"false"` 字串對九個 guard 都算 true，繼承）、B-NB-5（ADR 指定
+  的措辭）、B-NB-6（規格在三處，本 plugin 慣例）；C 的其他缺口寫進 `PROTOCOL.md` §4。⚠ C 那批修正
+  沒有再被第四位審過 —— 兩輪加一輪反駁是預算。
+- ⚠ **沒做、寫下來的：** `~/.claude/docs/VERIFICATION-LESSONS.md` 該吸收哪九條、cowork 該留哪三條，
+  是一份給主人的建議（`RECOMMENDATION-verification-lessons.md`），不是改動 —— 那是另一個 repo
+  的 user-scope 檔。cowork 在那之前保留全文（先加再刪，否則就是它自己記的「省略遇上重組」）。
+  `NewSkill/cowork/` 原件要不要刪是主人的一句話，在 `Memory/PENDING.md`。
+
+---
+
 ## 0.62.0
 
 ⚠ **又一個預設門檻變了，所以又是次版號。** `soft_pct_7d` **95 → 93**（PACE，由「七天」視窗
@@ -2582,6 +2648,93 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.63.0
+
+⭐ **A third skill: `cowork`** — the rules for several sessions sharing one working tree for one
+owner. Written by four sessions in one evening on 2026-09-19, every rule broken at least once by
+its author in the hour it was written; the ADR that merged it into this plugin went through two
+adversarial review rounds (round 1 REJECT with four blockers, round 2 ACCEPT with none), recorded
+in `Memory/tasks/20260919-204317-cowork-skill-and-hooks/`.
+
+- `skills/cowork/SKILL.md` (the entry point: twelve rules, a 24-row catalogue of failure shapes,
+  what the hook enforces), `SKILL.zh-TW.md` (a reading copy), five English `reference/` files.
+  ⛔ **One live copy per rule**: where a rule already lives in `unattended-work` §9/§10/§11/§12
+  or `dispatch-protocol`, cowork points at it and does not restate it — and it points only at
+  files the plugin ships, never at a user-scope file one machine has (round 1 caught two pointers
+  to `~/.claude/CLAUDE.md`). `test_guards.py` gains `case_cowork_restates_nothing`: a similarity
+  scan (floor 0.25, positive and negative controls in the same run) **plus a normalised-heading
+  comparison** — because the first merge left a section with a heading identical to
+  `unattended-work` §9 that scored 0.167, invisible to the score alone. Both mutations killed.
+- ⭐ **Two of the rules are gates now** (`hooks/cmd_guards.py`; `dispatch_gate.py`'s `main()`
+  gains a file-tool branch):
+  - **`guard_append_only`** — a file whose first heading contains `append-only` (or that carries
+    `<!-- append-only -->`) may only grow. A `Write` must start with the current content; an
+    `Edit`'s `old_string` must be the end of the file and its `new_string` start with it, and
+    `replace_all` on an anchor that also occurs earlier is refused; in the shell `> path`,
+    `sed -i`, `tee` without `-a`, `rm`, `truncate`, `cp`/`mv` onto it, `Set-Content`, `Out-File`
+    without `-Append`, `Clear-Content`, `Remove-Item` are refused. ⛔ **The marker is the FIRST
+    HEADING, not body text** — measured over 21 979 files, the loose rule locked the skill's own
+    SKILL.md and the ADR that proposed it. A token the gate cannot expand (`$VAR`, a glob) is
+    logged `CMD-ALLOW(guard_append_only unresolved)` and allowed — named as an ALLOW on purpose,
+    because the terminal-isolation check treats only that prefix as live traffic.
+  - **`guard_cowork_first`** — when another session's `.alive` in this repository is younger than
+    `peer_alive_min` (15 minutes, a new key) and this session never invoked `cowork`, the first
+    `Write` / `Edit` / `git commit` is refused once. Peer roots are compared under `normcase` —
+    3 of 118 real `.start` files spell the drive letter upper-case, two of them in one repository,
+    and without case-folding those peers cannot see each other. Sub-agents carry the parent's id
+    and are never peers. The same six properties as `guard_unattended_first`: once, a mark, the
+    off switch logs `CMD-DISABLED` and does not spend the mark, silent once the skill was seen,
+    advisory when unstamped.
+  - Both fail open, log every decision, and have their own switch. `case_append_only` (14 shell
+    shapes refused, 11 allowed, LF/CRLF appends, `replace_all`, MultiEdit, fail-open, the off
+    switch, a mutation that removes the guard from both tables) and `case_cowork_first` (another
+    repository / a stale heartbeat / the skill seen stay silent; a flipped drive-letter case still
+    counts; commit triggers too; the peer-removal mutation).
+- ⛔ **One sentence leaves the `g_commit_branch` refusal.** Until 0.62.0 it ended "each one needs
+  its own worktree" — the opposite of the owner's rule ("no worktree workaround") and of the
+  cowork skill shipped beside it ("do not give each session its own copy of the work"). One
+  plugin, two right rules, is cowork's own catalogued failure shape. The sentence is gone and
+  `case_branch` pins it. The same advice in `PROTOCOL.md` §4 ("give each a worktree") is
+  corrected with it.
+- `config.example.json`: three new keys with bilingual comments. `PROTOCOL.md`: two rows in §3,
+  four honest gaps in §4. README: one section in each language.
+- ⛔ **Two pre-publish reviewers each found one blocker; both fixed before 0.63.0 shipped**
+  (`code-review-A-guards.md`, `code-review-B-content.md`). A: `_REDIRECT` never matched a
+  **quoted path containing a space** — the one case quotes exist for — so
+  `echo x > "board dir/BOARD.md"` truncated the record under CMD-ALLOW; now three alternations.
+  Also from A: a leading `cd x &&` in the same command is honoured when the path is resolved; a
+  repeated anchor is refused **with or without** `replace_all` (the tool requires uniqueness, so
+  this never refuses an Edit the tool would perform); `Set-Content -Value x file` is seen; `mv`'s
+  **source** counts as a removal; an unreadable file logs `CMD-ALLOW(guard_append_only
+  unreadable)` instead of passing as unmarked; a `# comment` inside YAML frontmatter is not the
+  first heading. B: the dedup dropped "a substring match is not a token match" — its only other
+  copy is user-scope, exactly the case the ADR says stays in cowork; restored. Also from B: 8.1
+  pointed at a rule `dispatch-protocol` does not carry (now `require_handoff_past_soft`); 8.2
+  had lost two items; 8.5 restated PACE/STOP; verification.md restated §9 inside the sentence
+  pointing at it. Tests hardened: the refused shell shapes (14 → 23) now assert the **refusal
+  reason** (a bare `deny` can come from any guard), and the allowed shapes assert the guard ran
+  (`checked=`).
+- ⛔ **A third reviewer refuted the fixes and found 12 more non-blocking items**
+  (`code-review-C-refute.md`); four fixed before publish: the `cd "board dir" &&` regex repeated
+  F1's mistake (now the same three alternations); the `cd x &&` target **replaces** the cwd
+  instead of being tried beside it (trying both refused files the command never touched); the
+  anchor count is over **raw** bytes (the rstripped count refused an Edit the tool itself finds
+  once); the frontmatter skip only fires when line 2 looks like a YAML key (otherwise a `---`
+  horizontal rule on line 1 swallowed the marked heading and the file read as unmarked).
+  `Move-Item`, `Rename-Item`, `Copy-Item` added. **Recorded, not fixed:** A-F9 (a string
+  `"false"` is truthy for all nine guards - inherited), B-NB-5 (the ADR's wording), B-NB-6 (the
+  spec lives in three places by this plugin's convention); C's remaining gaps are in
+  `PROTOCOL.md` §4. ⚠ C's fixes were not re-reviewed by a fourth agent - two rounds plus one
+  refutation is the budget.
+- ⚠ **Not done, and written down:** which nine items `~/.claude/docs/VERIFICATION-LESSONS.md`
+  should absorb and which three cowork keeps is a recommendation to the owner
+  (`RECOMMENDATION-verification-lessons.md`), not an edit — that file is user-scope, in another
+  repository. cowork keeps the full text until then (add before remove, or it is its own
+  "omission meets reorganisation"). Whether to delete the `NewSkill/cowork/` original is one
+  sentence from the owner, in `Memory/PENDING.md`.
 
 ---
 

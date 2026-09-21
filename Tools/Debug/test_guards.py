@@ -95,6 +95,19 @@ def bash(root, command, event="PreToolUse", sid="s1", tool="Bash", response=None
     return p
 
 
+def file_tool(root, tool, path, sid="s1", event="PreToolUse", **tool_input):
+    """A Write / Edit / MultiEdit / NotebookEdit payload, the way the harness sends one."""
+    return {"hook_event_name": event, "tool_name": tool, "cwd": root, "session_id": sid,
+            "tool_input": dict(tool_input, file_path=path)}
+
+
+def write_text(path, text):
+    """A fixture file with its bytes exactly as given (no newline translation)."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
+
+
 def band_pcts(gate):
     """Percentages a few points INSIDE the PACE and STOP bands, read from the thresholds.
 
@@ -260,6 +273,11 @@ def case_branch(gate, sdir, root):
     assert decision(r) == "deny", r
     assert "master" in reason(r) and "theirs" in reason(r), reason(r)
     assert "clone" in reason(r), "the refusal must name the repair"
+    # ⛔ AND NOT THE OPPOSITE REPAIR. Until 0.62.0 this message ended "each one needs its own
+    # worktree" - the reverse of the owner's rule ("no worktree workaround") and of the cowork
+    # skill shipped beside it ("do not give each session its own copy of the work"). One
+    # plugin, two right rules, is cowork's own catalogued failure. ADR 20260919-204317, D9.
+    assert "own worktree" not in reason(r), "the refusal sends agents to worktrees again"
     assert r.get("systemMessage"), "this one has to reach the person too"
     # A bare commit is refused for the same reason.
     assert decision(run_gate(gate, bash(root, "git commit -F m.txt"))) == "deny"
@@ -410,6 +428,291 @@ def case_advisory_without_stamp(gate, sdir, root):
     tail = gitlog(root)[before:]
     assert "CMD-ADVISORY(no-session-stamp)" in tail, tail
     print("ok - an unstamped session is advisory, and says so in the log")
+
+
+def case_append_only(gate, sdir, root):
+    """cowork rule 3 as a gate: a file that declares itself append-only may only GROW.
+
+    ⭐ THE FILE DECLARES ITSELF - first heading or `<!-- append-only -->`, never body text: the
+    loose rule marked the skill's own SKILL.md and the ADR that proposed it (measured over
+    21 979 files, 2026-09-19). ⛔ MUTATION-CHECKED both ways: the guard is removed from BOTH
+    tables and the same payloads are driven again; a refusal that survives was not this guard.
+    """
+    import cmd_guards
+    sid = "s-append"
+    stamp_session(gate, sdir, sid)
+    d = os.path.join(root, "board")
+    board = os.path.join(d, "BOARD.md")
+    body = ("# Claims board (append-only)\n\nrules\n\n---\n[10:00][S1] took A\n---\n"
+            "[10:05][S2] took B\n---\n")
+    write_text(board, body)
+    plain = os.path.join(d, "notes.md")
+    write_text(plain, "# Notes\n\nThis body mentions an append-only board.\n\n---\nend\n")
+    commented = os.path.join(d, "log.md")
+    write_text(commented, "<!-- append-only -->\n# Log\nfirst\n")
+
+    def ft(tool, path, s=sid, **ti):
+        return run_gate(gate, file_tool(root, tool, path, sid=s, **ti))
+
+    # -- the marker rule: a heading or the comment marks; body text does not.
+    assert cmd_guards.append_only_marker(board) == "# Claims board (append-only)"
+    assert cmd_guards.append_only_marker(commented) == "<!-- append-only -->"
+    assert cmd_guards.append_only_marker(plain) is None, "body text must not mark a file"
+    assert cmd_guards.append_only_marker(os.path.join(d, "missing.md")) is None
+
+    # -- Write: create, append (LF and CRLF) allowed; a rewrite refused; unmarked untouched.
+    r = ft("Write", os.path.join(d, "fresh.md"), content="# Fresh (append-only)\n")
+    assert decision(r) is None, "creating a file is an append: %r" % (r,)
+    before = len(gitlog(root))
+    r = ft("Write", board, content=body + "---\n[10:10][S3] took C\n")
+    assert decision(r) is None, "Write-as-append refused: %r" % (reason(r),)
+    assert "CMD-ALLOW(checked=2" in gitlog(root)[before:], \
+        "the file-tool guards did not run: %r" % (gitlog(root)[-200:],)
+    r = ft("Write", board, content=body.replace("\n", "\r\n") + "---\r\n[10:10][S3] took C\r\n")
+    assert decision(r) is None, "a CRLF re-encoding refused a legitimate append: %r" % (reason(r),)
+    r = ft("Write", board, content=body.replace("took A", "took A (fixed)"))
+    assert decision(r) == "deny", "a Write that rewrites an earlier entry was allowed"
+    assert "append-only" in reason(r) and "inherits the marker" in reason(r), reason(r)
+    assert r.get("systemMessage"), "the person should see the refusal"
+    r = ft("Write", plain, content="# Notes\nrewritten\n")
+    assert decision(r) is None, "an unmarked file was policed: %r" % (reason(r),)
+
+    # -- Edit: an append with or without the trailing newline; anything else refused.
+    tail = "[10:05][S2] took B\n---\n"
+    before = len(gitlog(root))
+    r = ft("Edit", board, old_string=tail, new_string=tail + "[10:10][S3] took C\n---\n")
+    assert decision(r) is None, "Edit-as-append refused: %r" % (reason(r),)
+    assert "CMD-ALLOW(checked=2" in gitlog(root)[before:], "the Edit guards did not run"
+    r = ft("Edit", board, old_string=tail.rstrip(), new_string=tail.rstrip() + "\n[10:10][S3] took C\n---")
+    assert decision(r) is None, "Edit-as-append without its newline refused: %r" % (reason(r),)
+    r = ft("Edit", board, old_string="took A", new_string="took A (fixed)")
+    assert decision(r) == "deny", "an Edit in the middle was allowed"
+    r = ft("Edit", board, old_string="---", new_string="---\n[10:10][S3] took C\n---",
+           replace_all=True)
+    assert decision(r) == "deny", "replace_all on a repeated anchor was allowed"
+    assert "occurs" in reason(r) and "anchor" in reason(r), reason(r)
+    # ⛔ AND WITHOUT replace_all. The Edit tool edits ONE occurrence and the guard cannot tell
+    # which; the tool's own rule is that old_string must be unique, so refusing here can never
+    # refuse an Edit the tool would perform. Review A (F3) measured the first version allowing it.
+    r = ft("Edit", board, old_string="---", new_string="---\n[10:10][S3] took C\n---")
+    assert decision(r) == "deny", "a repeated anchor without replace_all was allowed"
+    r = ft("Edit", board, old_string=tail, new_string="[10:05][S2] took C\n---\n")
+    assert decision(r) == "deny", "rewriting the anchor itself was allowed"
+    # ⛔ THE RAW ANCHOR IS COUNTED, as the tool counts it (review C, c1): here `---\n` occurs
+    # once raw although `---` occurs twice rstripped, and the tool WOULD perform this Edit.
+    sub = os.path.join(d, "sub.md")
+    write_text(sub, "# Sub (append-only)\nsee A---B\nfoo\n---\n")
+    r = ft("Edit", sub, old_string="---\n", new_string="---\nnext\n---\n")
+    assert decision(r) is None, "an anchor the tool finds once was refused: %r" % (reason(r),)
+    # ⭐ A YAML frontmatter block is skipped: its `# comment` is not the file's first heading.
+    fm = os.path.join(d, "fm.md")
+    write_text(fm, "---\ntitle: x\n# a yaml comment, append-only in passing\n---\n# Notes\nbody\n")
+    assert cmd_guards.append_only_marker(fm) is None, "a frontmatter comment marked the file"
+    write_text(fm, "---\ntitle: x\n---\n# Log (append-only)\nbody\n")
+    assert cmd_guards.append_only_marker(fm) == "# Log (append-only)", "H1 after frontmatter missed"
+    # ⛔ ... but a Markdown horizontal rule on line 1 is NOT frontmatter (review C, e1): the
+    # first version ate the rule, the marked H1 and the next `---` together.
+    write_text(fm, "---\n# Board (append-only)\nentry\n---\nentry\n---\n")
+    assert cmd_guards.append_only_marker(fm) == "# Board (append-only)", \
+        "a leading horizontal rule hid the marked heading"
+    # -- MultiEdit: a single trailing append passes; an earlier edit anywhere does not.
+    grow = {"old_string": "took B\n---", "new_string": "took B\n---\n[10:10][S3] took C\n---"}
+    assert decision(ft("MultiEdit", board, edits=[grow])) is None
+    assert decision(ft("MultiEdit", board,
+                       edits=[grow, {"old_string": "took A", "new_string": "took Z"}])) == "deny"
+    # -- a shape the rule cannot judge is allowed, and says so.
+    before = len(gitlog(root))
+    assert decision(ft("NotebookEdit", board, new_source="x")) is None
+    assert "shape not judged" in gitlog(root)[before:], gitlog(root)[-300:]
+
+    # -- the shell: every truncating / in-place / removing shape refused BY THIS GUARD. ⛔ The
+    # reason is asserted too, not only the decision: review A (F8) measured that a `deny` alone
+    # could come from any guard, and only one of these shapes was mutation-checked.
+    rel = "board/BOARD.md"
+    spaced = os.path.join(d, "board dir", "BOARD.md")
+    write_text(spaced, body)
+    for cmd in ("echo x > %s" % rel, "echo x >%s" % rel, "sed -i 's/a/b/' %s" % rel,
+                "cat new.md | tee %s" % rel, "rm %s" % rel, "cp new.md %s" % rel,
+                "mv new.md %s" % rel, "truncate -s 0 %s" % rel,
+                "Set-Content -Path %s 'x'" % rel, "Out-File %s" % rel,
+                "Clear-Content %s" % rel, "Remove-Item %s" % rel,
+                "echo x > 'board/BOARD.md'", "echo x 2> %s" % rel,
+                # review A: F1 (a quoted path WITH a space - the case quotes exist for), F2 (a
+                # `cd` in the same command), F4 (-Value first), F5 (mv SOURCE is a removal)
+                'echo x > "board/board dir/BOARD.md"', "echo x >'board/board dir/BOARD.md'",
+                "cd board && echo x > BOARD.md", "Set-Content -Value x %s" % rel,
+                "mv %s board/old.md" % rel,
+                # review C: b1 (a QUOTED cd target - the F1 shape again), d2 (PowerShell moves)
+                'cd "board" && echo x > BOARD.md', "Move-Item %s board/old.md" % rel,
+                "Rename-Item -Path %s -NewName old.md" % rel, "Copy-Item new.md %s" % rel):
+        r = run_gate(gate, bash(root, cmd, sid=sid))
+        assert decision(r) == "deny", "shell rewrite allowed: %r -> %r" % (cmd, reason(r))
+        assert "declares itself append-only" in reason(r), \
+            "refused, but not by guard_append_only: %r -> %r" % (cmd, reason(r))
+    # ... and every append, read, copy-OUT, other-file or quoted-prose shape allowed - and the
+    # guard RAN (the allow line names how many guards were checked).
+    for cmd in ("echo x >> %s" % rel, "cat new.md | tee -a %s" % rel, "Add-Content %s 'x'" % rel,
+                "Out-File -Append %s" % rel, "cp %s board/before.md" % rel,
+                "grep append-only %s > count.txt" % rel, "sed -i 's/a/b/' board/notes.md",
+                "echo x > board/notes.md", "cat %s" % rel,
+                "echo 'use > BOARD.md to redirect' >> board/notes.md", "rm -rf board/tmpdir"):
+        before = len(gitlog(root))
+        r = run_gate(gate, bash(root, cmd, sid=sid))
+        assert decision(r) is None, "innocent command refused: %r -> %r" % (cmd, reason(r))
+        assert "CMD-ALLOW(checked=" in gitlog(root)[before:], "the guards did not run: %r" % (cmd,)
+    # An append behind a `cd` is allowed too - but the relative-cd guard WARNS on it, so the
+    # log line is CMD-WARN, not CMD-ALLOW; the assertion is that append-only stayed silent.
+    r = run_gate(gate, bash(root, "cd board && echo x >> BOARD.md", sid=sid))
+    assert decision(r) is None and "append-only" not in reason(r), reason(r)
+    # ⛔ AND THE cd TARGET REPLACES THE BASE, it is not tried beside it (review C, b2): from
+    # `sub`, BOARD.md is a file the command never touches, so no refusal.
+    os.makedirs(os.path.join(root, "sub"), exist_ok=True)
+    write_text(os.path.join(root, "BOARD.md"), body)
+    r = run_gate(gate, bash(root, "cd sub && echo x > BOARD.md", sid=sid))
+    assert decision(r) is None and "append-only" not in reason(r), \
+        "refused on a file in the cwd that the command never touches: %r" % (reason(r),)
+    os.remove(os.path.join(root, "BOARD.md"))
+    # -- a token the gate cannot expand is allowed and named as an allow in the log.
+    before = len(gitlog(root))
+    assert decision(run_gate(gate, bash(root, "echo x > $OUT/BOARD.md", sid=sid))) is None
+    assert "CMD-ALLOW(guard_append_only unresolved)" in gitlog(root)[before:], gitlog(root)[-300:]
+
+    # -- its own switch, both halves, leaves a trace.
+    with project_cfg(root, guard_append_only=False):
+        before = len(gitlog(root))
+        assert decision(run_gate(gate, bash(root, "echo x > %s" % rel, sid=sid))) is None, \
+            "the key did not switch the shell half off"
+        assert "CMD-DISABLED(guard_append_only)" in gitlog(root)[before:], gitlog(root)[-300:]
+        before = len(gitlog(root))
+        assert decision(ft("Write", board, content="rewritten")) is None, \
+            "the key did not switch the file-tool half off"
+        assert "CMD-DISABLED(guard_append_only)" in gitlog(root)[before:], gitlog(root)[-300:]
+    # -- advisory when unstamped, for the file tools too.
+    before = len(gitlog(root))
+    assert decision(ft("Write", board, s="never-stamped-2", content="rewritten")) is None
+    assert "CMD-ADVISORY(no-session-stamp) Write" in gitlog(root)[before:], gitlog(root)[-300:]
+    # -- fail open: a guard that raises allows the call and logs it.
+    keep_marker = cmd_guards.append_only_marker
+
+    def explode(_path):
+        raise RuntimeError("deliberate")
+
+    cmd_guards.append_only_marker = explode
+    try:
+        before = len(gitlog(root))
+        assert decision(ft("Write", board, content="rewritten")) is None, "a broken guard blocked"
+        assert "CMD-GUARD-ERROR(guard_append_only)" in gitlog(root)[before:], gitlog(root)[-300:]
+    finally:
+        cmd_guards.append_only_marker = keep_marker
+
+    # ⛔ MUTATION: remove the guard from BOTH tables and the refusals must vanish.
+    keep_g, keep_f = cmd_guards.GUARDS, cmd_guards.FILE_GUARDS
+    cmd_guards.GUARDS = tuple(g for g in keep_g if g[0] != "guard_append_only")
+    cmd_guards.FILE_GUARDS = tuple(g for g in keep_f if g[0] != "guard_append_only")
+    try:
+        assert decision(run_gate(gate, bash(root, "echo x > %s" % rel, sid=sid))) is None, \
+            "mutation left the shell refusal standing - another guard refused it"
+        assert decision(ft("Write", board, content="rewritten")) is None, \
+            "mutation left the Write refusal standing - another guard refused it"
+    finally:
+        cmd_guards.GUARDS, cmd_guards.FILE_GUARDS = keep_g, keep_f
+    assert decision(ft("Write", board, content="rewritten")) == "deny", "the guard did not come back"
+    print("ok - an append-only file may only grow: Write/Edit/MultiEdit and 23 shell shapes "
+          "refused, appends allowed, off switch and fail-open logged, mutation-checked")
+
+
+def case_cowork_first(gate, sdir, root):
+    """cowork rules 1-2 as a nag: a session that shares this tree with a LIVE peer loads the
+    skill before its first write or commit - once per session.
+
+    ⚠ THE HARNESS MARKS `s1` AS HAVING SEEN THE SKILL (see main()), because the fixture's own
+    sessions are peers of one another and every other case assumes only the guard under test
+    can refuse a commit. This case therefore uses its OWN session ids, and states the default
+    (on) explicitly through a project config so the off-switch half reads beside it.
+    ⛔ MUTATION: the live peer is removed and the same write must go through - proving the
+    refusal came from the peer test and not from somewhere else.
+    """
+    import cmd_guards
+
+    def peer(psid, cwd, age=0):
+        """A peer: a JSON .start with that cwd, an .alive `age` seconds old."""
+        with open(gate.state_path(sdir, psid, "start"), "w", encoding="utf-8") as f:
+            json.dump({"at": time.time(), "cwd": cwd}, f)
+        alive = gate.state_path(sdir, psid, "alive")
+        with open(alive, "w", encoding="utf-8") as f:
+            f.write(str(time.time()))
+        os.utime(alive, (time.time() - age, time.time() - age))
+
+    sid = "s-cowork"
+    stamp_session(gate, sdir, sid)
+    target = os.path.join(root, "shared.md")
+
+    def write(s=sid):
+        return run_gate(gate, file_tool(root, "Write", target, sid=s, content="x\n"))
+
+    with project_cfg(root, guard_cowork_first=True):
+        assert decision(write()) is None, "no peer, yet it nagged: %r" % (reason(write()),)
+        # a live peer in ANOTHER repository does not count (its root resolves elsewhere).
+        peer("p-elsewhere", os.path.join(sdir, "other-root"))
+        assert decision(write()) is None, "a peer in another repository counted"
+        # a STALE peer in this repository does not count.
+        peer("p-stale", root, age=cmd_guards.PEER_ALIVE_MIN * 60 + 60)
+        assert decision(write()) is None, "a stale heartbeat counted as live"
+        # ⭐ a live peer started in a SUBDIRECTORY, with the drive letter in the OTHER case -
+        # 3 of 118 real .start files spell it differently (measured 2026-09-19).
+        flipped = (root[0].swapcase() + root[1:]) if root[1:2] == ":" else root
+        peer("p-live", os.path.join(flipped, "sub", "dir"))
+        before = len(gitlog(root))
+        r = write()
+        assert decision(r) == "deny", "a live peer in this repository did not trigger: %r" % (r,)
+        assert "cowork" in reason(r) and "1 other live session" in reason(r), reason(r)
+        assert r.get("systemMessage"), "the person should know the first write was refused"
+        assert "CMD-DENY(guard_cowork_first)" in gitlog(root)[before:], gitlog(root)[-300:]
+        # ⚠ ONCE.
+        assert decision(write()) is None, "it refused twice: %r" % (reason(write()),)
+        # `git commit` is the shell trigger, for a fresh session.
+        sid2 = "s-cowork-commit"
+        stamp_session(gate, sdir, sid2)
+        r = run_gate(gate, bash(root, "git commit -F m.txt", sid=sid2))
+        assert decision(r) == "deny" and "cowork" in reason(r), reason(r)
+        # the skill seen -> silent.
+        sid3 = "s-cowork-loaded"
+        stamp_session(gate, sdir, sid3)
+        load_skills(gate, root, sid3, "dispatch-guard:cowork")
+        assert decision(write(sid3)) is None, "the Skill call was ignored"
+    # its off switch logs, and does NOT spend the one refusal.
+    sid4 = "s-cowork-off"
+    stamp_session(gate, sdir, sid4)
+    with project_cfg(root, guard_cowork_first=False):
+        before = len(gitlog(root))
+        assert decision(write(sid4)) is None, "the key did not switch it off"
+        assert "CMD-DISABLED(guard_cowork_first)" in gitlog(root)[before:], gitlog(root)[-300:]
+        assert not os.path.exists(gate.state_path(sdir, sid4, "cowork-nagged")), \
+            "it burned its one refusal while switched off"
+    with project_cfg(root, guard_cowork_first=True):
+        r = write(sid4)
+        assert decision(r) == "deny" and "cowork" in reason(r), \
+            "switching back on did not restore THIS guard's refusal: %r" % (reason(r),)
+        # advisory when unstamped.
+        before = len(gitlog(root))
+        assert decision(write("never-stamped-3")) is None
+        assert "CMD-ADVISORY(no-session-stamp)" in gitlog(root)[before:], gitlog(root)[-300:]
+        # ⛔ MUTATION: take the live peer away; a fresh session must not be nagged.
+        sid5 = "s-cowork-mut"
+        stamp_session(gate, sdir, sid5)
+        os.remove(gate.state_path(sdir, "p-live", "alive"))
+        assert decision(write(sid5)) is None, "without a live peer the nag still fired"
+        # cost, measured and printed - the ADR says milliseconds, so say the number.
+        ctx = gate.guard_ctx(root, sdir, sid5, gate.gate_config(root, sdir))
+        t0 = time.perf_counter()
+        cmd_guards.peer_sessions(ctx)
+        ms = (time.perf_counter() - t0) * 1000
+        n_state = len(os.listdir(os.path.join(sdir, "state")))
+        assert ms < 500, "peer_sessions() took %.0f ms over %d state files" % (ms, n_state)
+        print("   peer_sessions() over %d state files: %.1f ms" % (n_state, ms))
+    print("ok - a live peer in this repository nags once (drive-letter case ignored), another "
+          "repository / a stale peer / the skill seen stay silent, commit triggers too, "
+          "off switch keeps the mark, mutation-checked")
 
 
 def case_unattended_first(gate, sdir, root):
@@ -2017,6 +2320,144 @@ def case_skill_copies():
     print("ok - one file registers each skill, and the reading copy stays a reading copy")
 
 
+def case_cowork_restates_nothing():
+    """⛔ ONE LIVE COPY PER RULE: `skills/cowork/` may point at `unattended-work` and
+    `dispatch-protocol`, never restate them.
+
+    Two instruments, because each misses what the other catches (ADR 20260919-204317, D7 and
+    round 1's B3): a word-bag Jaccard over section BODIES at a floor calibrated on known
+    restatements (0.25 - the pairs it was tuned on scored 0.29-0.31, a synthetic one 0.62), and
+    an exact match on NORMALISED HEADINGS - because the restatement that shipped in the first
+    merge had an identical heading and scored 0.167, under the floor.
+
+    ⚠ The scope is printed in the pass line: zh-TW reading copies are out (their Latin word
+    bags are empty by construction), and so are README.md and PROTOCOL.md (they describe the
+    skills and restate them by design). A test that hides its exclusions is measuring a corpus
+    nobody asked about.
+    ⛔ MUTATION-CHECKED both ways on a temporary corpus: a copied section must produce a pair,
+    a copied heading must fire the heading check.
+    """
+    import glob
+    import re
+    import shutil
+    FLOOR = 0.25
+    STOP = set(("the a an is are be it its this that of to in on for and or not you your they "
+                "as with by at from what which when who how so if then than but do does did done "
+                "one two more most less can cannot will would should must may might have has had "
+                "was were been being there their them he she his her i we us our me my").split())
+
+    def sections(path):
+        with open(path, "rb") as f:
+            text = f.read().decode("utf-8")
+        parts = re.split(r"^(#{2,4} .+)$", text, flags=re.M)
+        found = []
+        for i in range(1, len(parts), 2):
+            head = parts[i].strip("# ").strip()
+            body = parts[i + 1] if i + 1 < len(parts) else ""
+            if len(body.split()) >= 25:
+                found.append((path, head, body))
+        return found
+
+    def bag(text):
+        return set(w for w in re.findall(r"[a-z][a-z'-]{2,}", text.lower()) if w not in STOP)
+
+    def sim(a, b):
+        return len(a & b) / float(len(a | b)) if a and b else 0.0
+
+    def norm_head(h):
+        h = re.sub(r"^[\d.]+\s+", "", h)
+        return re.sub(r"[^a-z0-9 ]", "", h.lower()).strip()
+
+    def is_cowork(path):
+        return os.sep + "cowork" + os.sep in path or "/cowork/" in path
+
+    def measure(files):
+        """(pairs involving cowork at or above FLOOR, heading overlaps involving cowork, n)."""
+        secs = [s for p in files for s in sections(p)]
+        bags = [bag(b) for _, _, b in secs]
+        pairs = []
+        for i in range(len(secs)):
+            for j in range(i + 1, len(secs)):
+                if is_cowork(secs[i][0]) == is_cowork(secs[j][0]):
+                    continue                  # same side: cowork×cowork or skill×skill
+                score = sim(bags[i], bags[j])
+                if score >= FLOOR:
+                    pairs.append((score, secs[i][1], secs[j][1]))
+        other = {}
+        for p in files:
+            if is_cowork(p):
+                continue
+            for line in open(p, encoding="utf-8"):
+                m = re.match(r"^#{2,4}\s+(.*)$", line.rstrip())
+                if m and len(norm_head(m.group(1)).split()) >= 3:
+                    other.setdefault(norm_head(m.group(1)), []).append(os.path.basename(p))
+        heads = []
+        for p in files:
+            if not is_cowork(p):
+                continue
+            for line in open(p, encoding="utf-8"):
+                m = re.match(r"^#{2,4}\s+(.*)$", line.rstrip())
+                if m and norm_head(m.group(1)) in other:
+                    heads.append((m.group(1).strip(), os.path.basename(p)))
+        return pairs, heads, len(secs)
+
+    # ⭐ CONTROLS FIRST, in this run. A floor that let the known restatement through, or that
+    # flagged unrelated text, would make an empty result meaningless either way.
+    p1 = ("When a budget is nearly spent, the remaining budget is for finishing the work and "
+          "writing the handover, not for starting the next thing you wanted to do")
+    p2 = ("A nearly spent budget is spent on finishing and on writing the handover; it is not "
+          "spent starting another thing")
+    pos = sim(bag(p1), bag(p2))
+    assert pos >= FLOOR, "POSITIVE control: a deliberate restatement scored %.2f < %.2f" % (pos, FLOOR)
+    neg = sim(bag("a scheduled wake-up prompt is written before you know what today teaches"),
+              bag("print the version on the first line of the output so copies differ"))
+    assert neg < FLOOR, "NEGATIVE control: unrelated texts scored %.2f >= %.2f" % (neg, FLOOR)
+
+    files = sorted(p for p in glob.glob(os.path.join(repo_path("skills"), "*", "SKILL*.md"))
+                   if ".zh-TW." not in p)
+    files += sorted(glob.glob(os.path.join(repo_path("skills"), "cowork", "reference", "*.md")))
+    assert any(is_cowork(p) for p in files) and any(not is_cowork(p) for p in files), files
+    pairs, heads, n = measure(files)
+    assert not pairs, "cowork restates another skill (Jaccard >= %.2f):\n  %s" % (
+        FLOOR, "\n  ".join("%.2f  %s  <->  %s" % t for t in pairs))
+    assert not heads, "a cowork heading is identical to another skill's: %r" % (heads,)
+
+    # ⛔ MUTATION 1: a section copied from unattended-work into a cowork file -> a pair.
+    with scratch_dir("restate-mutation") as d:
+        mut = os.path.join(d, "skills")
+        for p in files:
+            rel = os.path.relpath(p, repo_path("skills"))
+            dst = os.path.join(mut, rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy(p, dst)
+        uw = os.path.join(mut, "unattended-work", "SKILL.md")
+        # ⚠ A section whose HEADING has three or more words, because the heading check ignores
+        # shorter ones on purpose ("Install" would match everywhere). The first version of this
+        # mutation copied "1. Dispatch" and read its own blindness as the check's.
+        uw_secs = [s for s in sections(uw)
+                   if len(s[2].split()) >= 40 and len(norm_head(s[1]).split()) >= 3]
+        assert uw_secs, "no unattended-work section long enough, with a 3-word heading, to copy"
+        _, head, body = uw_secs[0]
+        planted = os.path.join(mut, "cowork", "reference", "planted.md")
+        with open(planted, "w", encoding="utf-8") as f:
+            f.write("# planted\n\n### Restated on purpose, under a different heading\n" + body)
+        mfiles = [os.path.join(mut, os.path.relpath(p, repo_path("skills"))) for p in files] + [planted]
+        mpairs, mheads, _ = measure(mfiles)
+        assert mpairs, "MUTATION 1: a copied section produced no pair - the Jaccard check is blind"
+        # ⛔ MUTATION 2: only the HEADING copied, body unrelated -> the heading check fires.
+        with open(planted, "w", encoding="utf-8") as f:
+            f.write("# planted\n\n### %s\n\n" % head +
+                    "Entirely unrelated body text about pelicans and lighthouses, long enough to "
+                    "count as a section but sharing no vocabulary with the source at all, so the "
+                    "word-bag score stays under the floor while the heading is identical.\n")
+        mpairs2, mheads2, _ = measure(mfiles)
+        assert mheads2, "MUTATION 2: an identical heading was not caught - the heading check is blind"
+        assert not mpairs2, "MUTATION 2 control: the unrelated body should not score >= floor"
+    print("ok - cowork restates nothing in unattended-work/dispatch-protocol: %d sections, "
+          "Jaccard floor %.2f (POSITIVE %.2f, NEGATIVE %.2f), 0 heading overlaps; excluded: "
+          ".zh-TW copies, README.md, PROTOCOL.md; both mutations killed" % (n, FLOOR, pos, neg))
+
+
 def case_burn_figure_never_winds_down():
     """⛔ THE `SPENT in ~N min` SENTENCE MAY NOT BE WRITTEN AS A REASON TO STOP.
 
@@ -2144,11 +2585,24 @@ def main():
     fresh_scratch()
     case_selftests_never_read_the_terminal()
     case_skill_copies()
+    case_cowork_restates_nothing()
     case_burn_figure_never_winds_down()
     with scratch_dir("state") as sdir, scratch_dir("repo") as root:
         fixture_repo(root)
         gate = load_gate(sdir)
         stamp_session(gate, sdir, "s1")
+        # ⚠ `s1` HAS SEEN THE COWORK SKILL, from the start. `stamp_session()` writes a bare "1",
+        # which carries no cwd and is never a peer - but case_session_cwd_is_recorded drives a
+        # REAL SessionStart with cwd=root, and that session's JSON .start plus its fresh .alive
+        # make it a live peer of s1 for every case that runs after it. Measured: without this
+        # line the first `git commit` case_branch drives from s1 was refused by the cowork nag,
+        # and its mutation ("remove the branch guard, the commit goes through") read as "left
+        # standing". ⭐ Driven as a Skill call, not written to disk, and NOT switched off in
+        # config: an off switch would put `off=guard_cowork_first` on every allow line, which
+        # case_switches_and_logging asserts is `off=-`. case_cowork_first uses its own session
+        # ids and is the one place the nag is exercised. (Review A, F8.5, corrected the earlier
+        # comment, which said the fixture's stamps themselves were peers.)
+        load_skills(gate, root, "s1", "dispatch-guard:cowork")
         case_add_all(gate, sdir, root)
         case_commit_m(gate, sdir, root)
         case_silenced_search(gate, sdir, root)
@@ -2156,6 +2610,8 @@ def main():
         case_switches_and_logging(gate, sdir, root)
         case_fail_open(gate, sdir, root)
         case_advisory_without_stamp(gate, sdir, root)
+        case_append_only(gate, sdir, root)
+        case_cowork_first(gate, sdir, root)
         case_unattended_first(gate, sdir, root)
         case_require_skills(gate, sdir, root)
         case_skill_price_table(gate)

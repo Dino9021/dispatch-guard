@@ -65,6 +65,8 @@ skill 是模型看了描述之後**自己決定**要不要用；文件是模型*
 | ⚠ 子 agent 回來了，但**它的提示詞要求的檔案沒有出現** | `guard_agent_report_file`。摘要照樣回來、而且看起來很正常；檔案不存在看起來不正常 |
 | ⚠ **唯讀的 `subagent_type`** 配上一份叫它建立檔案的提示詞 | 同一個開關，派工前就警告。⭐ 不認識的型別什麼都不說 |
 | ⛔ 拒絕**模型太貴**的子代理派工 | `max_model_price`，預設 **5**（每百萬輸入 token 美元） |
+| ⛔ 拒絕**改寫一個自己宣告只能追加的檔案** —— `Write`、`Edit`、shell 一律 | `guard_append_only`（0.63.0）。第一個標題含 `append-only`，或帶 `<!-- append-only -->`。追加（`>>`、`tee -a`、接在最後一行之後的 Edit）放行 |
+| ⭐ 這個 repo 裡有**另一個活著的 session**、而你沒載入 `cowork`，第一次寫入或 commit **拒絕一次** | `guard_cowork_first`、`peer_alive_min`（15 分鐘）。只是提醒，一個 session 一次 |
 
 ⭐ **價格從 Anthropic 官方定價頁抓，不是手打的。**
 `hooks/model_pricing.py` 把
@@ -639,11 +641,12 @@ claude plugin marketplace remove dispatch-guard
 
 ## 另一個 skill：`unattended-work`
 
-⭐ **這個外掛帶兩個 skill。** `dispatch-protocol` 是**派工的規範**；
+⭐ **這個外掛帶三個 skill。** `dispatch-protocol` 是**派工的規範**；
 `unattended-work` 是**沒有人看著的時候怎麼工作** —— 審查輪次、卡住判定、
-什麼時候可以不問就繼續、以及交回工作之前的門檻。
+什麼時候可以不問就繼續、以及交回工作之前的門檻；`cowork`（0.63.0）是
+**幾個 session 共用一棵工作樹、替同一個主人工作的時候怎麼做** —— 見下一節。
 
-⚠ **兩件事是分開的，故意的。** 一個管「怎麼派」，一個管「怎麼做」。
+⚠ **三件事是分開的，故意的。** 一個管「怎麼派」，一個管「怎麼做」，一個管「幾個人一起做」。
 只想要其中一個也可以：skill 是模型自己決定要不要讀的，不讀就不生效。
 
 ### 不想每次 session 都被提醒？
@@ -670,6 +673,34 @@ claude plugin install dispatch-guard@dispatch-guard --config announce_unattended
 多餘的提醒糟得多 —— 你會以為規則生效了，實際上根本沒有東西去載入它。
 
 ⚠ 關掉之後 `Skill(unattended-work)` 照樣叫得動，只是不會有人提醒你。
+
+
+## 第三個 skill：`cowork`（0.63.0）
+
+⭐ **幾個 session、一個主人、一棵工作樹。** 十二條規則，每一條都是幾個 session 共用同一個
+repository 幾週之後付過代價學到的：先認領再產出、只登記自己、一份只能追加的共用紀錄、問主人的
+問題經單一窗口、問的時候不用代名詞、宣告東西不見之前先用內容搜、講清楚「沒答案」是哪一種……
+還有一張 24 列的**失效形狀目錄**，讓下一個 session 叫得出形狀的名字。
+
+⭐ **其中兩條是閘門，不是文字。** 上面表格最後兩列：
+
+- **只能追加的檔案只能變大**（`guard_append_only`）。檔案自己宣告 —— 第一個標題含 `append-only`，
+  或帶 `<!-- append-only -->` 註解。對這種檔案，`Write` 要以現有內容開頭、`Edit` 要接在檔尾之後、
+  shell 只放行 `>>` / `tee -a` / `Add-Content`。要更正先前的一則，追加一則新的說它錯在哪，不改它。
+  ⚠ 複本會繼承標記 —— 快照請用新名字。
+- **同一個 repo 裡有別的活 session，先載入 skill 再寫**（`guard_cowork_first`）。gate 每一次 hook
+  事件都會摸一下 `state/<session>.alive`，所以它知道誰還活著；另一個 session 的心跳比
+  `peer_alive_min`（15 分鐘）新、起始目錄又在同一個 repo，你第一次 `Write` / `Edit` / `git commit`
+  就會被拒絕一次，訊息叫你 `Skill(dispatch-guard:cowork)`。叫過之後不再唸；沒叫也只唸這一次。
+
+⚠ **這個 skill 只指向 plugin 裡有的檔案。** 規則已經在 `unattended-work` 或 `dispatch-protocol` 的，
+cowork 只指過去、不重述 —— 一條規則只有一份正本。`Tools/Debug/test_guards.py` 用相似度掃描加標題
+比對釘住這件事，cowork 一旦重述另一支 skill 的任何一節，檢查就紅。
+
+⚠ **`reference/` 底下五個檔只有英文。** `SKILL.zh-TW.md` 跟另外兩支 skill 一樣是給人讀的對照，
+不是 skill 本身。
+
+`skills/cowork/SKILL.md` 是入口；規則本身怎麼被強制、以及誠實列出的缺口，在 `PROTOCOL.md` §3–§4。
 
 
 ## 怎麼看那些數字
@@ -1644,6 +1675,8 @@ one are byte-identical on screen. Each has its own switch; all default to on.
 | ⚠ a sub-agent returned, but **the file its prompt demanded never appeared** | `guard_agent_report_file`. The summary still comes back and still looks normal; a missing file does not |
 | ⚠ a **read-only `subagent_type`** paired with a prompt that tells it to create a file | same switch, warned before it runs. ⭐ An unknown type says nothing at all |
 | ⛔ refuses a sub-agent whose model **costs too much** | `max_model_price`, default **5** ($/M input tokens) |
+| ⛔ refuses a **rewrite of a file that declares itself append-only** — `Write`, `Edit` and the shell alike | `guard_append_only` (0.63.0). First heading contains `append-only`, or the file carries `<!-- append-only -->`. Appends (`>>`, `tee -a`, an Edit after the last line) pass |
+| ⭐ **another live session in this repository** and `cowork` not loaded: the first write or commit is refused **once** | `guard_cowork_first`, `peer_alive_min` (15 min). A nag, once per session |
 
 ⛔ **Every one of these exists because the rule was already written down, read, and broken
 anyway.** Four were broken in ONE session on 2026-08-27, two of them by the agent that had
@@ -2234,12 +2267,15 @@ or close it by hand.
 
 ## The second skill: `unattended-work`
 
-⭐ **This plugin ships two skills.** `dispatch-protocol` is the rule for **how work is
+⭐ **This plugin ships three skills.** `dispatch-protocol` is the rule for **how work is
 dispatched**; `unattended-work` is how to **work with nobody watching** — review rounds, the
-stall test, when you may proceed without asking, and the bar for handing work back.
+stall test, when you may proceed without asking, and the bar for handing work back; `cowork`
+(0.63.0) is how **several sessions share one working tree for one owner** — see the next
+section.
 
-⚠ **They are deliberately separate.** One governs dispatch, the other governs conduct. Taking
-only one is fine: a skill is read at the model's discretion, so an unread one does nothing.
+⚠ **They are deliberately separate.** One governs dispatch, one governs conduct, one governs
+working together. Taking only one is fine: a skill is read at the model's discretion, so an
+unread one does nothing.
 
 ### Do not want the reminder every session?
 
@@ -2266,6 +2302,41 @@ true, and a reminder that **silently stops appearing** is far worse than a redun
 would believe the rules were in force while nothing had loaded them.
 
 ⚠ With it off, `Skill(unattended-work)` still works by hand. Only the prompting stops.
+
+
+## The third skill: `cowork` (0.63.0)
+
+⭐ **Several sessions, one owner, one working tree.** Twelve rules, each paid for by sessions
+that shared one repository for weeks: claim before you produce, register yourself and never
+someone else, one append-only shared record, funnel questions to the owner through one
+session, never a pronoun when you ask, search by content before declaring anything missing,
+say which kind of "no answer" you have … and a 24-row **catalogue of failure shapes**, so the
+next session can name the shape instead of rediscovering it.
+
+⭐ **Two of the rules are gates, not prose.** The last two rows of the table above:
+
+- **An append-only file may only grow** (`guard_append_only`). The file declares itself — its
+  first heading contains `append-only`, or it carries `<!-- append-only -->`. For such a file a
+  `Write` must start with the current content, an `Edit` must add after the last line, and the
+  shell may only `>>` / `tee -a` / `Add-Content`. To correct an earlier entry, append a new one
+  saying what was wrong; never rewrite it. ⚠ A copy inherits the marker — snapshot to a new name.
+- **Another live session in this repository: load the skill before you write**
+  (`guard_cowork_first`). The gate touches `state/<session>.alive` on every hook event, so it
+  knows who is alive; when another session's heartbeat is younger than `peer_alive_min` (15
+  minutes) and its start directory is in this repository, your first `Write` / `Edit` /
+  `git commit` is refused once, with a message asking for `Skill(dispatch-guard:cowork)`. Once
+  invoked it never nags again; not invoked, it still nags only that once.
+
+⚠ **This skill points only at files the plugin ships.** Where a rule already lives in
+`unattended-work` or `dispatch-protocol`, cowork points at it and does not restate it — one
+live copy per rule. `Tools/Debug/test_guards.py` pins that with a similarity scan plus a
+heading comparison: the moment cowork restates a section of another skill, the check goes red.
+
+⚠ **The five `reference/` files are English only.** `SKILL.zh-TW.md` is a reading copy for
+people, like the other two skills' — not the skill itself.
+
+`skills/cowork/SKILL.md` is the entry point; how the two rules are enforced, and the honest
+gaps, are in `PROTOCOL.md` §3–§4.
 
 
 ## Seeing the numbers

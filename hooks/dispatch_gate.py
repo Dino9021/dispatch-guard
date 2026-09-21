@@ -175,6 +175,11 @@ DEFAULTS = {
     # 2026-08-31: 0% to 100% in 85 minutes with zero dispatches, no user prompt, and not one
     # `USAGE(` line in any gate log on the machine. Set false to silence it.
     "guard_wind_down": True,
+    # ⭐ HOW FRESH ANOTHER SESSION'S HEARTBEAT MUST BE for `guard_cowork_first` to call it a
+    # live peer, in minutes. The gate touches `state/<sid>.alive` on every hook event. See
+    # cmd_guards.PEER_ALIVE_MIN for the two fail-open directions. Coerced like the other
+    # numeric keys: a bad value is logged and replaced by this default, never a crash.
+    "peer_alive_min": cmd_guards.PEER_ALIVE_MIN,
 }
 
 # ⭐ ONE CONFIG READER, TWO FAMILIES. Merging the guard switches into DEFAULTS gives them
@@ -392,7 +397,7 @@ def _positive_number(value):
 # own that this coercion would silently overturn - a model NAME is accepted where a number was
 # meant, `null` switches the check off, and a mistyped ceiling fails OPEN with a
 # MODEL-PRICE-LIMIT-UNKNOWN log line (test_guards.py case_model_price_limit pins all three).
-NUMERIC_KEYS = ("slot_ttl_min", "approval_ttl_min", "max_slots")
+NUMERIC_KEYS = ("slot_ttl_min", "approval_ttl_min", "max_slots", "peer_alive_min")
 # ⛔ AND ONE OF THEM MUST BE A WHOLE NUMBER. `max_slots` reaches range() in claim_slot() and
 # release_slot(); 1.5 passes "a number > 0" and range(1.5) is the same TypeError - measured
 # 2026-09-02 by the round-2 review through the real process: with an approval for 2 and
@@ -1407,6 +1412,10 @@ def guard_ctx(root, sdir, sid, cfg):
         "state": lambda suffix: state_path(sdir, sid, suffix),
         # See cmd_guards' docstring, point 2: an unstamped session is advisory only.
         "stamped": session_start(sdir, sid) is not None,
+        # ⭐ FOR THE PEER TEST (cmd_guards.peer_sessions): resolve another session's start cwd
+        # to a repository root with THIS module's rule, without cmd_guards importing it.
+        "repo_root": repo_root,
+        "session_cwd": lambda other: session_cwd(sdir, other),
     }
 
 
@@ -3315,6 +3324,22 @@ def main():
         except Exception as exc:
             log(root, "SKILL-NOTE-FAILED %r" % (exc,))
         return
+
+    # ⭐ THE FILE-TOOL GUARDS (0.63.0): a Write/Edit that rewrites a file declaring itself
+    # append-only, and the first write of a session that shares this tree with a live peer.
+    # ⛔ WRAPPED like the shell-tool branch above, and for the same reason: a pre-branch
+    # exception makes a hook print nothing, and a hook that prints nothing has APPROVED the
+    # call. `wind` was computed once above; it is carried, never recomputed.
+    if event == "PreToolUse" and tool in cmd_guards.FILE_TOOLS:
+        try:
+            v = cmd_guards.check_file_tool(payload, guard_ctx(root, sdir, sid, cfg))
+            if v and v["kind"] == cmd_guards.DENY:
+                return deny(event, v["model"], systemMessage=v["screen"])
+            if v:
+                return emit_with(event, v["model"], wind, systemMessage=v["screen"])
+        except Exception as exc:
+            log(root, "FILE-GUARDS-FAILED %r" % (exc,))
+        return emit_with(event, None, wind)
 
     if tool != "Agent":
         # ⛔ THIS RETURN IS WHERE THE INCIDENT WENT. Every Read and every Write of that
