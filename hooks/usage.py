@@ -1802,8 +1802,11 @@ def _reset_clock(resets, now):
 
     ⚠ THE WEEKDAY APPEARS ONLY WHEN THE RESET IS NOT TODAY. `Tue` beside a time later the
     same afternoon reads as next Tuesday to anybody who does not already know today's name,
-    and it costs four columns on a row that drops parts from the right. The five-hour window
-    never reaches tomorrow, so it never carries one; the seven-day window usually does.
+    and it costs four columns on a row that drops parts from the right. ⛔ This applies to
+    BOTH windows: a five-hour window opened after 19:00 resets tomorrow and then carries
+    one - measured 2026-09-22 23:48, a reset 26 minutes away rendered `(Wed 00:14)`. An
+    earlier version of this docstring said the five-hour bracket "never reaches tomorrow";
+    the selftest that pinned that sentence failed for the last 27 minutes of every day.
 
     ⚠ %a is the C locale here - Python does not call setlocale at startup - so it reads
     `Tue`, not a localised weekday. Measured, not assumed.
@@ -3954,9 +3957,20 @@ def selftest():
     assert _when5 and _when7, (_when5, _when7)
     assert _when5 in _t7 and _when7 in _t7, (_when5, _when7, _t7)
     assert _t7.index(_when5) < _t7.index(SEVEN_DAY_LABEL) < _t7.index(_when7), _t7
-    # ⚠ THE FIVE-HOUR WINDOW NEVER CARRIES A WEEKDAY - it cannot reach tomorrow - and the
-    # seven-day one carries one ONLY when it does not reset today.
-    assert "%a" not in _when5 and len(_when5) == len("(00:00)"), _when5
+    # ⚠ A WEEKDAY APPEARS EXACTLY WHEN THE RESET IS NOT TODAY - for BOTH windows. This used
+    # to assert that the five-hour bracket never carries one "because it cannot reach
+    # tomorrow", which is false for any window opened after 19:00: measured 2026-09-22 at
+    # 23:48, this fixture's reset (now + 1600 s) rendered `(Wed 00:14)` and the suite went
+    # red for the last 27 minutes of every day. The expectation is now computed the same way
+    # the renderer computes it, and the day-boundary behaviour is pinned at FROZEN times
+    # below so the check no longer depends on when it is run.
+    _same5 = time.localtime(time.time())[:3] == time.localtime(_live["five_hour"]["resets_at"])[:3]
+    assert len(_when5) == len("(00:00)" if _same5 else "(Mon 00:00)"), (_when5, _same5)
+    _t_tue = time.mktime((2026, 9, 22, 23, 48, 0, 0, 0, -1))      # a Tuesday, 12 min to midnight
+    _t_wed = time.mktime((2026, 9, 23, 0, 20, 0, 0, 0, -1))       # the Wednesday after it
+    assert _reset_clock(_t_tue + 26 * 60, _t_tue) == "(Wed 00:14)", _reset_clock(_t_tue + 26 * 60, _t_tue)
+    assert _reset_clock(_t_wed + 26 * 60, _t_wed) == "(00:46)", _reset_clock(_t_wed + 26 * 60, _t_wed)
+    assert _reset_clock(_t_tue + 5 * 3600, _t_tue) == "(Wed 04:48)", "a 5h window CAN reach tomorrow"
     _tomorrow = dict(_live, seven_day=dict(_live["seven_day"],
                                            resets_at=time.time() + 26 * 3600))
     _rt = _watch_line("07:26:12", _tomorrow, _v, None, {"width": 300, "colour": False})[0]

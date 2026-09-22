@@ -33,6 +33,47 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.64.0
+
+cowork 第一次跨機協作（舊機 ↔ 新機搬專案，2026-09-22）留下的教訓，加上主人同日的三個裁決。
+
+- ⭐ **第 13 條規則，與新參考檔 `skills/cowork/reference/cross-machine.md`。** 這支 skill 原本沒有任何
+  跨機器內容 —— UNC、SMB、「另一台機器」全文零命中，標題自己寫著「一棵工作樹」。那次協作最貴的一課：
+  溝通板由舊機經管理共享建立，權限跟著建立者，新機**讀得到、寫不進去**；協定要它追加一段並改「球在誰
+  那邊」，兩件都做不到；舊機每 20 秒輪詢，永遠看到沒變化，讀成「對方還沒開始」。**雙方都沒收到任何錯誤，
+  雙方的行為都正確**，最後是主人手動修權限。⇒ 第 13 條：依賴一條管道之前先證明**寫得進去**、兩個方向
+  分開量；跨機複製後第一個檢查是「我能不能寫」，不是雜湊 —— 一棵位元正確卻不可寫的樹會讓後面每一步各自
+  失敗、讀起來像五個 bug。參考檔四部：管道、送達卻不能用、兩棵活樹、四個在搬家時說謊的儀器（遵守
+  gitignore 的搜尋看不見一次性腳本、heredoc 把反斜線減半成看不見的控制字元、陽性對照在印出乾淨結果之後
+  才崩、字元清單檢查量到定義它的那一行），加結尾檢查清單。失效形狀表多七列（無聲死鎖、單向管道、到了卻
+  不能用、看不見被忽略的那一區、無聲的文字損壞、陽性對照沒跑到……），中英同步。
+- ⛔ **兩層，不是一份板子。** 主人指出「各寫各的、不寫同一個板子」是先前另一個專案就有的原則，跨機經驗
+  只能「加入」不能「取代」。對照那個專案 agent 們的原始紀錄：他們的 `CLAIMS.md` 就是**一份** append-only
+  認領板（＝`coordination.md` 3.1），內容則是**一人一檔** `contrib/<Sn>-…md` —— 而且實測過：共同產物
+  `SKILL.md` 遺失，`contrib/` 一字未損。cowork 只寫了認領板那層。現在 3.1 補上內容層與那次教訓；
+  `cross-machine.md` 1.1／1.5／1.6／清單改成兩層 —— 板子跨機要先過寫入測試、寫不進板子就用自己的檔說話、
+  讀者掃目錄；1:1／1:N／N:1／N:N 不改變本質。第一次搬家那份帶球權欄位的單一板子記為**權宜**，不是協定。
+- ⭐ **description 改成「情境觸發」，不看字眼。** 主人：robocopy、交接、context 快用完是症狀，不是觸發
+  用語；觸發條件＝同一個 repo 不只一個 session（同時或接續）、不只一台機器、跨 repo、跨專案、主人對多個
+  session 轉述同一件事。實測（25 條正體中文查詢、合成 skill、sonnet、依序前景）：正例 4/5 載入 cowork
+  —— 基線漏掉的跨機開場與複製後檢查現在會載，新增的跨 repo／跨專案兩題也會；最硬的近似負例（兩台機器設
+  ssh、本機 `FETCH_HEAD` 權限錯誤、每晚鏡像腳本）**0 誤觸發**。唯一漏題「兩個 agent 同題草稿、我同時叫了
+  它們」走去 `dispatch-protocol` —— 可辯護的讀法。⚠ 量測方法自己兩個坑，記在
+  `Memory/tasks/20260922-212000-cowork-trigger-evals/`：巢狀 `claude -p` 載的是**已安裝的 plugin 副本**、
+  不是工作樹（第一次重測因此無效）；skill-creator 的 `run_eval.py` 在 Windows 上對 pipe 做 `select()`
+  一秒內炸掉並記成未觸發，且只認自己臨時建的名字、真的已安裝 skill 被載入也算未觸發。
+- ⚠ **hook 章節補一句：`guard_cowork_first` 只看得到同一台機器的 peer。** 它讀的心跳是本機狀態目錄裡的
+  檔，另一台機器的 session 永遠不算 peer。跨機任務**沒有任何東西會提醒你**，站在那裡的只有第 13 條。
+  `PROTOCOL.md` §4 同步兩列。
+- **`usage.py --selftest` 每天 23:33–00:00 會失敗。** 斷言寫「5h 括號永不帶星期，因為到不了明天」——
+  19:00 之後開的視窗都在明天重設。2026-09-22 23:48 量到夾具（now＋1600 秒）渲染成 `(Wed 00:14)`，
+  `test_all.py` 11/13。期望改為與渲染器同一種曆日比對，加三個**固定時間**釘住（週二 23:48 ＋26 分 →
+  `(Wed 00:14)`；週三 00:20 ＋26 分 → `(00:46)`；週二 23:48 ＋5h → `(Wed 04:48)`），docstring 那句一起改。
+  突變檢查在副本上強迫 `same_day=True` → 斷言會叫。渲染器沒動。
+- README：cowork 段更新 —— 十三條、31 列失效形狀、六個參考檔、「一棵工作樹，或兩台機器」。
+
+---
+
 ## 0.63.2
 
 主人 2026-09-21 對 `Memory/PENDING.md` 五個項目的裁決，其中三個是程式碼：
@@ -2717,6 +2758,69 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.64.0
+
+What cowork's first cross-machine job (moving a project from an old workstation to a new one,
+2026-09-22) taught, plus three owner rulings from the same day.
+
+- ⭐ **Rule 13, and a new reference file `skills/cowork/reference/cross-machine.md`.** The skill
+  had no cross-machine content at all — UNC, SMB, "another machine": zero hits, and its own title
+  said "one working tree". The costliest lesson of that job: the coordination board was created
+  by the source machine over an administrative share, so its permissions followed that account;
+  the destination could **read it and not write it**. The protocol told that side to append and
+  flip a "whose turn" field; it could do neither. The source polled every 20 s, saw no change,
+  and read it as "they have not started". **Neither side got an error; both behaved correctly**;
+  the owner fixed the permissions by hand. ⇒ Rule 13: prove you can WRITE to a channel before
+  depending on it, and measure each direction separately; after a cross-machine copy the first
+  check is "can I write here", not the hash — a bit-perfect unwritable tree fails every later
+  step with a different error and reads as five bugs. Four parts: the channel; what arrives but
+  cannot be used; two live trees; four instruments that lied during the migration (an
+  ignore-respecting search blind to the one-off scripts; a heredoc halving backslashes into
+  invisible control characters; a positive control that crashed AFTER printing a clean result; a
+  marker-list check measuring the line that defines the list); and a closing checklist. Seven
+  new failure-shape rows, in both languages.
+- ⛔ **Two layers, not one board.** The owner: "write your own file, not one shared board" was
+  already the rule from an earlier project, and cross-machine experience ADDS to it, never
+  replaces it. Against those agents' original records: their `CLAIMS.md` IS one append-only
+  claims board (= `coordination.md` 3.1) and their content is one author-named file each
+  (`contrib/<Sn>-…md`) — tested live when the shared `SKILL.md` was lost and `contrib/` lost
+  nothing. cowork had written down only the board layer. 3.1 now states the content layer and
+  that lesson; `cross-machine.md` 1.1 / 1.5 / 1.6 and its checklist are rewritten to the two
+  layers — the board is usable across machines only after both sides pass the write-test, a side
+  that cannot write it speaks through its own file, readers scan the directory; 1:1, 1:N, N:1
+  and N:N change nothing. The single board with a turn field from the first migration is
+  recorded as the **workaround**, not the protocol.
+- ⭐ **The description now triggers on the SITUATION, never the wording.** The owner: robocopy,
+  handover, "context running out" are symptoms, not triggers. The trigger is more than one
+  session on the same repository (concurrent or one after another), more than one machine, work
+  spanning repositories or projects, or an owner relaying one thing to several sessions.
+  Measured (25 Traditional-Chinese queries, synthetic skill, sonnet, sequential foreground):
+  positives 4/5 load cowork — the cross-machine opening and the post-copy check that missed at
+  baseline now load, and the two new cross-repo / cross-project cases do too; the hardest
+  near-miss negatives (ssh between two machines, a local `FETCH_HEAD` permission error, a nightly
+  mirror script) **0 false fires**. The one remaining miss ("two agents produced the same
+  section — I called both at once") goes to `dispatch-protocol`, a defensible reading. ⚠ Two
+  traps in the measurement itself, recorded in `Memory/tasks/20260922-212000-cowork-trigger-evals/`:
+  a nested `claude -p` loads the **installed plugin copy**, never the working tree (the first
+  re-measurement was invalid for that reason); and skill-creator's `run_eval.py` `select()`s on a
+  pipe — `WinError 10038` within a second, scored as a miss — and counts only its own temporary
+  command name, so a correct load of the real installed skill also scores as a miss.
+- ⚠ **The hook section gains one sentence: `guard_cowork_first` sees only same-machine peers.**
+  Its heartbeat is a file in this machine's state directory; a session on another machine is
+  never a peer. On a cross-machine job **nothing prompts you at all** — rule 13 is what stands
+  there. `PROTOCOL.md` §4 updated in two rows.
+- **`usage.py --selftest` failed every day from 23:33 to 00:00.** It asserted the five-hour reset
+  bracket never carries a weekday "because it cannot reach tomorrow" — false for any window
+  opened after 19:00. Measured 2026-09-22 23:48: the fixture (now + 1600 s) rendered
+  `(Wed 00:14)`, `test_all.py` 11/13. The expectation is now computed the way the renderer
+  computes it, with three FROZEN-time pins (Tue 23:48 + 26 min → `(Wed 00:14)`; Wed 00:20 +
+  26 min → `(00:46)`; Tue 23:48 + 5 h → `(Wed 04:48)`), and the docstring sentence is corrected.
+  Mutation check on a copy (force `same_day = True`) → the pins fail. Renderer unchanged.
+- README: the cowork section updated — thirteen rules, 31 failure shapes, six reference files,
+  "one working tree, or two machines".
 
 ---
 

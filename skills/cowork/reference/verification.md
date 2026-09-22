@@ -128,6 +128,13 @@ ever reached version control, no history shows it. That gap is exactly what step
 
 ## Part 3 - Controls, guards, and instruments that can lie
 
+⚠ **The cross-machine instances of this Part live in `cross-machine.md` Part 4**, because they
+only arise during a migration: a structured search that is blind to every ignored file, a
+generated message silently corrupted into invisible control characters, a clean count whose
+positive control crashed *after* printing it, and a marker-list check that measures the line
+defining its own list. That file narrows one general preference stated elsewhere; it says
+which case you are in.
+
 ### Three ways a mutation test lies
 
 That a guard is not verified until a mutation kills it, and the three ways a test goes blind,

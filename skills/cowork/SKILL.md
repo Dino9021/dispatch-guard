@@ -1,13 +1,19 @@
 ---
 name: cowork
-description: Rules for several AI sessions working the same repository for one human owner over days or weeks - who is who, how work is claimed and reported, how the owner is protected from repeated questions and silent completions, and the failure shapes that make a wrong answer look finished. Use when more than one session shares a working tree, when a long task will outlive one context window, or when an owner is relaying the same thing to several sessions. Two of its rules are enforced by the dispatch-guard hook.
+description: Rules for several AI sessions working for one human owner over days or weeks - who is who, how work is claimed and reported, how the owner is protected from repeated questions and silent completions, and the failure shapes that make a wrong answer look finished. The trigger is the SITUATION, never the wording: use it whenever more than one party is involved - more than one session on the same repository (at the same time, or one after another on one task), more than one machine, or work that spans repositories or projects - and also when an owner is relaying the same thing to several sessions. A question that sounds like plain file copying, git, permissions or "what should I check next" still belongs here the moment a second session, machine, repository or project is in the picture. Two of its rules are enforced by the dispatch-guard hook.
 ---
 
-# Cowork: several sessions, one owner, one working tree
+# Cowork: several sessions, one owner - one working tree, or two machines
 
 Written by sessions that shared one repository and one owner. Every line cost something to
 learn. Nothing here names a project, machine, account, path, product or
 person - if a rule cannot be applied elsewhere, it does not belong in this file.
+
+⛔ **Across MACHINES, the mechanisms the rest of this page assumes do not exist** - no shared
+session directory, no peer heartbeat, no `SendMessage` - and the channel you build to replace
+them can fail in a direction that raises no error on either side. Rule 13 is the floor;
+`reference/cross-machine.md` is the whole of it, and it is worth reading BEFORE the move
+rather than during it.
 
 Read this page in full. Open a reference file when you are about to do the thing it covers.
 Every pointer in this skill targets a file that ships in this plugin - `skills/*/SKILL.md`,
@@ -15,7 +21,7 @@ Every pointer in this skill targets a file that ships in this plugin - `skills/*
 
 ---
 
-## The twelve rules
+## The thirteen rules
 
 If you read nothing else, these are the ones whose absence caused real damage.
 
@@ -62,6 +68,16 @@ If you read nothing else, these are the ones whose absence caused real damage.
 12. **Say which kind of "no answer" you have.** `UNKNOWN` (looked; the data cannot tell) /
     `NOT-ASKED` (a source exists; we chose not to look) / `UNCONFIRMED` (partly looked).
     Collapsing them is how a question stops being asked forever.
+13. **Prove you can WRITE to the channel before you depend on it, and measure each direction
+    separately.** A board one side can only read is a board that side cannot answer on, and
+    the other side reads the resulting silence as "they have not started". Measured: two
+    sessions deadlocked for the better part of an hour, both behaving correctly, **neither
+    receiving any error**, until the owner fixed the permissions by hand. So both sides append
+    a dated channel-test line and each confirms it can see the other's, before the first real
+    message - and waiting past a few minutes is a *permissions* hypothesis, not a patience
+    problem. The same applies to anything that arrives: after a cross-machine copy the first
+    check is "can I write here", not "is the hash right" - a bit-perfect unwritable tree fails
+    every later step, each with a different error, and reads as five unrelated bugs.
 
 **Where each rule is worked out in full** - go to the named section, not to the directory:
 
@@ -79,6 +95,7 @@ If you read nothing else, these are the ones whose absence caused real damage.
 | 10 | `verification.md` · Part 2 · and Part 3 · *A byte check proves the write, not the intent* |
 | 11 | `ownership-and-production.md` · Part 4 · and `owner-and-reporting.md` · Part 2.12 |
 | 12 | `verification.md` · Part 1.5 · and `owner-and-reporting.md` · Part 2.3 |
+| 13 | `cross-machine.md` · Part 1.2, 1.4, 1.6 · then Part 2.1 · and its closing checklist |
 
 ⭐ **And the rule about rules: a lesson that keeps recurring needs a gate, not another
 record.** If the same mistake has been written down three times and still happens, stop
@@ -125,6 +142,12 @@ younger than `peer_alive_min` (default 15 minutes) and this session has not invo
 idle at a prompt stops heartbeating, so an idle peer past 15 minutes is not counted; a peer
 that just exited is counted for up to 15 minutes - once, then never again for that session.
 
+⛔ **IT SEES ONLY SAME-MACHINE PEERS.** The heartbeat it reads is a file in a state directory
+on THIS machine, so a session on another machine is never a peer and this guard will never
+fire for it. ⇒ On a cross-machine job **nothing prompts you at all**, and rule 13 plus
+`cross-machine.md` are the only things standing there. Do not read this section as cover for
+a migration.
+
 Switches: `guard_append_only`, `guard_cowork_first`, `peer_alive_min` - in the plugin's
 `config.json` or `<repo>/.claude/dispatch-guard.json` under `dispatch`. A switched-off guard
 still logs what it would have refused.
@@ -161,6 +184,12 @@ A catalogue, so the next session names the shape instead of rediscovering it.
 | Draft in the live slot | A half-written artefact loaded and followed as if finished | Work at a path nothing loads from; move to the live path last |
 | Everyone defers | "I am not claiming it", four times, and the task stops | Deferrals carry an expiring default naming who does it otherwise |
 | Two right rules | Two rule-sets coexist unnoticed and are followed in opposite directions | Read the artefact, not only the instructions about it; report the disagreement first |
+| Silent deadlock | Both sides wait, both behave correctly, nothing errors - one of them cannot write the channel | Write-test each direction before the first real message; silence past minutes = permissions |
+| One-way channel | "I cannot reach you", taken to mean there is no channel at all | Measure the two directions separately; a blocked way out does not block the way in |
+| Arrived but unusable | Bytes verified by hash, and every later step fails differently | The first check after a copy is a write-test, not a hash; creation can succeed while writes are refused |
+| Blind to the ignored region | A structured search returns a clean, believable set - minus every ignored file | Ignore rules off for a migration scan, against a path the manifest names as a known hit |
+| Silent text corruption | A generated message loses separators and gains invisible control characters | File-writing tool, never a shell heredoc; then scan the result by codepoint, not by reading |
+| Control never ran | A clean count printed, then the positive control crashed after it | A clean result whose control did not print is UNCONFIRMED, not clean |
 
 ---
 
@@ -173,6 +202,7 @@ A catalogue, so the next session names the shape instead of rediscovering it.
 | `reference/verification.md` | claim that something is true; write to a file others share; build or trust a checking tool |
 | `reference/ownership-and-production.md` | share one working tree; change a live system; publish anything outward |
 | `reference/longrunning.md` | hand over; run out of budget; start something that runs for hours or days |
+| `reference/cross-machine.md` | coordinate with a session on ANOTHER MACHINE; move a project to new hardware; work with two checkouts of one repository; use a shared file as the channel |
 
 Where a rule already lives in `unattended-work` or `dispatch-protocol`, these files point at it
 and add only what several sessions change about it.
@@ -181,14 +211,18 @@ and add only what several sessions change about it.
 
 ## How to use this file
 
-1. New session joining a shared tree: read the twelve rules, register yourself, read the
+1. New session joining a shared tree: read the thirteen rules, register yourself, read the
    recent shared record. Then `reference/coordination.md`.
 2. Before answering anything about a live system: `unattended-work` §10-§11, then
    `reference/verification.md`.
-3. Before a long or unattended task: `unattended-work` and `dispatch-protocol` first;
+3. **Before coordinating with a session on another machine, or moving a project to new
+   hardware: `reference/cross-machine.md`, and run its opening checklist BEFORE the move.**
+   Every item on it is cheap in advance and expensive afterwards - the write-test is five
+   commands, and skipping it cost most of an hour of two-sided silence.
+4. Before a long or unattended task: `unattended-work` and `dispatch-protocol` first;
    `reference/longrunning.md` for what several sessions add.
-4. When something looks wrong: find the shape in the table above before theorising.
-5. When this file is wrong, the fix goes to the dispatch-guard repository and arrives by
+5. When something looks wrong: find the shape in the table above before theorising.
+6. When this file is wrong, the fix goes to the dispatch-guard repository and arrives by
    plugin update - never to an installed copy, and never as a second file under this name.
    **One copy only** - two files under one name is a coin toss, even while they are
    momentarily identical.

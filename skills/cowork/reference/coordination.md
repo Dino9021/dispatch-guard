@@ -209,6 +209,19 @@ edit an earlier entry, not even your own.
 **Otherwise:** each session keeps its findings in its own conversation, and the only thing that
 survives a restart is whatever happened to be written down. Conversations die; files do not.
 
+⭐ **The record carries claims, measurements, decisions and corrections — NOT the work itself.
+Content goes one file per author (2.7), and nobody writes into another author's file.** The
+day this was written it was tested by accident: the shared deliverable everyone was merging
+into was lost, and every per-author contribution file survived without losing a character.
+"One file per writer" therefore buys more than "no overwrites": the work outlives the shared
+artefact. Merging into the deliverable is done once, by one named person, announced on the
+record first.
+
+⛔ **Across MACHINES this file is also the only channel, and then "every session writes it"
+becomes a claim to measure rather than a property to assume.** A record one side can read and
+not write deadlocks both sides with no error on either. Write-test each direction before the
+first real entry, and drop the in-place "whose turn" field: `cross-machine.md` Part 1.
+
 ### 3.2 Correct by appending, never by editing
 
 **Do:** to correct something you wrote earlier, append a new entry stating what was wrong, what
@@ -252,6 +265,11 @@ A large shared file is read from the end. An entry written yesterday is, in prac
 to the record. If it must reach the owner, it goes in the decisions register as well.
 
 **Otherwise:** you satisfy the ritual of writing it down and still nobody acts on it.
+
+⚠ **Across machines there is nothing to send it to directly** - no `SendMessage`, no roster -
+so the board is all you have, and it has to be polled. Give it a fixed, machine-greppable
+section header so a poll can recognise a new entry, and treat a quiet board as a permissions
+hypothesis first: `cross-machine.md` Part 1.1, 1.5, 1.6.
 
 ### 3.7 The most dangerous artefact is the one with no owner
 

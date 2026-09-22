@@ -677,10 +677,18 @@ claude plugin install dispatch-guard@dispatch-guard --config announce_unattended
 
 ## 第三個 skill：`cowork`（0.63.0）
 
-⭐ **幾個 session、一個主人、一棵工作樹。** 十二條規則，每一條都是幾個 session 共用同一個
-repository 幾週之後付過代價學到的：先認領再產出、只登記自己、一份只能追加的共用紀錄、問主人的
+⭐ **幾個 session、一個主人 —— 一棵工作樹，或兩台機器。** 十三條規則，每一條都是幾個 session 共用
+同一個 repository 幾週之後付過代價學到的：先認領再產出、只登記自己、一份只能追加的共用紀錄、問主人的
 問題經單一窗口、問的時候不用代名詞、宣告東西不見之前先用內容搜、講清楚「沒答案」是哪一種……
-還有一張 24 列的**失效形狀目錄**，讓下一個 session 叫得出形狀的名字。
+還有一張 31 列的**失效形狀目錄**，讓下一個 session 叫得出形狀的名字。
+
+⭐ **什麼時候該載入它：看情境，不看字眼（0.64.0）。** 同一個 repo 不只一個 session（同時或接續）、
+不只一台機器、跨 repo、跨專案、或主人把同一件事轉述給好幾個 session —— 問題聽起來只是在複製檔案、用
+git、權限都一樣。**第 13 條**是跨機器的底線：依賴一條管道之前先證明**寫得進去**、兩個方向分開量；跨機
+複製後第一個檢查是「我能不能寫」，不是雜湊。它來自第一次跨機搬家：溝通板一邊讀得到寫不進去，另一邊
+把沉默讀成「還沒開始」，**雙方都沒收到任何錯誤**。完整的跨機做法在 `reference/cross-machine.md`，
+**兩層**：一份只能追加的認領板（兩邊都過了寫入測試才能用）＋內容**一人一檔**；寫不進板子就用自己的檔
+說話；1:1／1:N／N:1 不改變本質。
 
 ⭐ **其中兩條是閘門，不是文字。** 上面表格最後兩列：
 
@@ -692,13 +700,16 @@ repository 幾週之後付過代價學到的：先認領再產出、只登記自
   事件都會摸一下 `state/<session>.alive`，所以它知道誰還活著；另一個 session 的心跳比
   `peer_alive_min`（15 分鐘）新、起始目錄又在同一個 repo，你第一次 `Write` / `Edit` / `git commit`
   就會被拒絕一次，訊息叫你 `Skill(dispatch-guard:cowork)`。叫過之後不再唸；沒叫也只唸這一次。
+  ⛔ **它只看得到同一台機器的 peer** —— 心跳是本機狀態目錄裡的檔。跨機任務沒有任何東西會提醒你，
+  站在那裡的只有第 13 條。
 
 ⚠ **這個 skill 只指向 plugin 裡有的檔案。** 規則已經在 `unattended-work` 或 `dispatch-protocol` 的，
 cowork 只指過去、不重述 —— 一條規則只有一份正本。`Tools/Debug/test_guards.py` 用相似度掃描加標題
 比對釘住這件事，cowork 一旦重述另一支 skill 的任何一節，檢查就紅。
 
-⚠ **`reference/` 底下五個檔只有英文。** `SKILL.zh-TW.md` 跟另外兩支 skill 一樣是給人讀的對照，
-不是 skill 本身。
+⚠ **`reference/` 底下六個檔只有英文。** `SKILL.zh-TW.md` 跟另外兩支 skill 一樣是給人讀的對照，
+不是 skill 本身。第六個是 `cross-machine.md`（兩台機器、兩棵樹、兩個帳號 —— 本頁其餘部分預設存在的
+心跳與 `SendMessage` 在那裡都不存在）。
 
 `skills/cowork/SKILL.md` 是入口；規則本身怎麼被強制、以及誠實列出的缺口，在 `PROTOCOL.md` §3–§4。
 
@@ -2306,12 +2317,24 @@ would believe the rules were in force while nothing had loaded them.
 
 ## The third skill: `cowork` (0.63.0)
 
-⭐ **Several sessions, one owner, one working tree.** Twelve rules, each paid for by sessions
-that shared one repository for weeks: claim before you produce, register yourself and never
-someone else, one append-only shared record, funnel questions to the owner through one
-session, never a pronoun when you ask, search by content before declaring anything missing,
-say which kind of "no answer" you have … and a 24-row **catalogue of failure shapes**, so the
-next session can name the shape instead of rediscovering it.
+⭐ **Several sessions, one owner — one working tree, or two machines.** Thirteen rules, each
+paid for by sessions that shared one repository for weeks: claim before you produce, register
+yourself and never someone else, one append-only shared record, funnel questions to the owner
+through one session, never a pronoun when you ask, search by content before declaring anything
+missing, say which kind of "no answer" you have … and a 31-row **catalogue of failure shapes**,
+so the next session can name the shape instead of rediscovering it.
+
+⭐ **When to load it: the situation, never the wording (0.64.0).** More than one session on the
+same repository (concurrent or one after another), more than one machine, work spanning
+repositories or projects, or an owner relaying one thing to several sessions — even when the
+question sounds like plain file copying, git or permissions. **Rule 13** is the cross-machine
+floor: prove you can WRITE to a channel before depending on it, and measure each direction
+separately; after a cross-machine copy the first check is "can I write here", not the hash. It
+comes from the first cross-machine move: one side could read the board and not write it, the
+other read the silence as "not started yet", and **neither side got an error**. The full
+protocol is `reference/cross-machine.md`, in **two layers**: one append-only claims board
+(usable only after both sides pass the write-test) plus **one content file per writer**; a side
+that cannot write the board speaks through its own file; 1:1, 1:N and N:1 change nothing.
 
 ⭐ **Two of the rules are gates, not prose.** The last two rows of the table above:
 
@@ -2325,15 +2348,19 @@ next session can name the shape instead of rediscovering it.
   knows who is alive; when another session's heartbeat is younger than `peer_alive_min` (15
   minutes) and its start directory is in this repository, your first `Write` / `Edit` /
   `git commit` is refused once, with a message asking for `Skill(dispatch-guard:cowork)`. Once
-  invoked it never nags again; not invoked, it still nags only that once.
+  invoked it never nags again; not invoked, it still nags only that once. ⛔ **It sees only
+  same-machine peers** — the heartbeat is a file in this machine's state directory. On a
+  cross-machine job nothing prompts you at all; rule 13 is what stands there.
 
 ⚠ **This skill points only at files the plugin ships.** Where a rule already lives in
 `unattended-work` or `dispatch-protocol`, cowork points at it and does not restate it — one
 live copy per rule. `Tools/Debug/test_guards.py` pins that with a similarity scan plus a
 heading comparison: the moment cowork restates a section of another skill, the check goes red.
 
-⚠ **The five `reference/` files are English only.** `SKILL.zh-TW.md` is a reading copy for
-people, like the other two skills' — not the skill itself.
+⚠ **The six `reference/` files are English only.** `SKILL.zh-TW.md` is a reading copy for
+people, like the other two skills' — not the skill itself. The sixth is `cross-machine.md`
+(two machines, two trees, two accounts — where the heartbeat and `SendMessage` the rest of the
+skill assumes do not exist).
 
 `skills/cowork/SKILL.md` is the entry point; how the two rules are enforced, and the honest
 gaps, are in `PROTOCOL.md` §3–§4.
