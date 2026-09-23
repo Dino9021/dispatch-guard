@@ -40,6 +40,10 @@ CHECKS = [
     ("install",       [os.path.join(DEBUG_DIR, "test_install.py")]),
     ("resume cancel", [os.path.join(DEBUG_DIR, "test_resume_cancel.py")]),
     ("cmd guards",    [os.path.join(DEBUG_DIR, "test_guards.py")]),
+    # ⛔ 0.64.0 shipped a cowork SKILL.md whose frontmatter was invalid YAML, and the skill
+    # vanished from every session without a warning. This reads each SKILL.md the way the
+    # loader does. See its docstring.
+    ("skill frontmatter", [os.path.join(DEBUG_DIR, "test_skill_frontmatter.py")]),
     # ⚠ Drives the gate as a SUBPROCESS through allow / refuse / release. The defect it
     # covers lived in the event wiring, not in any function: every unit involved passed
     # while a failed dispatch held its slot for half an hour.

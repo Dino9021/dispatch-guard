@@ -33,6 +33,25 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.64.1
+
+⛔ **0.64.0 的 cowork 在每個 session 裡都不存在。** 它的 description 寫著
+`The trigger is the SITUATION, never the wording: use it …` —— YAML 純量值裡的「冒號＋空格」是映射符號，
+整段 frontmatter 因此是無效 YAML，Claude Code 就**靜默丟掉這支 skill**：2026-09-23 量到巢狀 session 的
+技能清單 127 個，有 `dispatch-protocol` 和 `unattended-work`，**沒有 `cowork`**，`plugin_warnings` 是 null。
+模型甚至自己去 Grep／Glob 找 cowork 的檔 —— 它想要，但清單裡沒有。
+
+- 修：`wording: use` → `wording. Use`。
+- ⭐ **新閘門 `Tools/Debug/test_skill_frontmatter.py`（`test_all.py` 第 14 項）**：每一支 `skills/*/SKILL.md`
+  都要有能被解析的 frontmatter、`name` 等於目錄名、`description` 非空。有 PyYAML 就用它，沒有就用嚴格的
+  fallback（純量值含 `: ` 或 ` #`、或以指示字元開頭就拒絕）。陽性對照：0.64.0 那一行必須被拒、修正版必須
+  被接受 —— 兩條路徑都驗過，且對已安裝的 0.64.0 副本實跑會紅。
+- ⚠ **為什麼 0.64.0 的檢查全綠還是出事**：中英對齊、控制字元、識別碼、整套測試都過了，因為沒有一項用
+  載入器讀檔的方式讀它。0.64.0 那節寫的「正例 4/5」量的是合成 skill 旁邊**舊的 0.63.2 cowork**，不是
+  0.64.0 —— 那個數字對 0.64.0 不成立。
+
+---
+
 ## 0.64.0
 
 cowork 第一次跨機協作（舊機 ↔ 新機搬專案，2026-09-22）留下的教訓，加上主人同日的三個裁決。
@@ -2758,6 +2777,30 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.64.1
+
+⛔ **In 0.64.0, cowork did not exist in any session.** Its description read
+`The trigger is the SITUATION, never the wording: use it …` — a colon followed by a space inside
+an unquoted YAML scalar is a mapping indicator, so the frontmatter was invalid YAML and Claude
+Code **dropped the skill silently**: measured 2026-09-23, a nested session listed 127 skills,
+with `dispatch-protocol` and `unattended-work` and **no `cowork`**, and `plugin_warnings` was
+null. The model went looking for cowork's files with Grep and Glob — it wanted the skill; the
+list did not have it.
+
+- Fix: `wording: use` → `wording. Use`.
+- ⭐ **New gate `Tools/Debug/test_skill_frontmatter.py` (item 14 of `test_all.py`)**: every
+  `skills/*/SKILL.md` must have parseable frontmatter, a `name` equal to its directory, and a
+  non-empty `description`. PyYAML when present; otherwise a strict fallback that refuses a plain
+  scalar containing `: ` or ` #` or starting with an indicator. Positive control: the 0.64.0 line
+  must be rejected and its fixed form accepted — verified on both paths, and it goes red against
+  the installed 0.64.0 copy.
+- ⚠ **Why 0.64.0 passed every check and still broke**: zh/en counts, control characters,
+  identifiers and the whole suite all passed, because none of them read the file the way the
+  loader does. The "positives 4/5" in the 0.64.0 section measured the OLD 0.63.2 cowork sitting
+  beside the synthetic skill, not 0.64.0 — that number does not hold for 0.64.0.
 
 ---
 
