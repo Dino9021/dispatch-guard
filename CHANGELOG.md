@@ -33,6 +33,27 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.64.2
+
+cowork：**名字會被回收**，以及主人提的**報到板**（改成一人一檔）。
+
+- ⛔ **名字被回收比名字過期更危險。** 實測：同一個 runtime 名字六天前屬於一個角色、今天屬於另一個；
+  有 session 8 分鐘就改名、另一個 20 分鐘改三次。過期的名字送不到、會報錯；**被回收的名字送得到 ——
+  送到另一個 session，沒有任何錯誤。** 原本 2.1「去查活的清單」在這種情況下正好送錯。另外清單裡有一個
+  不相干、離線的 session 名字就叫 `S4`，用裸代號找人會找到陌生人。
+- ⭐ **報到檔（`coordination.md` 2.8）**：固定的共用目錄、**一人一檔、以 session id 命名**、只有本人覆寫。
+  記代號、目前 runtime 名稱（僅供人看）、`[ref]`／session id（唯一穩定的鍵）、機器／repo、報到與最後確認
+  時間。主人原本提的是單一可修改的報到板；改成一人一檔，是因為實測過兩個 session 幾分鐘內先後改同一份
+  名冊、只靠 Edit 的寫入檢查剛好擋住 —— 一人一檔就沒有競爭，跟內容「一人一檔」同一個原則。
+- ⭐ **代號由主人給，session 要回報怎麼稱呼它**：「收到，我的代號是 S4，以後請用 @S4 稱呼我」，並寫進報到檔。
+  代號一律**加前綴**（`@S4`），不跟 runtime 名字撞。
+- **2.9 用 id 定址**：傳訊息用 `[ref]`／session id；重要訊息送出前確認名字仍對應到對方報到檔上的 id。
+- 規則 2 改寫為「先報到、只登記自己、用 id 定址」；2.4「幾小時內」改為實測的「幾分鐘內」；失效形狀多兩列
+  （名字被回收、名字撞名）。中英同步。
+- 未做：hook 閘門（第一次寫入前檢查本 session 有沒有報到檔）—— 記在 PENDING，等主人決定。
+
+---
+
 ## 0.64.1
 
 ⛔ **0.64.0 的 cowork 在每個 session 裡都不存在。** 它的 description 寫著
@@ -2777,6 +2798,35 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.64.2
+
+cowork: **names are recycled**, and the owner's **check-in board** (made one file per session).
+
+- ⛔ **A recycled name is worse than an expired one.** Measured: one runtime name belonged to one
+  role six days ago and to a different role today; one session was renamed after 8 minutes,
+  another three times in 20. An expired name fails loudly; **a recycled name is delivered — to a
+  different session, with no error.** The old 2.1 advice "query the live list" sends it straight
+  to the wrong place. And the session list held an unrelated, offline session literally named
+  `S4`, so a bare code name reached a stranger.
+- ⭐ **Check-in files (`coordination.md` 2.8)**: one fixed shared directory, **one file per
+  session, named by its session id**, rewritten only by that session — code name, current runtime
+  name (for people only), `[ref]` / session id (the only stable key), machine / repo, checked-in
+  and last-confirmed times. The owner proposed one editable check-in board; it became one file per
+  session because two sessions were measured editing one roster minutes apart, stopped only by a
+  lucky stale-write check. With a file each there is no race — the same rule as content.
+- ⭐ **The code name is the owner's, and the session confirms it back**: "received — my code name
+  is S4; address me as @S4 from now on", and writes it into its check-in file. Code names are
+  always **prefixed** (`@S4`) so they cannot collide with runtime names.
+- **2.9, address by id**: send by `[ref]` / session id; before a consequential message, check the
+  name still maps to the id on the recipient's check-in file.
+- Rule 2 rewritten as "check in first, register only yourself, address by id"; 2.4 "within
+  hours" corrected to the measured "within minutes"; two failure-shape rows (recycled name, name
+  collision). Both languages.
+- Not done: a hook gate (refuse the first write until this session has a check-in file) — in
+  PENDING for the owner.
 
 ---
 

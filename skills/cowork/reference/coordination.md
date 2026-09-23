@@ -132,11 +132,18 @@ session restarts. A table of names in a file therefore ages out - **and an aged-
 exactly like a current one**. There is no visual difference between a name that is live and a
 name that stopped existing an hour ago.
 
-**Do:** to find who is running a role right now, query the live source (whatever lists running
-sessions). Read the roster only to learn *who claimed what, when*.
+**Do:** to find who is running a role right now, read the role holder's **check-in file** (2.8)
+for its session id, and confirm that id in the live source (whatever lists running sessions).
+Read the roster only to learn *who claimed what, when*.
 
 **Otherwise:** you address work to a name that no longer exists, get a delivery failure, and
 conclude that the role is vacant. It is not - you looked in the wrong place.
+
+⛔ **And a name that "still exists" in the live list may not be the session you mean.** Names
+are RECYCLED. Measured: the same runtime name belonged to one role six days earlier and to a
+different role today; two sessions were renamed within 8 and 20 minutes (one three times). A
+message to an EXPIRED name fails loudly; a message to a RECYCLED name is delivered, silently,
+to the wrong session. Querying the live list by name is therefore not a check - see 2.9.
 
 ### 2.2 Register yourself; never register someone else
 
@@ -157,9 +164,10 @@ as current**. A reader who sees three fresh rows assumes the rest are fresh too.
 **Otherwise:** partial freshness is read as total freshness, and the stale rows become more
 dangerous than they were before anyone touched the file.
 
-### 2.4 Re-registration decays within hours - so do not rely on memory for it
+### 2.4 Re-registration decays within minutes - so do not rely on memory for it
 
-Even a correctly updated roster can be wrong again by the afternoon. Relying on people to
+Even a correctly updated roster can be wrong again within minutes - measured: renamed after 8
+minutes, and three renames in 20. Relying on people to
 remember to re-register was observed to fail every single time.
 
 **Do:** put the check in a gate that runs before something that matters - for example, refuse
@@ -195,6 +203,54 @@ after it.** A name that leads with section numbers, topics or dates is read *as*
 skipped - measured: a contribution named after the four sections it covered was reported
 missing by two people while sitting in plain view, and was minutes away from being recorded in
 the delivered artefact as an absence.
+
+### 2.8 Check in first: one file per session, in one fixed shared directory
+
+Before anything else, a cowork session writes **its own check-in file**. One directory for the
+whole team - fixed, named by the project, reachable by every participant (across machines it is
+the same shared directory as the board, and it is subject to the same write-test) - and inside
+it **one file per session, named by the session id**, rewritten only by the session it names.
+Every other session only reads it.
+
+```
+<shared dir>/checkin/<session-id>.md
+  code name        : @S4                     (assigned by the owner; see below)
+  runtime name     : <current name>          (for people only - it changes)
+  address          : [ref] / <session id>    (the only stable key)
+  machine / repo   : <where it runs>
+  checked in       : YYYY-MM-DD HH:MM
+  last confirmed   : YYYY-MM-DD HH:MM        (refresh before each consequential action)
+```
+
+**Why a file per session and not one shared roster file.** A check-in has to be EDITABLE -
+the runtime name and the last-confirmed time change - and one editable file shared by everyone
+is exactly the race observed: two sessions edited the same roster within minutes of each other,
+and only a lucky stale-write check stopped one from overwriting the other. With a file per
+session there is nobody to race: the same rule as content (3.1 - one file per writer), applied
+to identity. The append-only board still carries the claims; the check-in directory carries
+who is who.
+
+**The code name belongs to the owner, and the session confirms it back.** When the owner
+assigns one, the session answers in so many words - **"received - my code name is S4; address
+me as @S4 from now on"** - writes it into its check-in file, and uses it in every report.
+**Prefix it** (`@S4`, never bare `S4`): measured, the session list held an unrelated, offline
+session whose runtime name was literally `S4`, so a bare code name addressed a stranger without
+any error.
+
+A check-in whose `last confirmed` is older than the work you are about to hand over is history:
+read it for who was there, never as proof of who is there.
+
+**Otherwise:** the roster is edited by several hands, identities drift within minutes, and the
+owner has no fixed word to call a session by.
+
+### 2.9 Address by id, never by name - and check the mapping before sending
+
+**Do:** send to a peer by `[ref]` / session id. Before a consequential message, check that the
+name you have in mind still maps to the id on that peer's check-in file; if it does not, the
+name was recycled - do not send, re-read the check-in directory.
+
+**Otherwise:** the one failure mode that makes no noise: the message arrives, to a session with
+a different role, which may act on it.
 
 ---
 

@@ -29,9 +29,14 @@ If you read nothing else, these are the ones whose absence caused real damage.
    drafts of the same section. Write a line on a shared, append-only record saying what you
    are taking; take only what is unclaimed. Claim the *tools* you build as well as the pieces
    of the deliverable - two people building the same instrument collides nowhere.
-2. **Register yourself, never someone else.** Session names expire silently and an expired
-   roster looks exactly like a current one. To find who holds a role *now*, query the live
-   source. A roster records who claimed what when - it is history, not an address book.
+2. **Check in first, register only yourself, and address by id - never by name.** Session
+   names change within MINUTES and are then RECYCLED: a message to a recycled name is
+   delivered, silently, to someone else - worse than an expired name, which at least fails.
+   So the first act of any cowork session is to write its own check-in file (one file per
+   session, named by its session id, in a fixed shared directory) and, when the owner assigns a
+   code name, to answer "received - my code name is S4; address me as @S4 from now on". Send
+   by `[ref]` / session id, and before sending check that the name still maps to the id on the
+   recipient's check-in file. A roster is history, not an address book.
 3. **One append-only shared record, and correct it by appending.** Never edit an earlier
    entry, not even your own. The fact that a wrong answer was once believed is usually the
    most useful thing in the file. ⭐ **Enforced:** a file whose first heading says
@@ -84,7 +89,7 @@ If you read nothing else, these are the ones whose absence caused real damage.
 | # | Section to open |
 |---|---|
 | 1 | `coordination.md` · Part 1 · *When one instruction reaches everyone at once* |
-| 2 | `coordination.md` · Part 2.1, 2.2, 2.5 |
+| 2 | `coordination.md` · Part 2.1, 2.2, 2.5, 2.8, 2.9 |
 | 3 | `coordination.md` · Part 3.1, 3.2 · and *What the hook enforces*, below |
 | 4 | `owner-and-reporting.md` · Part 1.1, 1.2, 1.3 |
 | 5 | `owner-and-reporting.md` · Part 1.5 |
@@ -176,6 +181,8 @@ A catalogue, so the next session names the shape instead of rediscovering it.
 | Alarm with no name | An alert that says how many, never which | Carry the identifier into the alert at the moment it is raised; a later lookup finds the state already gone |
 | Anonymous tool | Two copies produce identical output, so a claimed fix cannot be tested | The version in the first output line; new content gets a new version |
 | Relay single point | All communication funnelled through one session | Keep a durable written path alongside the relay |
+| Recycled name | A message to a known name is delivered - to a different session, with no error | Address by `[ref]` / session id; check the name still maps to the id on the recipient's check-in file |
+| Name collision | Your code name is also the name of an unrelated (even offline) session in the list | Prefix code names (`@S4`) so they cannot collide with runtime names |
 | Collected is not read | The answer was filed somewhere nobody opened | Before asking anyone, search the record for it |
 | Renamed reads as deleted | A shared artefact "vanishes" during a tidy-up | Search by content - size, headings, hash - and in more than the one directory you expect |
 | Stale explanation | New evidence absorbed by an account that was true earlier | Check the timestamp on the check you are about to reuse |
