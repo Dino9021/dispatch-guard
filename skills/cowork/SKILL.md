@@ -29,14 +29,16 @@ If you read nothing else, these are the ones whose absence caused real damage.
    drafts of the same section. Write a line on a shared, append-only record saying what you
    are taking; take only what is unclaimed. Claim the *tools* you build as well as the pieces
    of the deliverable - two people building the same instrument collides nowhere.
-2. **Check in first, register only yourself, and address by id - never by name.** Session
-   names change within MINUTES and are then RECYCLED: a message to a recycled name is
-   delivered, silently, to someone else - worse than an expired name, which at least fails.
-   So the first act of any cowork session is to write its own check-in file (one file per
-   session, named by its session id, in a fixed shared directory) and, when the owner assigns a
-   code name, to answer "received - my code name is S4; address me as @S4 from now on". Send
-   by `[ref]` / session id, and before sending check that the name still maps to the id on the
-   recipient's check-in file. A roster is history, not an address book.
+2. **Check in first, register only yourself - and the only stable identity is the ROLE the
+   owner assigned.** Runtime names change within minutes and are RECYCLED (a message to a
+   recycled name is delivered, silently, to someone else); the `[ref]` beside a name changes
+   too; a resumed session gets a new session id. So the first act of any cowork session is to
+   write the check-in file of its ROLE (`checkin/S4.md`, in a fixed shared directory) holding
+   its current runtime name, `[ref]` and session id as volatile fields it rewrites on every
+   restart; and, when the owner assigns a code name, to answer "received - my code name is S4".
+   Code names are plain letters and digits - never `@` (the messaging tool's team syntax) - and
+   are never used as a send address: to reach a role, read its check-in file, find that name in
+   the live list, send to it. A roster is history, not an address book.
 3. **One append-only shared record, and correct it by appending.** Never edit an earlier
    entry, not even your own. The fact that a wrong answer was once believed is usually the
    most useful thing in the file. ⭐ **Enforced:** a file whose first heading says
@@ -83,6 +85,11 @@ If you read nothing else, these are the ones whose absence caused real damage.
     problem. The same applies to anything that arrives: after a cross-machine copy the first
     check is "can I write here", not "is the hash right" - a bit-perfect unwritable tree fails
     every later step, each with a different error, and reads as five unrelated bugs.
+    ⛔ **And waiting for a peer is not stopping.** A session between turns runs nothing and
+    nothing wakes it: "I am waiting" at the end of a turn means asleep until a human speaks.
+    Before ending a turn to wait on a peer, arm a wake-up (`notify_when_idle` on the same
+    machine; the shipped folder watcher across machines) and post ONE waiting line; a wake-up
+    with nothing for you writes nothing, or every watcher wakes every other one.
 
 **Where each rule is worked out in full** - go to the named section, not to the directory:
 
@@ -181,8 +188,13 @@ A catalogue, so the next session names the shape instead of rediscovering it.
 | Alarm with no name | An alert that says how many, never which | Carry the identifier into the alert at the moment it is raised; a later lookup finds the state already gone |
 | Anonymous tool | Two copies produce identical output, so a claimed fix cannot be tested | The version in the first output line; new content gets a new version |
 | Relay single point | All communication funnelled through one session | Keep a durable written path alongside the relay |
-| Recycled name | A message to a known name is delivered - to a different session, with no error | Address by `[ref]` / session id; check the name still maps to the id on the recipient's check-in file |
-| Name collision | Your code name is also the name of an unrelated (even offline) session in the list | Prefix code names (`@S4`) so they cannot collide with runtime names |
+| Recycled name | A message to a known name is delivered - to a different session, with no error | Look the ROLE up: read `checkin/<role>.md` for the holder's current runtime name, find it in the live list, send to it; a `[ref]` only when fresh from that list |
+| Name collision | Your code name is also the name of an unrelated (even offline) session in the list | Never send to a code name; look the role up in its check-in file, then send to its current runtime name. No `@` in code names |
+| Asleep while waiting | "Waiting for the other side" ends a turn, and nothing ever wakes the session | Arm a wake-up before ending the turn: `notify_when_idle` (same machine) or the folder watcher (across machines) |
+| Wake storm | Every waiter posts "woke, nothing for me" on each wake, and each post wakes every other waiter | A wake with nothing for you writes nothing; watchers ignore your own and the observer's files |
+| Moved channel | Work moves to a new board; the party watching the old one is never woken | Announce the move in the OLD place and keep watching it until everyone acknowledges there |
+| Late joiner | A rule pasted into the open windows mid-run never reaches whoever joins later | Write every mid-run rule into the channel's standing file the moment it is adopted |
+| Removed after arrival | A perfect copy, then the destination's antivirus quarantines files minutes later | Set exclusions before copying evidence or samples; re-count the files minutes later |
 | Collected is not read | The answer was filed somewhere nobody opened | Before asking anyone, search the record for it |
 | Renamed reads as deleted | A shared artefact "vanishes" during a tidy-up | Search by content - size, headings, hash - and in more than the one directory you expect |
 | Stale explanation | New evidence absorbed by an account that was true earlier | Check the timestamp on the check you are about to reuse |
@@ -195,7 +207,7 @@ A catalogue, so the next session names the shape instead of rediscovering it.
 | One-way channel | "I cannot reach you", taken to mean there is no channel at all | Measure the two directions separately; a blocked way out does not block the way in |
 | Arrived but unusable | Bytes verified by hash, and every later step fails differently | The first check after a copy is a write-test, not a hash; creation can succeed while writes are refused |
 | Blind to the ignored region | A structured search returns a clean, believable set - minus every ignored file | Ignore rules off for a migration scan, against a path the manifest names as a known hit |
-| Silent text corruption | A generated message loses separators and gains invisible control characters | File-writing tool, never a shell heredoc; then scan the result by codepoint, not by reading |
+| Silent text corruption | A generated message loses separators, gains invisible control characters, or arrives double-encoded (CJK turned into accented Latin letters) | File-writing tool, never a shell heredoc; scan by codepoint for control characters AND the double-encoding signature; read back every quote |
 | Control never ran | A clean count printed, then the positive control crashed after it | A clean result whose control did not print is UNCONFIRMED, not clean |
 
 ---
@@ -209,7 +221,8 @@ A catalogue, so the next session names the shape instead of rediscovering it.
 | `reference/verification.md` | claim that something is true; write to a file others share; build or trust a checking tool |
 | `reference/ownership-and-production.md` | share one working tree; change a live system; publish anything outward |
 | `reference/longrunning.md` | hand over; run out of budget; start something that runs for hours or days |
-| `reference/cross-machine.md` | coordinate with a session on ANOTHER MACHINE; move a project to new hardware; work with two checkouts of one repository; use a shared file as the channel |
+| `reference/cross-machine.md` | coordinate with a session on ANOTHER MACHINE; move a project to new hardware; work with two checkouts of one repository; use a shared file as the channel; wait for a peer (1.8) |
+| `tools/watch-folder.ps1` | wait on peers you can reach only through files - run it in the background, it exits (and wakes you) when the channel folder changes |
 
 Where a rule already lives in `unattended-work` or `dispatch-protocol`, these files point at it
 and add only what several sessions change about it.

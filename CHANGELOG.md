@@ -33,6 +33,45 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.65.0
+
+cowork：第二次跨機搬遷（一個專案從舊機搬到新機，最後共 9 個 session 參與）由觀察者角色逐筆記錄的教訓。
+兩項是 **0.64.2 自己出的錯**，其餘是新規則；另附一支監看工具。
+
+- ⛔ **〔修 0.64.2〕唯一穩定的身分是擁有者指派的「角色」。** 0.64.2 說「`[ref]`／session id 是唯一穩定的鍵」、報到檔用
+  session id 命名 —— 錯了：runtime 名字幾分鐘就換且會被回收；名字旁的 `[ref]` 也會變（同一個 agent 認領時一個 session id、
+  後來清單上是另一個 `[ref]`；傳訊工具自己的說明也寫「不是剛從清單或錯誤讀到的 ref 不會解析」）；接手的 session 會拿到新
+  session id。⇒ 報到檔改為 `checkin/<角色>.md`，runtime 名字、`[ref]`、session id 都是持有者每次重開就重寫的欄位；要找某個
+  角色：讀它的報到檔 → 在即時清單找到那個名字 → 傳給它（`coordination.md` 2.1／2.8／2.9）。交接期間同一角色兩個人
+  （舊機 S3、新機 S3）改用 `S3-old`／`S3-new`，直到舊的正式退役。
+- ⛔ **〔修 0.64.2〕代號不用 `@`。** 0.64.2 要代號加 `@` 前綴；但 `@` 是傳訊工具的 team 語法（`name@team`），送往 `@MIG`
+  在查找之前就被拒（`to must be a bare teammate name`），錯誤樣式跟「找不到」不同，花了三次嘗試才分辨出來。代號只用英數字，
+  而且**永遠不拿來當傳送地址**。
+- ⭐ **等同伴不等於停下來（`cross-machine.md` 1.8、規則 13、`unattended-work` §15）。** session 回合之間什麼都不跑、也沒有東西
+  會叫醒它：「我在等」寫完就睡著了。實測一方 11:45 說在等，一直睡到 13:31 主人轉達「開始」。⇒ 停下來等同伴之前先設喚醒：
+  同機用傳訊工具的 `notify_when_idle`，跨機用新附的 **`skills/cowork/tools/watch-folder.ps1`**（背景執行，資料夾一有變動就結束
+  並叫醒你）；板子只貼**一行**等待。採用後實測：一方做完，另一方約 50 秒自己醒來接手，中間沒有人。
+  ⛔ 第二半是踩出來的：第一版寫「停下前要貼等待行」，被照字面解讀成每次醒來都貼，9 個 session 互相吵醒（每兩分鐘 4～5 行
+  空轉）。⇒ **醒來沒你的事就什麼都不寫**；監看排除自己和觀察者的檔。等「主人」則照舊乾淨停下。
+- **權限要在第一次複製「之前」、在目的地「根目錄」處理（`cross-machine.md` 1.6、2.3）。** 同一個缺陷兩天內出現三次，每次只修
+  出事的資料夾。經管理共享建立的檔對其他帳號是唯讀的，就算對方能新建檔也一樣 —— 建立者要在建立的同一步用 SID 授權。
+- **目的地防毒會在完美複製之後刪檔（2.3b）**：寫入測試 40/40、位元組全對，幾分鐘後防毒開始隔離證據檔，另有 30 個同類檔在風險中。
+  搬證據／樣本前先比對排除設定；幾分鐘後再數一次檔。**目的地 agent 不要在目的地樹裡啟動（2.3c）。**
+- **雙重編碼的 UTF-8 會通過控制字元掃描（4.2）**：主人原話轉到板子上變成一串帶重音的拉丁字母，沒有任何控制字元。加一道
+  雙重編碼特徵檢查；轉述的原話一定讀回核對。
+- **通道搬家只在新位置公告**，看舊位置的一方永遠不會醒（`coordination.md` 3.9）⇒ 在舊位置公告、持續監看到大家確認。
+- 其他新節：`coordination.md` 3.14 發 WAITING 或說誰在／不在之前先重讀板子（兩小時內三次）；3.15 中途採用的規則立刻寫進
+  通道常駐檔（後來加入的三個 session 都沒拿到）；3.16 主人給的規則明顯有害時，各方回報一次、照舊遵守，只有主人或寫規則的人能改；
+  3.17 主人在 session 之間手動傳話＝通道少一個檔；3.18 觀察者角色：可貼「FYI」（量到、確定會卡住的阻礙），並記錄誰讀過觀察檔。
+  `cross-machine.md` 1.3（只開放目標共用時的通道位置）、1.7（開頭貼一次兩邊時鐘，時間一律取自 `date`）、3.4（凍結要寫明誰顧停掉的監控）。
+- 失效形狀多六列（等著等著睡著、喚醒風暴、通道搬了家、後來加入的人、到了又被刪），兩列改寫（名字被回收、名字撞名），
+  「無聲的文字損壞」加上雙重編碼。中英同步。
+- `watch-folder.ps1`：pwsh 7 版本守衛（5.1 會以序列化參數重新交給 pwsh 7；沒裝 pwsh 7 就拒絕並說明怎麼裝）；
+  `-Ignore "a,b"` 逗號分隔；一律建議 `-WindowStyle Hidden`，避免視窗跳出被誤關。實測：觸發、被排除不觸發、5.1 路徑、資料夾不存在。
+- 對抗式審查（sonnet）一次：1 個 BLOCKING（「名字被回收」那列仍是舊模型，中英皆然）已修，1 個 NON-BLOCKING 已修。
+
+---
+
 ## 0.64.2
 
 cowork：**名字會被回收**，以及主人提的**報到板**（改成一人一檔）。
@@ -2798,6 +2837,59 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.65.0
+
+cowork: what an observer role recorded, entry by entry, during a second cross-machine move (one project from an
+old machine to a new one, nine sessions by the end). Two items are **0.64.2's own mistakes**; the rest are new rules;
+plus a watcher tool.
+
+- ⛔ **[fixes 0.64.2] The only stable identity is the ROLE the owner assigned.** 0.64.2 said "`[ref]` / session id is
+  the only stable key" and named check-in files by session id - wrong: runtime names change within minutes and are
+  recycled; the `[ref]` beside a name changes too (one agent claimed with one session id and was later listed under a
+  different `[ref]`; the messaging tool's own description says a ref "you did not just read from a listing or an error
+  will not resolve"); a resumed session gets a new session id. ⇒ check-in files are `checkin/<role>.md`; runtime name,
+  `[ref]` and session id are fields the holder rewrites on every restart; to reach a role: read its check-in file, find
+  that name in the live list, send to it (`coordination.md` 2.1/2.8/2.9). Two holders of one role during a handover get
+  `S3-old` / `S3-new` until the old one is retired.
+- ⛔ **[fixes 0.64.2] No `@` in code names.** `@` is the messaging tool's team syntax (`name@team`): a send to `@MIG` was
+  refused before any lookup ("to must be a bare teammate name"), an error shape unlike "not found", which took three
+  attempts to tell apart. Code names are plain alphanumerics and are **never used as a send address**.
+- ⭐ **Waiting for a peer is not stopping (`cross-machine.md` 1.8, rule 13, `unattended-work` §15).** Between turns a
+  session runs nothing and nothing wakes it: "I am waiting" = asleep. Measured: one side said "waiting" at 11:45 and slept
+  until the owner relayed "go" at 13:31. ⇒ Before ending a turn to wait on a peer, arm a wake-up: `notify_when_idle` on
+  one machine; the new **`skills/cowork/tools/watch-folder.ps1`** across machines (run in the background; it exits, and
+  so wakes you, when the channel folder changes); post ONE waiting line. After adoption: one side finished and the other
+  acted ~50 s later with no human in between. ⛔ The second half was learnt the hard way: the first wording ("post a
+  waiting line before you stop") was read as "on every wake", and nine sessions woke each other in a storm (4-5 empty
+  lines every two minutes). ⇒ **A wake with nothing for you writes nothing**; watchers ignore their own and the
+  observer's files. Waiting on the OWNER still stops cleanly.
+- **Permissions before the first copy, at the destination ROOT (`cross-machine.md` 1.6, 2.3).** The same defect struck
+  three times in two days, repaired per folder each time. A file created over an admin share is read-only to other
+  accounts even when they can create files - the creator grants the other side by SID in the same step.
+- **The destination's antivirus removes files after a perfect copy (2.3b)**: write-test 40/40, bytes all equal, then
+  evidence files quarantined minutes later with 30 more at risk. Set exclusions before copying evidence or samples;
+  re-count later. **The destination agent does not start inside the destination tree (2.3c).**
+- **Double-encoded UTF-8 passes the control-character scan (4.2)**: the owner's words reached a board as a run of accented
+  Latin letters, with no control character at all. Added a double-encoding signature check; read back every owner quote.
+- **A channel move announced only in the new place** never wakes whoever watches the old one (`coordination.md` 3.9) ⇒
+  announce in the old place and keep watching it until everyone acknowledges.
+- New sections: `coordination.md` 3.14 re-read the board before posting WAITING or saying who is (not) present (three times
+  in two hours); 3.15 rules adopted mid-run go into the channel's standing file at once (three late joiners never got
+  them); 3.16 an owner-given rule that is visibly harmful is reported once by each party and still followed - only the
+  owner or the rule's author changes it; 3.17 the owner carrying findings by hand means a missing file; 3.18 an observer
+  role: an FYI category for measured, certain blockers, and a record of who read the observer's file.
+  `cross-machine.md` 1.3 (where the channel goes when only the target share is reachable), 1.7 (post both clocks once;
+  every stamp from `date`), 3.4 (a freeze names who covers stopped monitoring).
+- Failure shapes: six rows added (asleep while waiting, wake storm, moved channel, late joiner, removed after arrival), two
+  rewritten (recycled name, name collision), "silent text corruption" extended to double encoding. Both languages.
+- `watch-folder.ps1`: pwsh 7 guard (5.1 re-executes under pwsh 7 with serialised arguments; no pwsh 7 = refuse and say how
+  to install); `-Ignore "a,b"` comma-separated; always recommended with `-WindowStyle Hidden` so no console window pops up
+  to be closed by accident. Measured: fires, ignored-only does not fire, 5.1 path, missing folder.
+- One adversarial review (sonnet): 1 BLOCKING (the "recycled name" row still stated the old model, both languages) fixed;
+  1 NON-BLOCKING fixed.
 
 ---
 

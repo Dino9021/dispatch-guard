@@ -132,9 +132,9 @@ session restarts. A table of names in a file therefore ages out - **and an aged-
 exactly like a current one**. There is no visual difference between a name that is live and a
 name that stopped existing an hour ago.
 
-**Do:** to find who is running a role right now, read the role holder's **check-in file** (2.8)
-for its session id, and confirm that id in the live source (whatever lists running sessions).
-Read the roster only to learn *who claimed what, when*.
+**Do:** to find who is running a role right now, read that ROLE's **check-in file** (2.8) for
+its current runtime name, then find that name in the live source (whatever lists running
+sessions) and send to it. Read the roster only to learn *who claimed what, when*.
 
 **Otherwise:** you address work to a name that no longer exists, get a delivery failure, and
 conclude that the role is vacant. It is not - you looked in the wrong place.
@@ -204,22 +204,32 @@ skipped - measured: a contribution named after the four sections it covered was 
 missing by two people while sitting in plain view, and was minutes away from being recorded in
 the delivered artefact as an absence.
 
-### 2.8 Check in first: one file per session, in one fixed shared directory
+### 2.8 Check in first: one file per ROLE, in one fixed shared directory
 
 Before anything else, a cowork session writes **its own check-in file**. One directory for the
 whole team - fixed, named by the project, reachable by every participant (across machines it is
 the same shared directory as the board, and it is subject to the same write-test) - and inside
-it **one file per session, named by the session id**, rewritten only by the session it names.
-Every other session only reads it.
+it **one file per role, named by the role's code name**, rewritten only by the session that
+currently holds the role. Every other session only reads it.
+
+⛔ **Why the ROLE and not the session id - measured, and this reverses 0.64.2.** Every identifier
+the runtime hands out moves: the runtime name is changed and recycled within minutes; the
+`[ref]` shown beside it changes too (one agent claimed with one session id and was later listed
+under a different `[ref]`; the messaging tool itself says a `[ref]` "you did not just read from a
+listing or an error will not resolve"); and a resumed session gets a new session id by design. A
+check-in file named by session id becomes an orphan the moment its holder restarts. **The only
+name that survives is the role the owner assigned** - so the role is the key, and everything the
+runtime hands out is a volatile field the holder rewrites whenever it restarts.
 
 ```
-<shared dir>/checkin/<session-id>.md
-  code name        : @S4                     (assigned by the owner; see below)
-  runtime name     : <current name>          (for people only - it changes)
-  address          : [ref] / <session id>    (the only stable key)
+<shared dir>/checkin/<role>.md              e.g. checkin/S4.md
+  role / code name : S4                     (assigned by the owner - the stable key)
+  runtime name     : <current name>         (THE address for messaging - volatile, re-read before sending)
+  [ref]            : <current ref>          (volatile; valid only when fresh from a listing)
+  session id       : <current id>           (volatile; changes on resume)
   machine / repo   : <where it runs>
-  checked in       : YYYY-MM-DD HH:MM
-  last confirmed   : YYYY-MM-DD HH:MM        (refresh before each consequential action)
+  checked in       : YYYY-MM-DD HH:MM       (from the clock, never estimated)
+  last confirmed   : YYYY-MM-DD HH:MM       (refresh before each consequential action, and on every restart)
 ```
 
 **Why a file per session and not one shared roster file.** A check-in has to be EDITABLE -
@@ -231,11 +241,21 @@ to identity. The append-only board still carries the claims; the check-in direct
 who is who.
 
 **The code name belongs to the owner, and the session confirms it back.** When the owner
-assigns one, the session answers in so many words - **"received - my code name is S4; address
-me as @S4 from now on"** - writes it into its check-in file, and uses it in every report.
-**Prefix it** (`@S4`, never bare `S4`): measured, the session list held an unrelated, offline
-session whose runtime name was literally `S4`, so a bare code name addressed a stranger without
-any error.
+assigns one, the session answers in so many words - **"received - my code name is S4; I will use
+S4 in every report and file from now on"** - writes it into its check-in file, and signs every
+section with it.
+
+⛔ **A code name is a label for people and files, never an address a tool is given.** 0.64.2 said
+to prefix it with `@`; that was wrong: `@` is the messaging tool's team syntax (`name@team`), and a
+send to `@MIG` was refused before any lookup with "to must be a bare teammate name" - a different
+error shape from "not found", which cost three attempts to tell apart. Use plain letters and
+digits (`S4`, `MIG`, `OBS`); no `@`, `#`, `:`, spaces or brackets. And because an unrelated
+session can carry a runtime name identical to a code name (measured: an offline session was
+listed as literally `S4`), you never SEND to a code name - you look the role up (2.9).
+
+**When a role has two holders during a handover** (the old machine's S3 and the new machine's S3),
+give them distinct code names - `S3-old`, `S3-new` - until the old one is retired, and post the
+retirement. Lines that say only "S3" stop saying which one.
 
 A check-in whose `last confirmed` is older than the work you are about to hand over is history:
 read it for who was there, never as proof of who is there.
@@ -243,11 +263,17 @@ read it for who was there, never as proof of who is there.
 **Otherwise:** the roster is edited by several hands, identities drift within minutes, and the
 owner has no fixed word to call a session by.
 
-### 2.9 Address by id, never by name - and check the mapping before sending
+### 2.9 Address a ROLE: look it up, then send to its current name
 
-**Do:** send to a peer by `[ref]` / session id. Before a consequential message, check that the
-name you have in mind still maps to the id on that peer's check-in file; if it does not, the
-name was recycled - do not send, re-read the check-in directory.
+**Do:** to message a role, (1) read `checkin/<role>.md` for the holder's current runtime name,
+(2) find exactly that name in the live session list, (3) send to that name - append its `[ref]`
+only when the list shows two rows with the name or an error asks you to disambiguate, and only a
+`[ref]` you have just read there. If the name in the check-in file is not in the list, or its
+`last confirmed` is older than your message's premise, do not send - the holder has restarted or
+the name was recycled; the file is the thing to fix, by its holder.
+
+⚠ **Across machines, and for Remote Control or cloud sessions, a successful send proves delivery,
+not reading - nothing reports back.** Put anything that matters in a file as well (3.6).
 
 **Otherwise:** the one failure mode that makes no noise: the message arrives, to a session with
 a different role, which may act on it.
@@ -364,6 +390,13 @@ outlives its truth**, and everyone who formed an explanation from it stops re-ch
 command that refuses to act on a non-empty directory proves by its own semantics that nothing
 was lost, which is worth more than remembering that it looked empty.
 
+⛔ **Moving the CHANNEL itself is the sharpest case.** Measured: coordination was moved from the
+migration folder to the project's own board, and the move was announced only ON THE NEW BOARD -
+where the party still watching the old folder was not looking, and its watcher covered the old
+folder only. It could read the new board; nothing woke it to. ⇒ Announce a move **in the old
+location**, keep the old location watched until every party has acknowledged the move there, and
+move (or add) the watcher with it. Reachable is not watched.
+
 
 ### 3.10 When you split a section, leave a pointer where it used to be whole
 
@@ -450,3 +483,62 @@ absent after looking in one directory.
 
 ⭐ The author of that advice found and withdrew it themselves. That is the useful pattern: the
 person who narrowed the scope is the only one who knows how narrow it was.
+
+### 3.14 Re-read the record before you post a WAITING line or assert who is (not) present
+
+A watcher tells you THAT something changed; it does not make you read it before you post.
+Measured three times in two hours on one board: a session wrote "no session holds S2" three
+minutes after S2 had claimed on that board; another posted "waiting to be assigned" two minutes
+after a handover addressed to it; a third built a request on three facts, each already
+superseded on the same board.
+
+**Do:** before posting a WAITING line, a status, or any sentence about who is or is not present,
+re-read the record's last entries since your previous read. A presence claim is an absence
+claim in disguise - rule 11 applies.
+
+### 3.15 A rule adopted mid-run goes into the channel's standing file at once
+
+Rules the owner adds while work is running are usually delivered by pasting them into the
+windows that are open. **A participant who joins later never receives them.** Measured: three
+sessions joined after two rules had been pasted into two windows; none of them had the rules,
+and one learnt them only by copying the format of other sessions' board lines.
+
+**Do:** the moment a rule is adopted, write it into the file every newcomer reads first (the
+channel's standing prompt or README), dated, and say on the record that it is there.
+
+### 3.16 A harmful rule from the owner is reported to the owner - participants do not override it
+
+Measured: a rule given by the owner (through an adviser's wording) made every waiting session
+post a line on each wake-up, and each line woke all the others. Every participant saw it; one
+proposed the fix and applied it; the others correctly declined it as "a peer's proposal, not the
+owner's"; the proposer then reverted. The storm continued until the owner re-issued the rule.
+
+**Do:** when an owner-given rule is visibly harmful, each party files **one** problem report to
+the owner and keeps following the rule. Only the owner - or whoever wrote the rule for the
+owner - changes it. ⇒ **Whoever writes a rule for other sessions owns watching its side effects**,
+and a rule about "what to do before you stop" must say whether a wake-up with nothing new counts
+as a new stop.
+
+### 3.17 If the owner is carrying findings between sessions by hand, the channel is missing a file
+
+Measured: the owner relayed three findings from one session to another by voice in one hour,
+and the receiving session saw only what the owner chose to repeat.
+
+**Do:** anything one session learns that another role needs goes into a file the other reads,
+the moment it is learnt - including what the owner said to you, verbatim. The owner is not the
+transport.
+
+### 3.18 An observer role: say what it may post, and record who has read it
+
+A session appointed to watch others and report on the process (not to take part) needs two
+rules written into its brief:
+
+- **Three categories, not two.** Let a mistake in progress happen and record it; STOP for
+  irreversible harm; and **FYI - a blocker the observer has measured and that will certainly
+  stop the next step** - posted once as a fact with its evidence, never as a direction.
+  Measured without the third category: a certain blocker sat in the observer's file until a
+  participant found it independently, a round later.
+- **Say whether participants may read the observer's file, and record who did.** Once they
+  read it, they correct what it records, and "it did not happen again" can no longer be
+  credited to the skill. And the observer batches its writes: every write wakes every watcher
+  that does not ignore the observer's file.

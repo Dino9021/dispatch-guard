@@ -156,6 +156,9 @@ Do everything that does not need the owner FIRST; owner-blocked items go to the 
 queue. **Unless the owner must physically operate something, do not ask — keep going.**
 This removes the habit of checking in; it removes no approval gate the project defines.
 When only owner-blocked items remain, stop cleanly — do not invent adjacent work.
+⛔ **An item blocked on a PEER session is not owner-blocked.** Stopping cleanly on it leaves you
+asleep while the peer finishes — nothing wakes you. Arm a wake-up before ending the turn:
+`cowork` → `reference/cross-machine.md` 1.8 (it applies on one machine too).
 
 ## 16. The stopping report
 

@@ -678,7 +678,7 @@ claude plugin install dispatch-guard@dispatch-guard --config announce_unattended
 ## 第三個 skill：`cowork`（0.63.0）
 
 ⭐ **幾個 session、一個主人 —— 一棵工作樹，或兩台機器。** 十三條規則，每一條都是幾個 session 共用
-同一個 repository 幾週之後付過代價學到的：先認領再產出、先報到並用 id 定址（名字會被回收）、一份只能追加的共用紀錄、問主人的
+同一個 repository 幾週之後付過代價學到的：先認領再產出、先報到、以角色為準（名字和 ref 都會變）、等同伴前先設喚醒、一份只能追加的共用紀錄、問主人的
 問題經單一窗口、問的時候不用代名詞、宣告東西不見之前先用內容搜、講清楚「沒答案」是哪一種……
 還有一張 31 列的**失效形狀目錄**，讓下一個 session 叫得出形狀的名字。
 
@@ -2318,8 +2318,8 @@ would believe the rules were in force while nothing had loaded them.
 ## The third skill: `cowork` (0.63.0)
 
 ⭐ **Several sessions, one owner — one working tree, or two machines.** Thirteen rules, each
-paid for by sessions that shared one repository for weeks: claim before you produce, check in first and address by id
-(names are recycled), one append-only shared record, funnel questions to the owner
+paid for by sessions that shared one repository for weeks: claim before you produce, check in first and identify by ROLE (names and refs
+change), arm a wake-up before waiting on a peer, one append-only shared record, funnel questions to the owner
 through one session, never a pronoun when you ask, search by content before declaring anything
 missing, say which kind of "no answer" you have … and a 31-row **catalogue of failure shapes**,
 so the next session can name the shape instead of rediscovering it.

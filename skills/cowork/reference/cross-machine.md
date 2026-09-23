@@ -65,6 +65,13 @@ destination-only file, taking the board with them.
 live in one machine's filesystem, put it outside the work area. Never inside the tree that
 the task rewrites.
 
+⚠ **This assumes you CAN reach a path outside the tree.** Measured: it was possible only because
+the source side happened to have administrative reach to the whole destination disk. When the
+only share opened is the target tree itself, "outside the tree" does not exist - then use a
+dedicated subfolder the copy is explicitly told to exclude, and verify after the copy that it is
+still there and unchanged; or have the owner open a separate share for the channel. Decide the
+channel's location BEFORE the move, with the owner, whenever the reachable paths are restricted.
+
 ### 1.4 A channel has two directions and you must measure them separately
 
 Measured on the failing day: destination → board was refused, and **source-tree ← destination
@@ -119,6 +126,15 @@ thing to test: both sides create their channel-test file there (1.2) and **nothi
 proceeds until both files are visible to both sides.** If only one side can create, that side
 also creates the other's file and grants it — and says so on its own file.
 
+⛔ **A file created over an administrative share is read-only to every other account, even when
+the other side CAN create files.** Measured on a second migration, one day after the first: the
+source side created the channel folder and the shared board over the admin share; both got
+`Administrators` as owner and `Users: ReadAndExecute`; the folder allowed `Users: CreateFiles`.
+So the destination sessions could create their own files and could not append one line to the
+board. ⇒ **The creator of any file the other side must write grants that side's account, by
+SID, in the same step as creating it** (`icacls <file> /grant *<SID>:(M)`), and says so on the
+board. Same for the channel folder itself (`(OI)(CI)`), so later files inherit it.
+
 ⇒ **Waiting past a few minutes is a permissions hypothesis, not a patience problem.** The
 default reading of silence on a cross-machine board is "it cannot write", not "it has not
 started".
@@ -128,6 +144,47 @@ started".
 Two machines each with a full checkout and a live session means both can edit the same file
 and neither will see the other do it. Say in the first message who owns which paths; anyone
 else does not touch them. Waiting time is then spent on what the board already says is yours.
+
+Also post, once, each side's clock (`date`, to the second) with the channel test, so an offset
+is known; every later stamp is a full minute read from the clock and names which machine's -
+never an estimate like `11:3x`. Measured: placeholder stamps made two messages impossible to
+order, and one stamp named a minute that had not yet happened.
+
+### 1.8 ⛔ Waiting for a peer is not stopping - arm a wake-up before you end your turn
+
+A session acts only inside a turn. Between turns it runs nothing, and **nothing wakes it when a
+file changes.** So "I am waiting for the other side" at the end of a turn means *asleep*: it
+sleeps until a human speaks to it. Measured: one side wrote "waiting" at 11:45 and did nothing
+more until the owner relayed "go" at 13:31; the other side had finished long before. Everyone
+was waiting; nobody was watching; the owner was the only thing moving.
+
+⇒ **Before ending a turn to wait for a PEER, arm something that will wake you:**
+
+- **Peer on the same machine:** send it a message with `notify_when_idle` (or a pure
+  subscription) - one notice arrives when it next goes idle. No polling.
+- **Peer on another machine, or reachable only through files:** run the shipped watcher in the
+  background - `pwsh -NoProfile -WindowStyle Hidden -File <plugin>/skills/cowork/tools/watch-folder.ps1
+  -Folder <channel> -Ignore "<your file>,<observer file>"` (Bash `run_in_background`). `-WindowStyle Hidden`
+  keeps a console window from popping up on the owner's desktop, where a stray click on its close button
+  would kill the watcher silently; output and exit code are still captured. It exits when any file in the
+  folder changes, and its exit wakes you. Re-arm it after every wake; it also exits after 55 minutes
+  with no change - re-arm then too.
+- Post **one** line on the board: `[time, clock][you] WAITING for <who> to <what>. watcher armed.`
+
+Measured after adoption: one side finished, and the other side's watcher woke it and it acted
+**about fifty seconds later, with no human in between.**
+
+⛔ **And a wake-up with nothing for you writes NOTHING.** The first version of this rule said
+"before you end a turn, post a WAITING line" - read literally, every re-wake is a new stop, so
+every party posted "woke, nothing for me, re-armed" on every wake, and each such line woke every
+other watcher. Measured with nine parties: four or five such lines every two minutes, all
+content-free. ⇒ Post to the board only to claim, to report a real change of state, to hand over,
+or to ask. Your earlier WAITING line stays current; re-arm silently. Watchers ignore your own
+file and any observer's file.
+
+⚠ **Waiting on the OWNER is different** - the owner speaks in your window, so stopping cleanly is
+right there, with a line saying what you wait for. A watcher is for peers. (`unattended-work`
+§15 says the same from the other side: a peer-blocked item is not owner-blocked.)
 
 ---
 
@@ -173,6 +230,39 @@ Two separate mechanisms, and confusing them sends the fix to the wrong machine:
 authority. **Refer to the destination account by its security identifier, not its name** — a
 local account on one machine cannot be resolved by the other machine's name lookup. Have the
 destination session read its own identifier and put it on the board.
+
+⛔ **Do it BEFORE the first copy, at the root, and check the inheritance - not after, per
+folder.** Measured: the same defect hit three times in two days (a first migration's tree, the
+second migration's channel board, then its destination tree), and each time only the folder that
+had failed was repaired. The root cause each time: the destination root was created over the admin
+share, and the parent's grant for the destination account had no inheritance flags. ⇒ On the
+destination, before anything is copied: list the destination root's ACL and owner, and the
+inheritance flags of the parent's entry for the destination account; grant the account by SID with
+`(OI)(CI)` on the destination root; then create one file there FROM THE SOURCE SIDE and confirm the
+destination account can write it.
+
+### 2.3b The destination's security software can remove files after a perfect copy
+
+Measured: the copy was bit-perfect, the write-test read 40 of 40 writable, the attributes checked
+out - and minutes later the destination's antivirus began quarantining tracked evidence files
+(incident samples and decoded payloads) out of the working tree, silently, a few at a time. A later
+sweep found thirty more files matching the same patterns still on disk, at risk.
+
+⇒ Before copying anything an antivirus engine may flag - incident evidence, malware samples,
+offensive tooling, packed binaries - compare the destination's exclusions with the source's and put
+the exclusion in place first (the owner's decision: it is a machine-wide security setting).
+⇒ After the copy, **re-count the tracked files some minutes later**, not once; and enumerate what
+else matches the risky patterns, not only what is already gone. ⇒ Do not restore quarantined files
+into a tree that is still being scanned - they are removed again; restore after the exclusion.
+
+### 2.3c The destination agent must not start inside the destination tree
+
+Measured: the destination session was started with its working directory in the copy target, and
+its own tooling wrote a log into that tree on every tool call - so the target was no longer empty
+before the copy, a mirror-mode copy would have deleted that file, and the agent then reasoned about
+an obstacle that existed only because of where it had been started. ⇒ Start the destination agent
+in the channel folder or any neutral folder; move in after the last copy. Anything a session start
+creates is destination-only content the copy must be told about.
 
 ### 2.4 Retry distinguishes a lock from a permission denial; the message does not
 
@@ -250,6 +340,12 @@ armed while the work moves, it wakes up later and collides with the session that
 
 ⇒ Cancel local scheduled work before handing over, and say on the board that none is armed.
 
+⚠ **And a freeze stops the old side's standing work - say who covers the gap.** Measured: the old
+side's security monitoring loops were stopped for the freeze and nothing covered the next hour and
+a quarter; the gap was noticed only when a newly started monitoring role found it. ⇒ The migration
+plan names which recurring work stops at the freeze, where and when it restarts, and who watches in
+between.
+
 ### 3.5 Carry the two lists, not one
 
 "Everything needed is in the work area" hides a split: what version control carries, and what
@@ -318,6 +414,16 @@ a literal backslash appear in it at all; build it from a character code.
 ⇒ Then **scan the written file for control characters by codepoint.** Not by reading it: the
 damage is invisible in a rendered view, which is the entire problem.
 
+⛔ **The control-character scan misses the second failure mode: double encoding.** Measured: the
+owner's words, relayed verbatim onto a cross-machine board, arrived as a run of accented Latin
+letters (bytes `c3 a6 c2 88 c2 91 …`) - UTF-8 bytes re-read as Latin-1 and encoded again. (Described,
+not reproduced, so that the check below does not fire on this file - 4.4.) No control characters at all, and the ASCII around it was
+intact, so a skim read "a few odd characters", not "the owner's words are gone". ⇒ After writing
+text that contained non-ASCII, also look for runs of a character in U+00C0-U+00FF followed by one in
+U+0080-U+00BF - the signature of double-encoded UTF-8; where the source was CJK, any such run is a
+corruption (undo: encode Latin-1, decode UTF-8). ⇒ **Read back every owner quote you relay** - it is
+the one text nobody can reconstruct from context.
+
 ### 4.3 The instrument crashed on its own positive control, after reporting a clean result
 
 A scanner printed its clean result, then crashed — **on the line that injects a known-bad
@@ -353,19 +459,28 @@ Before any cross-machine work:
 2. Each side appends a dated channel-test line to the board AND creates its own dated
    channel-test file; **neither proceeds until both sides can see both.** A side that cannot
    write the board says so in its own file, and from then on speaks there.
-3. Both directions measured separately and named in the result.
+3. Both directions measured separately and named in the result; each side's clock posted once.
 4. First message declares the split: who owns which paths.
-5. Local machine-bound scheduled work cancelled, and said so.
+5. Local machine-bound scheduled work cancelled, and said so; who covers stopped recurring work named.
+6. Destination ROOT: owner, ACL and the parent's inheritance listed; destination account granted by SID
+   with `(OI)(CI)`; a file created from the source side confirmed writable by the destination (2.3).
+7. Destination antivirus exclusions compared with the source's and set first, if evidence, samples or
+   tooling move (2.3b). The destination agent is started outside the destination tree (2.3c).
 
 After anything arrives:
 
-6. Write-test: sample existing files, plus one file of your own as a positive control.
-7. Report the numbers on the board, not an impression.
-8. Rules and configuration files: diff both directions, find the superset, ignore timestamps.
-9. Only then hashes, builds, tests, and the project's own tooling.
+8. Write-test: sample existing files, plus one file of your own as a positive control.
+9. Report the numbers on the board, not an impression. Re-count tracked files minutes later.
+10. Rules and configuration files: diff both directions, find the superset, ignore timestamps.
+11. Only then hashes, builds, tests, and the project's own tooling.
 
 Throughout:
 
-10. Far tree read-only; version control on your own tree only; `merge`, never `rebase`.
-11. Board messages written with the file tool, then scanned for control characters.
-12. Migration scans run with ignore rules off, against a named known-hit control.
+12. Far tree read-only; version control on your own tree only; `merge`, never `rebase`.
+13. Board messages written with the file tool, then scanned for control characters AND for the
+    double-encoding signature (4.2).
+14. Migration scans run with ignore rules off, against a named known-hit control.
+15. Waiting on a peer: a wake-up armed, ONE WAITING line, silent re-arms (1.8). Re-read the board before
+    posting WAITING or saying who is present (`coordination.md` 3.14).
+16. Moving the channel: announce it in the OLD place and keep watching there until all acknowledge
+    (`coordination.md` 3.9). Rules adopted mid-run go into the channel's standing file (`coordination.md` 3.15).
