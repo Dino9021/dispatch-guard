@@ -152,7 +152,10 @@ sh "$p/hooks/run.sh" "$p/install.py" --status
 
 ### 🖱 B. 用介面選單一步一步做
 
-⚠ **只有第 1 步沒有選單** —— 外掛只能從 CLI 裝。之後全部是點的。
+⚠ **第 1 步有兩種做法。** 下表是 CLI 的兩行指令；**也可以不用 CLI**：在 VS Code 的 Claude 面板輸入 `/plugins`
+→ **Marketplaces** 分頁，在「GitHub repo, URL, or path…」欄填 `Dino9021/dispatch-guard` → **Add** → 回 **Plugins**
+分頁安裝 `dispatch-guard` → 按 **Restart**。⚠ 面板這條路是照 VS Code 擴充功能 2.1.281 的介面與官方文件寫的，
+**還沒有人從面板把 dispatch-guard 完整裝過一次**；遇到不一樣的地方，改用 CLI 那兩行。之後全部是點的。
 
 | # | 在哪裡 | 做什麼 |
 |---|---|---|
@@ -546,7 +549,9 @@ OVERALL             : everything is live
 ⇒ **第 1 步做完就結束了。** 下面第 4 到第 7 步只有在你想**看到**那一行時才需要。
 
 1. 在 VS Code 裡打開你的專案。
-2. 開整合終端機（`` Ctrl+` ``），跑第 1 步那兩行外掛安裝指令。⚠ 需要 `claude` CLI 在 PATH 上。
+2. 裝外掛，兩種擇一：開整合終端機（`` Ctrl+` ``）跑第 1 步那兩行指令（⚠ 需要 `claude` CLI 在 PATH 上）；
+   或在 Claude 面板輸入 `/plugins`，從 **Marketplaces** 分頁加入 `Dino9021/dispatch-guard`、在 **Plugins** 分頁安裝，
+   再按 **Restart**（不需要 CLI；⚠ 照介面與官方文件寫成，尚未端到端實測）。
 3. **重新載入視窗**，或開一個新的 Claude session。⚠ hook 和斜線指令都在 session 開始時載入。
    ⭐ **到這裡煞車就活了。** 第一次判定會說「還沒有數字」，因為那一刻 fetch 才剛送出去；
    幾秒後就有了。
@@ -1102,7 +1107,8 @@ Nothing was dispatched. The agent has been told to save the current step and arm
 ⚠ 而且如果 7d 在「目前這個 5h 視窗結束之前」就會重置，它會被**完全忽略** ——
 它的百分比馬上就要歸零。
 
-⇒ **85% 就是 STOP，派工會被拒絕。** ⚠ 這個值從 90 降下來，是因為 90 還在派工，結果撞到 session limit 被強制終止。想更早或更晚，改
+⇒ **90% 就是 STOP，派工會被拒絕**（`hard_pct_5h`，上表）。⚠ 它曾經是 85（90 還在派工時撞到 session limit 被強制終止，
+所以一度降到 85）；0.61.0 由擁有者調回 90，同時把紅色改成推導值 —— 紅色在 85 就先亮，比拒絕早 5 點警告。想更早或更晚，改
 `~/.claude/dispatch-guard/config.json`：
 
 ```json
@@ -1182,9 +1188,14 @@ python hooks/usage.py --verdict --json   # 給程式讀的格式
 
 ```bash
 python hooks/resume.py --arm --task <task 資料夾>   # --dry-run 只看不做
-python hooks/resume.py --status
-python hooks/resume.py --cancel
+python hooks/resume.py --status                      # 每個 session 一列，含它的 session id
+python hooks/resume.py --cancel --session <id>       # 只取消「這一個」session 的鬧鐘
+python hooks/resume.py --cancel                      # ⚠ 取消這個狀態目錄裡「每一個」session 的鬧鐘
 ```
+
+⛔ **要取消「自己的」鬧鐘，一定要帶 `--session`。** 不帶的 `--cancel` 是整台機器的清除（刻意如此，ADR
+20260917-132015 D8）。2026-09-25 實測：一個 session 照舊版建議跑了不帶參數的 `--cancel`，結果把其他 session
+預約的鬧鐘也全部取消了。gate 與 `--status` 印出的取消指令，從 0.65.1 起都已帶上該 session 的 id。
 
 有兩條路，拒絕派遣的時候兩條都會告訴你：
 
@@ -1205,7 +1216,8 @@ python hooks/resume.py --cancel
   關終端機、關編輯器沒問題；**登出或切換使用者就不會觸發**。
 
 ⭐ **兩條同時預約是安全的。** hook 會替每個 session 蓋一個心跳戳記，
-排程醒來時若發現 30 分鐘內有任何 session 活動過就自己退場，所以工作不會做兩次。
+排程醒來時若發現**預約它的那個 session** 30 分鐘內還活動過，或 handoff 裡已經有一行 `TAKEN OVER`，就只取消自己這一筆並退場，
+所以工作不會做兩次。⚠ 0.60.0 以前問的是「有沒有**任何** session 活動過」—— 有一個 session 開著就會否決所有鬧鐘，所以改了。
 
 ### ⭐ 提前恢復作業時，鬧鐘會自己被殺掉
 
@@ -1218,6 +1230,7 @@ python hooks/resume.py --cancel
 ⭐ **所以取消的時機是「工作恢復的那一刻」，不是「鬧鐘響的那一刻」。**
 gate 在 `SessionStart` 和 `UserPromptSubmit` 檢查：如果有一個**還沒到期**的鬧鐘、
 而且判定顯示視窗已經有額度了 → **直接把它殺掉**，並且把這件事講給 session 聽。
+⚠ 殺掉的只有**這個 session 自己**預約的那一筆；其他 session 的鬧鐘不受影響（0.60.0 起）。
 
 ⛔ **判定表就是整個安全論證：**
 
@@ -1230,7 +1243,7 @@ gate 在 `SessionStart` 和 `UserPromptSubmit` 檢查：如果有一個**還沒�
 ⭐ **route A 的喚醒也會走到這裡** — cron 喚醒是以 `UserPromptSubmit` 抵達的 —
 所以偏好的那條路一旦真的生效，備援就會在那一刻退場，而不是等到自己響。
 
-⚠ **取消失敗也會講出來**，並且叫使用者自己跑 `--cancel`：一個安靜失敗的取消，
+⚠ **取消失敗也會講出來**，並且叫使用者自己跑 `--cancel --session <id>`：一個安靜失敗的取消，
 等於留著一個會重做工作的鬧鐘。
 
 ### ⚠ 等待期間換了帳號會發生什麼事
@@ -1244,8 +1257,9 @@ gate 在 `SessionStart` 和 `UserPromptSubmit` 檢查：如果有一個**還沒�
 ⛔ **唯一過期的東西是作業系統那個鬧鐘的「時間」。** 它是照**舊帳號**的重置時刻排的，
 而那個時刻對新帳號沒有任何意義。
 
-⛔ **所以換帳號之後自己把工作接下去，請跑 `resume.py --cancel`。**
-不取消的話會撞到這個情況：鬧鐘在舊帳號的重置時刻觸發、發現 30 分鐘內沒有 session 活動
+⛔ **所以換帳號之後自己把工作接下去，請跑 `resume.py --cancel --session <你的 session id>`**（`--status` 會列出；
+不帶 `--session` 會連其他 session 的鬧鐘一起取消）。
+不取消的話會撞到這個情況：鬧鐘在舊帳號的重置時刻觸發、發現預約它的 session 30 分鐘內沒有活動
 （因為你做完就走了）、去問新帳號的判定得到 GO，
 然後 **headless 重做一份你已經做完的工作**。
 這個限制本來就存在（它分不出「活著在做這件事」和「活著在做別的事」），
@@ -1766,7 +1780,11 @@ have to catch never appears. The last line is the check: `OVERALL` says live and
 
 ### 🖱 B. Through the menus, step by step
 
-⚠ **Only step 1 has no menu** — the plugin installs from the CLI. Everything after it is clicks.
+⚠ **Step 1 has two routes.** The table shows the two CLI commands; **no CLI is needed either**: in VS Code's Claude
+panel type `/plugins` → **Marketplaces** tab, enter `Dino9021/dispatch-guard` in the "GitHub repo, URL, or path…"
+field → **Add** → back on the **Plugins** tab install `dispatch-guard` → **Restart**. ⚠ The panel route is written from
+the VS Code extension 2.1.281's interface and the official docs; **nobody has installed dispatch-guard end to end from
+the panel yet** - where it differs, use the two CLI commands. Everything after step 1 is clicks.
 
 | # | Where | What |
 |---|---|---|
@@ -2178,8 +2196,10 @@ gate forks its own refresh. ⇒ **Step 1 is the whole installation.** Steps 4 to
 below matter only if you want to SEE the line.
 
 1. Open your project in VS Code.
-2. Open the integrated terminal (`` Ctrl+` ``) and run the two plugin commands from step 1.
-   ⚠ This needs the `claude` CLI on PATH.
+2. Install the plugin, either way: open the integrated terminal (`` Ctrl+` ``) and run the two commands from step 1
+   (⚠ needs the `claude` CLI on PATH); or type `/plugins` in the Claude panel, add `Dino9021/dispatch-guard` on the
+   **Marketplaces** tab, install it on the **Plugins** tab, then **Restart** (no CLI needed; ⚠ written from the
+   interface and the docs, not yet tested end to end).
 3. **Reload the window**, or start a new Claude session. ⚠ Hooks and slash commands load at
    session start. ⭐ **The brake is live from here.** The first verdict says the numbers are not
    there yet, because the fetch has only just gone out; seconds later they are.
@@ -2764,7 +2784,7 @@ that window is usually not the constraint, and pacing on it at 70% would throttl
 work for nothing. ⚠ And a 7d window that resets **before the current 5h window ends** is
 ignored entirely — its percentage is about to become zero.
 
-⇒ **85% IS the STOP, and dispatch is refused there.** ⚠ It came down from 90 after a dispatch at 90 ran into a session limit and was killed. For different points, edit
+⇒ **90% IS the STOP, and dispatch is refused there** (`hard_pct_5h`, table above). ⚠ It was 85 for a while (a dispatch at 90 had run into a session limit and been killed); 0.61.0 the owner raised it back to 90 and made the red colour derived - red lights at 85, five points before anything is refused. For different points, edit
 `~/.claude/dispatch-guard/config.json`:
 
 ```json
@@ -2850,9 +2870,15 @@ arithmetic, weekly false alarms, and burn projection.
 
 ```bash
 python hooks/resume.py --arm --task <task-folder>   # --dry-run to see without acting
-python hooks/resume.py --status
-python hooks/resume.py --cancel
+python hooks/resume.py --status                      # one line per session, with its session id
+python hooks/resume.py --cancel --session <id>       # cancel ONE session's alarm
+python hooks/resume.py --cancel                      # ⚠ cancel EVERY session's alarm in this state directory
 ```
+
+⛔ **To cancel your OWN alarm, always pass `--session`.** A bare `--cancel` is a machine-wide clear, by design (ADR
+20260917-132015, D8). Measured 2026-09-25: a session following the old advice ran a bare `--cancel` and cancelled
+every other session's alarm too. Since 0.65.1 every cancel command the gate and `--status` print carries that
+session's id.
 
 Two routes exist, and the gate offers both when it refuses a dispatch:
 
@@ -2879,7 +2905,9 @@ Two routes exist, and the gate offers both when it refuses a dispatch:
   deleted a task with no prompt.
 
 ⭐ **Arming both is safe.** The gate touches a per-session heartbeat, and the scheduled run stands
-down if any session was active in the last 30 minutes, so the work never runs twice.
+down - cancelling only its own record - if **the session that armed it** was active in the last 30 minutes, or its
+handoff carries a `TAKEN OVER` line, so the work never runs twice. ⚠ Until 0.60.0 it asked whether ANY session was
+active - one open session vetoed every alarm - which is why it changed.
 
 ### ⭐ Resuming early kills the alarm by itself
 
@@ -2892,7 +2920,7 @@ that. It wakes at its old time, finds nobody active because they finished and le
 ⭐ **So the cancel happens when WORK RESUMES, not when the alarm fires.** On `SessionStart`
 and `UserPromptSubmit` the gate asks: is an alarm armed for a time that has not arrived, and
 does the verdict now show headroom? If so it **kills the alarm** and says so into the
-session.
+session. ⚠ Only THIS session's own alarm; other sessions' alarms are untouched (since 0.60.0).
 
 ⛔ **The verdict table is the whole safety argument:**
 
@@ -2906,7 +2934,7 @@ session.
 the backup retires the moment the preferred route actually works, rather than at its own
 fire time.
 
-⚠ **A failed cancel is also said out loud**, with an instruction to run `--cancel` by hand: a
+⚠ **A failed cancel is also said out loud**, with an instruction to run `--cancel --session <id>` by hand: a
 cancel that fails silently leaves an alarm that will redo the work.
 
 ### ⚠ What happens if the account changes during the wait
@@ -2921,8 +2949,9 @@ is at the keyboard; no alarm has to fire at all.
 ⛔ **The one thing that goes stale is the OS alarm's TIME.** It was computed from the OLD
 account's reset instant, which means nothing to the new one.
 
-⛔ **So if you switch accounts and carry the work on yourself, run `resume.py --cancel`.**
-Without that you hit this: the alarm fires at the old reset, finds no session active in the
+⛔ **So if you switch accounts and carry the work on yourself, run `resume.py --cancel --session <your session id>`**
+(`--status` lists it; without `--session` it cancels every other session's alarm too).
+Without that you hit this: the alarm fires at the old reset, finds the session that armed it inactive in the
 last 30 minutes (you finished and walked away), asks the new account's verdict and gets GO —
 and **redoes headless the work you already did**. The limitation is pre-existing (it cannot
 tell "alive on this task" from "alive on something else"), but an account switch turns it

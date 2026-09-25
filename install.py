@@ -505,7 +505,8 @@ def resume_status():
             print("resume armed        : ⚠ NO record, but the OS still holds %d task(s)" % len(ours))
             print("                      named %s* - ORPHANS. They will" % RESUME_TASK_PREFIX)
             print("                      abort harmlessly when they fire, but nothing will")
-            print("                      ever remove them. Run `resume.py --cancel`.")
+            print("                      ever remove them. Run `resume.py --cancel` - it clears EVERY session's")
+            print("                      resume in this state directory.")
         else:
             print("resume armed        : no (nothing pending, which is the normal state)")
         return
@@ -527,12 +528,14 @@ def resume_status():
     else:
         print("                      ⛔ the OS task is NOT registered. The record says armed")
         print("                         and the scheduler disagrees, so NOTHING will fire.")
-        print("                         Re-arm it, or `resume.py --cancel` to clear the record.")
+        print("                         Re-arm it, or clear ONE record with")
+        print("                         `resume.py --cancel --session <id>` (ids: `resume.py --status`).")
     if isinstance(at, (int, float)) and at > time.time():
         print("                      ⚠ This is the BACKUP route. If the window has already")
         print("                         reopened and you are carrying the work on yourself,")
         print("                         the gate cancels it on the next prompt - or run")
-        print("                         `resume.py --cancel` now.")
+        print("                         `resume.py --cancel --session <id>` for that session.")
+        print("                         (A bare `--cancel` clears EVERY session's resume.)")
 
 
 def status():
@@ -1498,7 +1501,8 @@ def statusline_install(argv):
                 subprocess.run([sys.executable, os.path.join(HERE, "hooks", "resume.py"),
                                 "--cancel"], timeout=30)
             except Exception as exc:
-                print("armed resume        : could not run resume.py --cancel (%r)" % exc)
+                print("armed resume        : could not run resume.py --cancel (clears EVERY session's "
+                      "resume) (%r)" % exc)
                 print("                      Check it by hand: resume.py --status")
         print()
         print("⚠ STILL ON DISK, because this script did not create it and will not guess:")

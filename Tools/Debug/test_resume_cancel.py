@@ -816,8 +816,124 @@ def case_scheduled_command_names_its_state_dir():
     print("ok - the scheduled resume names the state directory it was armed in")
 
 
+def case_cancel_advice_is_scoped_to_one_session():
+    """⛔ ADVICE TO ONE SESSION MUST NOT CANCEL EVERY SESSION'S RESUME.
+
+    A bare `resume.py --cancel` clears every record in the state directory - by design, ADR
+    20260917-132015 D8, and it stays that way. But every message that told ONE session how to
+    cancel ITS alarm printed that bare form, and measured 2026-09-25 a session following the
+    STALE advice retired every other session's resume. Three pins:
+
+      1. behaviour - `--cancel --session A` removes only A; `--cancel --legacy` removes only the
+         pre-0.60 record; a bare `--cancel` removes all of them INCLUDING that pre-0.60 record
+         (until 0.65.1 it did not, although `--status` named it as the repair) and says so first;
+      2. the STALE advice names `--cancel --session <this record's id>`;
+      3. a source scan: every non-docstring string literal in the shipped code that mentions
+         `--cancel` is either scoped (`--session` / `--legacy` / `--all`) or says, in so many
+         words, that it clears EVERY session's resume.
+         ⚠ Each literal is judged alone: advice assembled at runtime (`"--canc" + "el"`, or a
+         `"--cancel"` constant spliced in by `%` / f-string) passes unseen. Keep the flag and its
+         scope in ONE literal.
+
+    ⚠ The scheduler is stubbed for the whole case: the legacy task name is GLOBAL (not per state
+    directory), so a real bare `--cancel` here could delete a real task on this machine.
+    """
+    import ast
+    import contextlib
+    import io
+    mod = load_resume()
+
+    def fake_run(cmd, **kw):
+        return Result(1)                       # /Query: not registered -> nothing to fire
+
+    def run_cli(sdir, *flags):
+        saved_run, mod.subprocess.run = mod.subprocess.run, fake_run
+        saved_argv = sys.argv
+        sys.argv = ["resume.py", "--dir", sdir] + list(flags)
+        here = os.getcwd()
+        os.chdir(sdir)
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                rc = mod.main()
+        finally:
+            os.chdir(here)
+            sys.argv = saved_argv
+            mod.subprocess.run = saved_run
+        return rc, buf.getvalue()
+
+    a, b = "aaaa1111-0000-0000-0000-000000000000", "bbbb2222-0000-0000-0000-000000000000"
+
+    def seed(sdir):
+        for sid in (a, b):
+            mod.write_record(sdir, sid, {"task": sid[:4], "session_id": sid, "at": 9999999999})
+        with open(os.path.join(sdir, "resume.json"), "w", encoding="utf-8") as f:
+            json.dump({"task": "OLD", "at": 9999999999}, f)       # no session id: unmigratable
+
+    legacy = lambda d: os.path.exists(os.path.join(d, "resume.json"))
+    has = lambda d, sid: os.path.exists(mod.record_path(d, sid))
+
+    with scratch_dir("cancel-scoped") as sdir:
+        seed(sdir)
+        run_cli(sdir, "--cancel", "--session", a)
+        assert not has(sdir, a) and has(sdir, b) and legacy(sdir), \
+            "`--cancel --session A` reached beyond session A"
+        run_cli(sdir, "--cancel", "--legacy")
+        assert has(sdir, b) and not legacy(sdir), \
+            "`--cancel --legacy` missed the pre-0.60 record or touched another session's"
+    with scratch_dir("cancel-bare") as sdir:
+        seed(sdir)
+        _rc, out = run_cli(sdir, "--cancel")
+        assert not has(sdir, a) and not has(sdir, b), "a bare --cancel left a per-session record"
+        assert not legacy(sdir), ("a bare --cancel left the pre-0.60 record - the repair --status "
+                                  "names does not reach it")
+        assert "ALL 3" in out and "--cancel --session" in out, (
+            "a bare --cancel did not say up front that it clears every session's resume: %r" % out)
+
+    # 2. The STALE advice names this record's session.
+    saved_rt = mod.reset_time
+    armed = time.time() + 3600
+    mod.reset_time = lambda sdir, cfg: (armed + 7200, "5h")
+    try:
+        note = mod.stale_alarm_note("unused", {}, {"armed_for_reset": armed, "session_id": a})
+    finally:
+        mod.reset_time = saved_rt
+    assert "STALE" in note, "the fixture did not reach the STALE branch: %r" % note
+    assert ("--cancel --session %s" % a) in note, "the STALE advice is not scoped: %r" % note
+
+    # 3. Source scan over every shipped .py.
+    ok_scope = ("--session", "--legacy", "--all")
+    shipped = [repo_path("install.py")] + [os.path.join(repo_path("hooks"), n)
+                                           for n in os.listdir(repo_path("hooks")) if n.endswith(".py")]
+    offenders = []
+    for path in shipped:
+        tree = ast.parse(open(path, encoding="utf-8").read(), filename=path)
+        docs = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.FunctionDef, ast.ClassDef, ast.AsyncFunctionDef)):
+                body = getattr(node, "body", [])
+                if body and isinstance(body[0], ast.Expr) and isinstance(
+                        getattr(body[0], "value", None), ast.Constant):
+                    docs.add(id(body[0].value))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
+                continue
+            s = node.value
+            if id(node) in docs or "--cancel" not in s or s.strip() == "--cancel":
+                continue
+            if any(k in s for k in ok_scope) or "EVERY session" in s:
+                continue
+            offenders.append("%s:%d %r" % (os.path.basename(path), node.lineno, s[:90]))
+    assert not offenders, ("unscoped `--cancel` advice (a session following it would cancel every "
+                           "session's resume):\n  " + "\n  ".join(offenders))
+    print("ok - cancel advice is scoped to one session; a bare --cancel says it clears all, and does")
+
+
 def main():
-    fresh_scratch()
+    # ⛔ log_line() also writes to usage.state_dir([]), which ignores `--dir` - so without this
+    # every run appended fake `RESUME CANCELLED` lines to the REAL machine log, the one read
+    # when working out who cancelled a resume. Measured by review, 2026-09-25.
+    os.environ["CLAUDE_DISPATCH_DIR"] = os.path.join(fresh_scratch(), "state-dir-for-the-log")
     before = _tree_log()
     mod = load_resume()
     case_posix_cancels_one_job_not_all()
@@ -832,6 +948,7 @@ def main():
     case_upgrade_keeps_an_armed_alarm()
     case_the_arming_session_is_told_not_guessed()
     case_scheduled_command_names_its_state_dir()
+    case_cancel_advice_is_scoped_to_one_session()
     if os.name != "nt":
         print("skipped - the three-way split is the Windows path; POSIX cannot ask `at`")
         return

@@ -33,6 +33,22 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.65.1
+
+**一個 session 照著畫面上的指示取消「自己的」鬧鐘，結果取消了所有 session 的。** 2026-09-25 實際發生。
+
+- ⛔ **每一句對「單一 session」說的取消指示都改成 `resume.py --cancel --session <它的 id>`**：gate 自動上鬧鐘的那一行、
+  鬧鐘自己取消失敗時的那一行、`--status` 的 `⛔ STALE` 建議、`install.py --status` 的建議。以前印的是不帶參數的
+  `--cancel`，而它**本來就會清掉這個狀態目錄裡每一個 session 的鬧鐘**（ADR 20260917-132015 D8，這個行為保留不改）。
+- 不帶參數的 `--cancel` 現在**先**印出「要清掉 N 筆、每個 session 的」，再動手。
+- 新增 `--cancel --legacy`：只清 0.60 以前、沒有 session id 的舊紀錄 `resume.json`。`--status` 一直把 `--cancel` 當成
+  它的修法，但實測不帶參數的 `--cancel` 根本不會清它；現在會了。
+- 新檢查 `case_cancel_advice_is_scoped_to_one_session`：行為、STALE 文字，以及掃描所有出貨程式碼裡提到 `--cancel`
+  的字串。四個突變全部被抓到。該測試也不再把假的 `RESUME CANCELLED` 寫進真正的機器 log。
+- README／PROTOCOL 對齊程式：VS Code 擴充功能的 `/plugins` 面板是第二種安裝方式（**尚未端到端實測**）；
+  鬧鐘只在「上鬧鐘的那個 session」30 分鐘內活著（或交接寫了 `TAKEN OVER`）時才撤銷，不是「任一 session」；
+  5 小時 STOP 是 **90%**，不是 85%。
+
 ## 0.65.0
 
 cowork：第二次跨機搬遷（一個專案從舊機搬到新機，最後共 9 個 session 參與）由觀察者角色逐筆記錄的教訓。
@@ -2839,6 +2855,25 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.65.1
+
+**A session that followed the printed instruction to cancel ITS alarm cancelled every session's.** Happened on
+2026-09-25.
+
+- ⛔ **Every cancel instruction aimed at ONE session now reads `resume.py --cancel --session <its id>`**: the gate's
+  auto-arm line, the line printed when its own cancel fails, the `--status` `⛔ STALE` advice, and `install.py
+  --status`. They used to print a bare `--cancel`, which **clears every session's alarm in the state directory by
+  design** (ADR 20260917-132015 D8 - kept as it is).
+- A bare `--cancel` now says FIRST that it is clearing N records, every session's, before it does.
+- New `--cancel --legacy`: clears only the pre-0.60 record `resume.json`, which has no session id. `--status` always
+  named `--cancel` as its repair, but measured, a bare `--cancel` did not clear it; now it does.
+- New check `case_cancel_advice_is_scoped_to_one_session`: behaviour, the STALE text, and a scan of every string in the
+  shipped code that mentions `--cancel`. Four mutations, all killed. The check also no longer writes fake
+  `RESUME CANCELLED` lines into the real machine log.
+- README / PROTOCOL now match the code: the VS Code extension's `/plugins` panel is a second install route (**not yet
+  tested end to end**); a resume stands down only if the session that ARMED it was active within 30 minutes (or the
+  handoff says `TAKEN OVER`), not "any session"; the 5-hour STOP is **90%**, not 85%.
 
 ## 0.65.0
 

@@ -2217,11 +2217,16 @@ def arm_from_handoff(root, sdir, cfg, session_id, v=None):
         return None                    # already armed for this target, floor, or off switch
     log(scan_root, "AUTO-ARM-STOP %s (written=%d usable=%d session=%s)"
                    % (folder, len(written), len(usable), sid8))
+    # ⛔ THE CANCEL IS SCOPED TO THIS SESSION. A bare `--cancel` clears every session's record
+    # (ADR 20260917-132015, D8); this line used to print the bare form to one session about its
+    # own alarm, and measured 2026-09-25, a session following such advice retired every other
+    # session's resume.
     return (" ⭐ dispatch-guard: a resume was ARMED for `%s` (the HANDOFF.md written this "
             "session) because the usage window is closing (%s); it wakes a few minutes after "
-            "%s and continues from that handoff. Cancel it with `%s --cancel` if you do not "
-            "want that." % (folder, v["verdict"], v.get("resets_clock", "the reset"),
-                            runnable("resume.py")))
+            "%s and continues from that handoff. Cancel it with `%s --cancel --session %s` if "
+            "you do not want that (that cancels this session's alarm only)."
+            % (folder, v["verdict"], v.get("resets_clock", "the reset"),
+               runnable("resume.py"), session_id))
 
 
 def on_stop(payload, root, sdir, cfg):
@@ -2654,8 +2659,9 @@ def stand_down_resume(root, sdir, v, session_id=None):
         log(root, "STAND-DOWN-FAILED %r" % (exc,))
         return (" ⚠ A scheduled resume is still armed for %s but the usage window has "
                 "reopened (%s), and cancelling it just failed. TELL THE USER to run "
-                "`resume.py --cancel` themselves - otherwise it will wake later and redo "
-                "work that is already done." % (when, v["verdict"]))
+                "`resume.py --cancel --session %s` themselves (this session's alarm only - a "
+                "bare `--cancel` would retire every session's) - otherwise it will wake later "
+                "and redo work that is already done." % (when, v["verdict"], session_id))
     log(root, "STAND-DOWN %s the resume armed for %s (verdict %s)"
               % ("cancelled" if cancelled else "FAILED to cancel", when, v["verdict"]))
     if cancelled:

@@ -147,11 +147,13 @@ matters, read the log.
 
 ## 5. Resume after a STOP
 
-Arm both routes; a heartbeat makes the OS-scheduled run stand down if any session was
-active. On `SessionStart`/`UserPromptSubmit` the gate cancels an armed alarm when the
+Arm both routes; a heartbeat makes the OS-scheduled run stand down if the session that
+armed it was active in the last 30 minutes, or its handoff says `TAKEN OVER` (since 0.60.0;
+before that, ANY active session stood every alarm down). On `SessionStart`/`UserPromptSubmit` the gate cancels an armed alarm when the
 verdict is back to GO/PACE (early reset, or a changed account) and says so — repeat that
 line to the user. If the account changed while an alarm is armed, its time is meaningless:
-have the user run `resume.py --cancel` (`resume.py --status` shows `⛔ STALE`). The
+have the user run `resume.py --cancel --session <that session's id>` (`resume.py --status` shows `⛔ STALE` and prints
+the exact command; a bare `--cancel` clears EVERY session's alarm). The
 transcript is a fallback, not a plan — the resumed run reads parts of it only when
 `HANDOFF.md` leaves it unable to act.
 

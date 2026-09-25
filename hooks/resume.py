@@ -3,7 +3,10 @@
 
     resume.py --arm --task <folder> [--at HH:MM] [--dry-run]
     resume.py --status
-    resume.py --cancel [--all]     (--all: POSIX only, removes EVERY `at` job you have)
+    resume.py --cancel --session <id>   cancel ONE session's resume (what a session means by "mine")
+    resume.py --cancel --legacy    cancel only the pre-0.60 record that carries no session id
+    resume.py --cancel [--all]     cancel EVERY session's resume in this state directory
+                                   (--all: POSIX only, removes EVERY `at` job you have)
     resume.py --run                 (the scheduler calls this; not for humans)
 
 ⭐ WHAT THIS IS FOR, and why it is not the same as telling an agent to remember.
@@ -1138,8 +1141,14 @@ def _run(cmd):
         return False
 
 
-def do_cancel(sdir, quiet=False, all_jobs=False, session_id=None):
+def do_cancel(sdir, quiet=False, all_jobs=False, session_id=None, legacy=False):
     """Cancel the scheduled resume. 0 when nothing is left to fire, non-zero when it is.
+
+    ⭐ `legacy=True` targets the pre-0.60 single-slot record `<sdir>/resume.json` and its OS task
+    `TASK_NAME` - the one record migrate_legacy() could not rename because it carries no session
+    id. Until 0.65.1 `--status` told the owner "`resume.py --cancel` to clear it", and measured,
+    a bare `--cancel` cleared every per-session record and LEFT this one: the repair it named did
+    not reach it. ⚠ TASK_NAME is global, not per state directory - tests must stub the scheduler.
 
     ⛔ THE THREE OUTCOMES, AND WHY TWO OF THEM MUST NOT BE MERGED. `schtasks /Delete` exits
     non-zero when it REFUSES and equally when the task IS NOT THERE, and the two demand
@@ -1175,8 +1184,10 @@ def do_cancel(sdir, quiet=False, all_jobs=False, session_id=None):
     three outcomes exist to prevent.
     """
     legacy_at = False
-    record = record_path(sdir, session_id)
-    tname = task_name(sdir, session_id)
+    if legacy:
+        record, tname = os.path.join(sdir, LEGACY_RECORD), TASK_NAME
+    else:
+        record, tname = record_path(sdir, session_id), task_name(sdir, session_id)
     if os.name == "nt":
         registered = _run(["schtasks", "/Query", "/TN", tname])
         if registered:
@@ -1257,15 +1268,21 @@ def stale_alarm_note(sdir, cfg, state):
             "%H:%M", time.localtime(armed))
     # ⚠ chr(10) rather than an escape, matching the rest of this plugin: these files are
     # patched by scripts often enough that a literal backslash-n has been mangled before.
+    # ⛔ THE CANCEL NAMES THIS RECORD'S SESSION. A bare `--cancel` clears EVERY session's
+    # record (ADR 20260917-132015, D8), and this advice used to say just "run `--cancel`":
+    # measured 2026-09-25, a session following it cancelled every other session's resume too.
+    sid = state.get("session_id")
+    cancel = ("`resume.py --cancel --session %s`" % sid) if sid else "`resume.py --cancel --legacy`"
     return (chr(10).join([
         "reset     : ⛔ STALE - armed for %s but the stored reset is now %s,",
         "            and the armed one has NOT passed yet.",
         "            The usual cause is a DIFFERENT ACCOUNT signed in during the wait.",
-        "            ⭐ If you already carried the work on yourself, run `--cancel`. The",
+        "            ⭐ If you already carried the work on yourself, run",
+        "            %s - it cancels THIS alarm only. The",
         "            alarm would otherwise fire at a moment that means nothing, find no",
         "            recent session, and redo work you have already done."])
             % (time.strftime("%H:%M", time.localtime(armed)),
-               time.strftime("%H:%M", time.localtime(current))))
+               time.strftime("%H:%M", time.localtime(current)), cancel))
 
 
 def do_status(sdir, cfg):
@@ -1279,7 +1296,7 @@ def do_status(sdir, cfg):
     if os.path.exists(legacy):
         print("⚠ A pre-0.60 record is still at %s and carries no session id, so it could" % legacy)
         print("  not be renamed automatically. Its OS task is named %s." % TASK_NAME)
-        print("  Re-arm the task it names, or `resume.py --cancel` to clear it.")
+        print("  Re-arm the task it names, or `resume.py --cancel --legacy` to clear it (and only it).")
         print()
     if not records:
         print("no resume armed")
@@ -1346,16 +1363,33 @@ def main():
         sid = arg(argv, "--session")
         if sid:
             return do_cancel(sdir, all_jobs="--all" in argv, session_id=sid)
+        legacy_path = os.path.join(sdir, LEGACY_RECORD)
+        if "--legacy" in argv:
+            if not os.path.exists(legacy_path):
+                print("no pre-0.60 record (%s) - nothing to cancel" % LEGACY_RECORD)
+                return 0
+            return do_cancel(sdir, all_jobs="--all" in argv, legacy=True)
         rc = 0
         records = record_paths(sdir)
-        if not records:
+        has_legacy = os.path.exists(legacy_path)
+        if not records and not has_legacy:
             return do_cancel(sdir, all_jobs="--all" in argv)
+        # ⛔ SAY IT BEFORE DOING IT. A bare `--cancel` is machine-wide by design (D8), and a
+        # session that meant "cancel MY alarm" ran it on 2026-09-25 and retired every other
+        # session's resume. The line cannot undo that, but it makes it visible - and names the
+        # scoped form for next time.
+        print("⚠ no --session: cancelling ALL %d resume record(s) in this state directory - every "
+              "session's. To cancel one: `resume.py --cancel --session <id>`."
+              % (len(records) + (1 if has_legacy else 0)))
         for rec in records:
             state = usage.read_json(rec, {}) or {}
             print("-- %s" % os.path.basename(rec))
             rc |= do_cancel(sdir, all_jobs="--all" in argv,
                             session_id=state.get("session_id") or
                             os.path.basename(rec)[:-len(".json")])
+        if has_legacy:
+            print("-- %s (pre-0.60, no session id)" % LEGACY_RECORD)
+            rc |= do_cancel(sdir, all_jobs="--all" in argv, legacy=True)
         return rc
     if "--status" in argv and migrated():
         return do_status(sdir, cfg)
@@ -1363,7 +1397,8 @@ def main():
         return do_arm(argv, sdir, cfg)
     print(__doc__.strip().splitlines()[0])
     print("Usage: resume.py --arm --task <folder> [--at HH:MM] [--dry-run] | --status"
-          " | --cancel [--all]")
+          " | --cancel --session <id> | --cancel --legacy | --cancel [--all]"
+          "  (a bare --cancel clears EVERY session's resume)")
     return 2
 
 
