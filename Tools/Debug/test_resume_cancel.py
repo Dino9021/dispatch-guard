@@ -924,6 +924,20 @@ def case_cancel_advice_is_scoped_to_one_session():
             if any(k in s for k in ok_scope) or "EVERY session" in s:
                 continue
             offenders.append("%s:%d %r" % (os.path.basename(path), node.lineno, s[:90]))
+    # ⚠ config.example.json explains auto-arm and told the reader to undo it with a bare --cancel.
+    def strings(o, where):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                yield from strings(v, where + "/" + k)
+        elif isinstance(o, list):
+            for v in o:
+                yield from strings(v, where)
+        elif isinstance(o, str):
+            yield where, o
+    config = json.load(open(repo_path("config.example.json"), encoding="utf-8"))
+    for where, s in strings(config, ""):
+        if "--cancel" in s and not (any(k in s for k in ok_scope) and "EVERY session" in s):
+            offenders.append("config.example.json %s %r" % (where, s[:90]))
     assert not offenders, ("unscoped `--cancel` advice (a session following it would cancel every "
                            "session's resume):\n  " + "\n  ".join(offenders))
     print("ok - cancel advice is scoped to one session; a bare --cancel says it clears all, and does")

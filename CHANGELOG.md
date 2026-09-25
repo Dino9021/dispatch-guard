@@ -33,6 +33,12 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.65.2
+
+0.65.1 漏掉一處：`config.example.json` 的 `dispatch._auto_arm_resume`（中英兩條）仍寫「用 `resume.py --cancel` 撤銷自動上的
+鬧鐘」、「有 session 活著時就讓路」。改成 `--cancel --session <id>`（不帶參數會清掉每個 session 的）與「上鬧鐘的那個
+session」。0.65.1 的檢查只掃 `.py`；現在也掃 `config.example.json` 的每個字串值，突變驗證會抓到。
+
 ## 0.65.1
 
 **一個 session 照著畫面上的指示取消「自己的」鬧鐘，結果取消了所有 session 的。** 2026-09-25 實際發生。
@@ -2855,6 +2861,13 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.65.2
+
+0.65.1 missed one place: `config.example.json` `dispatch._auto_arm_resume` (both the English and the Chinese string)
+still said to undo an auto-armed alarm with `resume.py --cancel`, and that the run stands down "when a session is
+alive". Now `--cancel --session <id>` (a bare one clears every session's) and "the session that armed it". 0.65.1's
+check scanned only `.py`; it now scans every string value in `config.example.json` too, and a mutation proves it.
 
 ## 0.65.1
 
