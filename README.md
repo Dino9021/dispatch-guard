@@ -1223,6 +1223,10 @@ python hooks/resume.py --cancel                      # ⚠ 取消這個狀態目
   `resume.py --status` 會多一行 `scheduler:`，是工作排程器自己回報的「上次執行時間／結果」。
   ⚠ 所以排程要用的 **Python 和 `claude` 必須在「使用者 PATH」上**（重新登入後拿到的那個），
   不是只在某個終端機裡。
+  ⭐ **0.65.4 起**：排程執行時**不再跳出黑色主控台視窗**（以前會，而且開著好幾個小時，按掉就殺掉續跑）——
+  改用 `conhost.exe --headless`，這台 Windows 不支援時才退回一般版；
+  鬧鐘時間過了 10 分鐘、`resume.py` 卻一次都沒醒來（例如之後 PATH 被改、機器睡著、登出），
+  **下一個 session 啟動時會念出來**，不會再無聲消失。
 
 ⭐ **兩條同時預約是安全的。** hook 會替每個 session 蓋一個心跳戳記，
 排程醒來時若發現**預約它的那個 session** 30 分鐘內還活動過，或 handoff 裡已經有一行 `TAKEN OVER`，就只取消自己這一筆並退場，
@@ -2923,6 +2927,11 @@ Two routes exist, and the gate offers both when it refuses a dispatch:
   `resume.py --status` adds a `scheduler:` line - Task Scheduler's own last run time and result.
   ⚠ So the **Python and `claude` the resume needs must be on your USER PATH** (what a fresh logon
   gets), not only in one terminal.
+  ⭐ **Since 0.65.4**: a scheduled resume **no longer opens a black console window** (it did - for
+  hours - and closing it killed the resume): it runs under `conhost.exe --headless`, falling back to
+  the plain line where this Windows does not support that. And an alarm whose time passed 10 minutes
+  ago with no wake from `resume.py` (a PATH changed later, a machine asleep, a logoff) is **read out
+  at the next session start** instead of vanishing.
 
 ⭐ **Arming both is safe.** The gate touches a per-session heartbeat, and the scheduled run stands
 down - cancelling only its own record - if **the session that armed it** was active in the last 30 minutes, or its

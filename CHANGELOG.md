@@ -33,6 +33,23 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.65.4
+
+0.65.3 的收尾：審查員指出工作單要求「session 啟動時的訊息」也要看得到沒跑成的續跑，那一半沒做；另外實測到續跑會開視窗。
+
+- **沒醒的鬧鐘會被念出來**：session 啟動時，預定時間已過 10 分鐘、`resume.py` 卻從沒醒來過的紀錄（`do_run` 一醒來就先記
+  `woke_at`，所以跑好幾個小時的續跑不會被誤判），寫失敗標記讓這個 session 念出來，每個鬧鐘時間只講一次。
+  這補上預約當下的檢查看不到的情況：之後 PATH 被改、機器睡著、登出、POSIX 的舊鬧鐘。不需要問排程器，所以 POSIX 也有效。
+- **上鬧鐘的 session 下一次輸入就知道失敗了**：UserPromptSubmit 會讀「這個 session 自己」的失敗標記（別的 session 的留給它們）。
+  以前自動上鬧鐘的訊息先說「ARMED」，背景程序才發現起不來，當事的 session 要等到下一次開新 session 才會知道。
+- **不再跳出主控台視窗**：實測 2026-09-28，「Interactive only」排程跑主控台程式會在使用者桌面開一個 `cmd.EXE` 視窗，
+  續跑期間一直開著，按掉就殺掉續跑。改用 `conhost.exe --headless`（實測程式照跑、沒有視窗，build 20348）；
+  預約時先探測 headless 版，不行才用一般版；`/TR` 因此超長被拒時也退回一般版。探測改讀 `--launch-check` 寫的標記檔
+  （headless conhost 的輸出夾著終端控制碼）。
+- 預約改成**先探測、再登記**，起不來的鬧鐘根本不會被登記。
+- 第二位審查（以「別人的機器」為角度：bash／WSL 在 PATH 上、只有 `py.exe`、npm 的 `claude.cmd`、帳號名含空白與非 ASCII、不支援 `--headless` 的 conhost）全部判定正確；依它修正：`schedule()` 改用呼叫端給的狀態資料夾；失敗標記的時間是壞值也不會讓每次輸入的 hook 丟例外。
+- 測試：`test_resume_launch` 新增 6 個情境，突變驗證 18 個全數抓到。
+
 ## 0.65.3
 
 ⛔ **排好的續跑從來沒有醒來過 —— 在 PATH 上沒有 `bash` 的 Windows 上。** 2026-09-28 由兩個專案的 session 回報、
@@ -2883,6 +2900,28 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.65.4
+
+Finishing 0.65.3: the review pointed out that the work order asked for the SESSION-START message to show a resume that
+never ran, and that half was missing; and a resume was measured opening a window.
+
+- **An alarm that never woke is read out**: at session start, a record whose time passed more than 10 minutes ago with
+  no wake from `resume.py` (do_run records `woke_at` first thing, so a run lasting hours is not mistaken for one that
+  never started) gets a failure marker this session reads out - once per alarm time. It covers what the arm-time check
+  cannot see: a PATH changed later, a machine asleep, a logoff, an old POSIX alarm. It asks the scheduler nothing, so it
+  works on POSIX too.
+- **The session that armed hears of a failed arm on its next prompt**: UserPromptSubmit reads THIS session's own
+  failure marker (others' are left for their own). The auto-arm message said "ARMED" before the detached arm found it
+  could not start, and that session used to learn otherwise only when a new session opened.
+- **No console window any more**: measured 2026-09-28, an "Interactive only" task running a console program opens a
+  `cmd.EXE` window on the user's desktop for the whole resume, and closing it kills the resume. It now runs under
+  `conhost.exe --headless` (measured: the program runs, no window, build 20348); arming probes that form first and
+  falls back to the plain line, also when the longer `/TR` is refused. The probe now reads a marker FILE written by
+  `--launch-check` (headless conhost wraps output in terminal codes).
+- Arming now **probes before it registers**, so an alarm that cannot start is never registered at all.
+- A second review from the angle of OTHER installers' machines (bash or WSL on PATH, only `py.exe`, npm `claude.cmd`, a user name with a space and non-ASCII, a conhost without `--headless`) found every verdict right; fixed from it: `schedule()` uses the caller's state directory, and a malformed failure-marker time can no longer raise in the every-prompt hook.
+- Tests: 6 new cases in `test_resume_launch`; 18 mutations, all killed.
 
 ## 0.65.3
 

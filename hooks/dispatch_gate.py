@@ -2469,8 +2469,12 @@ def release_slot(sdir, cfg, session_id, tool_use_id):
 
 # ---------------------------------------------------------------------------- events
 
-def failed_resume_note(sdir):
+def failed_resume_note(sdir, session_id=None):
     """If a scheduled resume gave up while nobody was watching, say so - once.
+
+    ⭐ With `session_id`, only THAT session's marker: the prompt path uses it so the session that
+    just auto-armed hears, on its next prompt, that the arm was taken back down - it had already
+    been told "ARMED" by a message printed before the detached arm finished.
 
     ⛔ A scheduled task has no terminal and no window. Without this the outcome of an
     overnight resume is invisible: "it failed at 03:40" and "it was never armed" and
@@ -2482,10 +2486,13 @@ def failed_resume_note(sdir):
     # reader deleted it. The owner heard about one failure and never learnt of the other.
     # ⚠ The legacy path is still read, so an upgrade does not swallow a marker written by
     # the previous version. ADR 20260917-132015, D9.
-    paths = sorted(glob.glob(os.path.join(sdir, "resume", "*.failed")))
-    legacy = os.path.join(sdir, "resume_failed.json")
-    if os.path.exists(legacy):
-        paths.append(legacy)
+    if session_id:
+        paths = glob.glob(os.path.join(sdir, "resume", safe_session(session_id) + ".failed"))
+    else:
+        paths = sorted(glob.glob(os.path.join(sdir, "resume", "*.failed")))
+        legacy = os.path.join(sdir, "resume_failed.json")
+        if os.path.exists(legacy):
+            paths.append(legacy)
     out = []
     for path in paths:
         data = usage.read_json(path, None)
@@ -2499,9 +2506,13 @@ def failed_resume_note(sdir):
         # even the one announcement that survived did not say what had been abandoned.
         who = str(data.get("session_id") or "")[:8]
         what = data.get("task")
+        # ⚠ A marker is a file anybody can write; this runs on EVERY prompt since 0.65.4, and a
+        # TypeError here would take the whole hook down with it - which fails open (review).
+        at = data.get("at") if isinstance(data, dict) else None
+        at = at if isinstance(at, (int, float)) and 0 <= at < 4102444800 else 0
         out.append(" ⛔ TELL THE USER FIRST, BEFORE ANYTHING ELSE: a scheduled resume gave "
                    "up at %s and the work did NOT continue%s%s - %s"
-                   % (time.strftime("%Y-%m-%d %H:%M", time.localtime(data.get("at", 0))),
+                   % (time.strftime("%Y-%m-%d %H:%M", time.localtime(at)),
                       (" (task %s)" % what) if what else "",
                       (" (session %s)" % who) if who else "",
                       data.get("why", "no reason recorded")))
@@ -2721,6 +2732,7 @@ def on_session_start(payload, root, sdir, cfg):
         _resume_reap.migrate_legacy(sdir)
         _resume_reap.reap_records(sdir)
         _resume_reap.upgrade_records(sdir)     # an alarm an older version registered (0.65.3)
+        _resume_reap.announce_missed(sdir)     # an alarm whose time passed and never woke
     except Exception as exc:
         log(root, "REAP-FAILED %r" % (exc,))
     # ⚠ The message below tells the agent the task root "already exists". Say that only
@@ -2868,7 +2880,14 @@ def on_user_prompt(payload, root, sdir, cfg):
     # ⛔ BEFORE the early return, because GO is precisely the path a reopened window
     # arrives on. The old code returned silently here, which is why an alarm could outlive
     # the wait it was armed for. See stand_down_resume().
-    note = stand_down_resume(root, sdir, v, sid)
+    # ⛔ THIS SESSION'S OWN FAILED ARM FIRST: the auto-arm told it "ARMED" before the detached arm
+    # found the scheduler could not start it (resume.py launch_probe) - see failed_resume_note().
+    try:
+        mine = failed_resume_note(sdir, sid)
+    except Exception as exc:              # a notice must never take the brake down with it
+        log(root, "FAILED-NOTE-ERROR %r" % (exc,))
+        mine = ""
+    note = mine + (stand_down_resume(root, sdir, v, sid) or "")
     if v["verdict"] not in ("PACE", "STOP"):
         if note:
             # ⭐ ON THE SCREEN TOO. A cancelled alarm is a fact the PERSON needs - "nothing
@@ -2889,9 +2908,10 @@ def on_user_prompt(payload, root, sdir, cfg):
     try:
         with open(mark, encoding="utf-8") as f:
             if f.read().strip() == v["verdict"]:
-                if armed_line:
+                if armed_line or note:
                     context_note(payload.get("hook_event_name", "UserPromptSubmit"),
-                                 "[usage]" + armed_line, systemMessage=armed_line.strip())
+                                 "[usage]" + note + armed_line,
+                                 systemMessage=(note + armed_line).strip())
                 return
     except OSError:
         pass
@@ -2959,7 +2979,7 @@ def on_user_prompt(payload, root, sdir, cfg):
             % (v["verdict"], window, pct, seen_why, ack_line))
     context_note(payload.get("hook_event_name", "UserPromptSubmit"),
                  "[usage] " + v["text"] + extra + ack + note + armed_line,
-                 systemMessage=seen + armed_line)
+                 systemMessage=seen + note + armed_line)
 
 
 def _wake_hint(v):

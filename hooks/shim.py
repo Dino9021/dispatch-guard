@@ -181,7 +181,7 @@ def command(sdir, script, *args):
     return 'bash "%s" %s' % (sh, " ".join([script] + list(args)))
 
 
-def scheduled(sdir, script, *args):
+def scheduled(sdir, script, *args, headless=False):
     """The command line the OS SCHEDULER runs: nothing may be assumed on PATH but the shell.
 
     ⛔ command() WAS USED HERE, AND NO SCHEDULED RESUME EVER STARTED. Measured 2026-09-28 on a
@@ -192,11 +192,17 @@ def scheduled(sdir, script, *args):
     ⇒ Windows: run.cmd, which needs only cmd.exe. POSIX: `sh`, which `at` itself runs under.
     ⚠ What run.cmd still needs is a Python on the SCHEDULER's PATH, so resume.py executes this
     exact line once at arm time (launch_probe) instead of trusting it.
+    ⭐ `headless` (Windows): wrapped in `conhost.exe --headless`. An "Interactive only" task that
+    runs a console program opens a console WINDOW on the user's desktop - measured 2026-09-28 -
+    for the whole of a resume that can take hours, and closing it kills the resume. Headless
+    conhost runs the same program with no window (measured, build 20348). Older conhost builds
+    may not know the flag, so resume.py probes this form first and falls back to the plain one.
     """
     sh_path, cmd_path = paths(sdir)
     rest = " ".join([script] + list(args))
     if os.name == "nt":
-        return '"%s" %s' % (cmd_path.replace("/", "\\"), rest)
+        return '%s"%s" %s' % ("conhost.exe --headless " if headless else "",
+                               cmd_path.replace("/", "\\"), rest)
     return 'sh "%s" %s' % (sh_path, rest)
 
 

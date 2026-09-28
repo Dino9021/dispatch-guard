@@ -223,7 +223,7 @@ def upgrade_records(sdir, now=None):
             # meant "no alarm"; recreating it from the record would undo that (found by review).
             if not _run(["schtasks", "/Query", "/TN", task_name(sdir, sid)]):
                 continue
-            _cmd, r = schedule(time.localtime(at), False, sid)
+            _cmd, r = schedule(time.localtime(at), False, sid, sdir=sdir)
             if getattr(r, "returncode", 1) != 0:
                 continue
             state["launcher"] = LAUNCHER
@@ -232,6 +232,50 @@ def upgrade_records(sdir, now=None):
             log_line("RE-REGISTERED the alarm an older version armed for session %s - its line "
                      "began with bash and had no --session, so it could not have resumed"
                      % str(sid)[:8])
+        except Exception:
+            continue
+    return done
+
+
+MISSED_AFTER_MIN = 10
+
+
+def announce_missed(sdir, now=None):
+    """Say, once, that an alarm's time passed and resume.py never woke for it.
+
+    ⛔ THE ARM-TIME PROBE CANNOT SEE WHAT CHANGES BEFORE THE FIRE: a PATH edited later, a machine
+    asleep, a user logged off, an alarm an older POSIX version registered. Each ends the way the
+    2026-09-27 incident did - the task fires, resume.py never starts, and nothing is written,
+    because every failure handler lives inside the program that did not run. ⇒ At session start,
+    a record whose `at` is more than MISSED_AFTER_MIN minutes past with no `woke_at` since it
+    (do_run writes that first thing) is announced through the failure marker the gate reads out.
+    Needs no scheduler query, so it works on POSIX too.
+    ⚠ Once per alarm time (`missed_for`), so a record left in place is not re-announced every
+    session; a retry that moves `at` forward can be announced again, which is right.
+    ⚠ It says "never woke", not why: `resume.py --status` shows Task Scheduler's own result.
+    NEVER RAISES.
+    """
+    now = time.time() if now is None else now
+    done = 0
+    for rec in record_paths(sdir):
+        try:
+            state = usage.read_json(rec, None)
+            if not isinstance(state, dict):
+                continue
+            at = state.get("at")
+            if not isinstance(at, (int, float)) or now - at < MISSED_AFTER_MIN * 60:
+                continue
+            if (state.get("woke_at") or 0) >= at or state.get("missed_for") == at:
+                continue
+            sid = state.get("session_id") or os.path.basename(rec)[:-len(".json")]
+            state["missed_for"] = at
+            write_record(sdir, sid, state)
+            announce_failure(sdir, "its alarm was due at %s and resume.py NEVER STARTED for it, so "
+                                   "nothing resumed. `resume.py --status` shows what the OS "
+                                   "scheduler reported; re-arm with `resume.py --arm --task <folder>`"
+                             % time.strftime("%Y-%m-%d %H:%M", time.localtime(at)),
+                             sid, state.get("task"))
+            done += 1
         except Exception:
             continue
     return done
@@ -704,7 +748,7 @@ def taken_over_since(path, armed_at):
     return None
 
 
-def scheduled_line(sdir, verb, session_id=None):
+def scheduled_line(sdir, verb, session_id=None, headless=False):
     """The exact line the OS scheduler runs for this session's resume, with `verb` in it.
 
     ⛔ `--session` IS IN IT, and until 0.65.3 it was not. 0.60 made `--run` read `--session` to
@@ -718,7 +762,7 @@ def scheduled_line(sdir, verb, session_id=None):
     """
     import shim
     return shim.scheduled(sdir, "resume.py", verb, "--dir", '"%s"' % sdir.replace("\\", "/"),
-                          "--session", dispatch_gate.safe_session(session_id))
+                          "--session", dispatch_gate.safe_session(session_id), headless=headless)
 
 
 def scheduler_env():
@@ -753,7 +797,13 @@ def scheduler_env():
 LAUNCH_MARK = "DG-LAUNCH-OK"
 
 
-def launch_probe(sdir, session_id, env=None):
+def launch_mark_path(sdir, session_id):
+    """Where `--launch-check` leaves its marker. A FILE, not stdout: headless conhost wraps the
+    output in terminal escape codes and wraps long lines, so a line match there is unreliable."""
+    return os.path.join(sdir, "state", "%s.launch-check" % dispatch_gate.safe_session(session_id))
+
+
+def launch_probe(sdir, session_id, env=None, headless=False):
     """Run the scheduler's own line once, with a harmless verb. Returns (ok, detail).
 
     ⛔ REGISTERED IS NOT RUNNABLE. `schtasks /Create` accepted every one of the eight tasks that
@@ -769,7 +819,12 @@ def launch_probe(sdir, session_id, env=None):
     env = scheduler_env() if env is None else env
     if env is None:
         return None, "the scheduler's PATH could not be read from the registry"
-    line = scheduled_line(sdir, "--launch-check", session_id)
+    line = scheduled_line(sdir, "--launch-check", session_id, headless=headless)
+    mark = launch_mark_path(sdir, session_id)
+    try:
+        os.remove(mark)                     # a stale marker must not pass a failed launch
+    except OSError:
+        pass
     try:
         if os.name == "nt":
             # /s strips exactly the outer pair of quotes, so a line that itself starts with a
@@ -781,26 +836,40 @@ def launch_probe(sdir, session_id, env=None):
             r = subprocess.run(["sh", "-c", line], env=env, capture_output=True, timeout=120)
     except Exception as exc:
         return False, "the line could not be run at all: %r" % (exc,)
-    out = ((r.stdout or b"") + b"\n" + (r.stderr or b"")).decode("utf-8", "replace")
-    found = re.search(LAUNCH_MARK + r"[^\r\n]*", out)
-    if not found:
+    try:
+        with open(mark, encoding="utf-8") as f:
+            said = f.read().strip()
+        os.remove(mark)
+    except OSError:
+        said = ""
+    if not said.startswith(LAUNCH_MARK):
+        out = ((r.stdout or b"") + b"\n" + (r.stderr or b"")).decode("utf-8", "replace")
+        out = re.sub(r"\x1b(\[[0-9;?]*[A-Za-z]|\][^\x07]*\x07?)", "", out)   # terminal codes
         return False, ("it did not reach resume.py (rc=%s): %s"
                        % (r.returncode, " ".join(out.split())[-300:] or "no output"))
-    if "claude=MISSING" in found.group(0):
+    if "claude=MISSING" in said:
         return False, ("it starts, but `claude` is not on the PATH the scheduler uses, so the "
-                       "resume would wake and fail: %s" % found.group(0))
-    return True, found.group(0)
+                       "resume would wake and fail: %s" % said)
+    return True, said
 
 
-def do_launch_check():
-    """`--launch-check`: prove the scheduler's line reaches this file. Changes nothing."""
+def do_launch_check(sdir, session_id):
+    """`--launch-check`: prove the scheduler's line reaches this file. Writes only its marker."""
     import shutil
-    print("%s python=%s claude=%s" % (LAUNCH_MARK, sys.executable,
-                                      shutil.which("claude") or "MISSING"))
+    said = "%s python=%s claude=%s" % (LAUNCH_MARK, sys.executable,
+                                       shutil.which("claude") or "MISSING")
+    print(said)
+    try:
+        path = launch_mark_path(sdir, session_id)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(said)
+    except OSError:
+        pass
     return 0
 
 
-def schedule(when, dry_run, session_id=None):
+def schedule(when, dry_run, session_id=None, headless=False, sdir=None):
     """Register a ONE-SHOT task at `when` (a struct_time). Returns the command run.
 
     ⛔ THE COMMAND LINE GOES THROUGH THE SHIM, and of everything this plugin writes, this is
@@ -818,7 +887,7 @@ def schedule(when, dry_run, session_id=None):
     """
     import shim
     me = os.path.abspath(__file__)
-    sdir = usage.state_dir()
+    sdir = sdir or usage.state_dir()     # ⚠ the CALLER's, when it has one (review 2)
     # ⛔ THE STATE DIRECTORY IS NAMED, or the alarm fires against the WRONG ONE. The task is
     # registered by a session whose `sdir` may come from `$CLAUDE_DISPATCH_DIR` or `--dir`,
     # but the scheduler starts `resume.py --run` with neither - so `state_dir()` at fire time
@@ -828,7 +897,7 @@ def schedule(when, dry_run, session_id=None):
     # ⚠ Quoted and forward-slashed: this string goes inside `schtasks /TR`, and a home
     # directory with a space in it is ordinary. `state_dir()` calls abspath on whatever it
     # receives, so either separator arrives correctly.
-    inner = scheduled_line(sdir, "--run", session_id)
+    inner = scheduled_line(sdir, "--run", session_id, headless=headless)
     if os.name == "nt":
         cmd = ["schtasks", "/Create", "/TN", task_name(sdir, session_id), "/SC", "ONCE",
                "/ST", time.strftime("%H:%M", when), "/SD", time.strftime("%m/%d/%Y", when),
@@ -967,7 +1036,47 @@ def do_arm(argv, sdir, cfg):
     # ADR 20260917-132015, D6 ⟨round 2, I-N2⟩.
     if not dry:
         write_record(sdir, sid, state)
-    cmd, result = schedule(when, dry, sid)
+    # ⛔ REGISTERED IS NOT RUNNABLE - see launch_probe(). So the line is PROBED BEFORE it is
+    # registered, and an alarm the scheduler cannot start is never registered at all; it is
+    # ANNOUNCED instead, because the gate arms from a detached process whose output nobody sees
+    # and the failure marker the next session reads out loud is the only channel.
+    # ⭐ Headless first (no console window to close by accident - see shim.scheduled()), the plain
+    # line if this conhost does not take `--headless`.
+    headless, good, detail = False, None, ""
+    if not dry:
+        import shim
+        shim.write(sdir, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        for headless in ((True, False) if os.name == "nt" else (False,)):
+            good, detail = launch_probe(sdir, sid, headless=headless)
+            if good is not False:
+                break
+        if good is None:
+            headless = False                 # unverified: the plain line, as before 0.65.3
+        if good is False:
+            try:
+                os.remove(record_path(sdir, sid))
+            except OSError:
+                pass
+            print("task folder   : %s" % folder)
+            print("status        : ⛔ NOT ARMED - the scheduler could not start it: %s" % detail)
+            print("               Fix: put a working Python (and `claude`) on your USER PATH -")
+            print("               the one a fresh logon gets, not this terminal's - then re-arm.")
+            log_line("ARM-UNLAUNCHABLE task=%s session=%s %s"
+                     % (folder, str(sid or "")[:8] or "?", detail))
+            announce_failure(sdir, "a resume for %s could NOT be armed: the OS scheduler would "
+                                   "not be able to start it (%s). Nothing will wake up for it."
+                             % (folder, detail), sid, folder)
+            return 1
+        state["headless"] = headless
+        write_record(sdir, sid, state)
+    cmd, result = schedule(when, dry, sid, headless=headless, sdir=sdir)
+    if headless and not dry and getattr(result, "returncode", 1) != 0:
+        # ⚠ The headless prefix costs 23 characters and `schtasks /TR` stops at 261 (measured
+        # by review): a long state path can fit plain and not wrapped. A window beats no alarm.
+        headless = False
+        state["headless"] = False
+        write_record(sdir, sid, state)
+        cmd, result = schedule(when, dry, sid, headless=False, sdir=sdir)
 
     print("task folder   : %s" % folder)
     print("handoff       : %s (%d chars)" % (path, os.path.getsize(path)))
@@ -985,23 +1094,9 @@ def do_arm(argv, sdir, cfg):
         # do_cancel() remove this job without removing every other `at` job the user has.
         state["at_job"] = at_job_id(result)
         write_record(sdir, sid, state)
-        # ⛔ REGISTERED IS NOT RUNNABLE - see launch_probe(). An alarm the scheduler cannot start
-        # is taken back down and ANNOUNCED: the gate arms from a detached process whose output
-        # nobody sees, so the failure marker the next session reads out loud is the only channel.
-        good, detail = launch_probe(sdir, sid)
-        if good is False:
-            do_cancel(sdir, quiet=True, session_id=sid)
-            print("status        : ⛔ NOT ARMED - the scheduler could not start it: %s" % detail)
-            print("               Fix: put a working Python (and `claude`) on your USER PATH -")
-            print("               the one a fresh logon gets, not this terminal's - then re-arm.")
-            log_line("ARM-UNLAUNCHABLE task=%s session=%s %s"
-                     % (folder, str(sid or "")[:8] or "?", detail))
-            announce_failure(sdir, "a resume for %s could NOT be armed: the OS scheduler would "
-                                   "not be able to start it (%s). Nothing will wake up for it."
-                             % (folder, detail), sid, folder)
-            return 1
-        print("launch check  : %s" % (("OK - " + detail) if good else
-                                       "⚠ NOT VERIFIED - " + detail))
+        print("launch check  : %s%s" % (("OK - " + detail) if good else
+                                         "⚠ NOT VERIFIED - " + detail,
+                                         " (no window)" if headless else ""))
         print("status        : ARMED (this is the BACKUP route - see below)")
         log_line("ARMED task=%s at=%s session=%s"
                  % (folder, time.strftime("%Y-%m-%d %H:%M", when),
@@ -1076,6 +1171,16 @@ def do_run(sdir, cfg, session_id=None):
     # ⭐ From here on every cancel and re-arm is about THIS record, so the id the record
     # carries is the one to use - not the argument, which is absent on the legacy path.
     my_sid = state.get("session_id", session_id)
+    # ⭐ WRITTEN FIRST, before any branch: "this alarm woke". announce_missed() reads it to tell a
+    # resume that is running (possibly for hours inside `claude -p`) from one that never started.
+    # ⚠ Only into the per-session record it was read from - on the legacy path there is none, and
+    # writing one would create a second record for the same alarm.
+    state["woke_at"] = time.time()
+    if session_id:
+        try:
+            write_record(sdir, session_id, state)
+        except OSError:
+            pass
 
     rc_ = rcfg(sdir)
 
@@ -1303,7 +1408,8 @@ def at_job_id(result):
 def _rearm(sdir, state, minutes):
     """Push the one-shot schedule out by `minutes`, keeping the attempt count."""
     when_epoch = time.time() + minutes * 60
-    _cmd, result = schedule(time.localtime(when_epoch), False, state.get("session_id"))
+    _cmd, result = schedule(time.localtime(when_epoch), False, state.get("session_id"),
+                            headless=bool(state.get("headless")), sdir=sdir)
     # ⚠ A retry registers a NEW `at` job, so the id recorded at arm time is stale from here
     # on. Keep the old one only when the new registration announced none - a stale id is
     # still a better cancel target than nothing.
@@ -1590,7 +1696,7 @@ def main():
         return True
 
     if "--launch-check" in argv:          # before --run, and it reads no record: no migration
-        return do_launch_check()
+        return do_launch_check(sdir, arg(argv, "--session"))
     if "--run" in argv and migrated():
         return do_run(sdir, cfg, arg(argv, "--session"))
     if "--cancel" in argv and migrated():

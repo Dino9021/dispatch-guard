@@ -58,7 +58,13 @@ def case_line_names_the_session(mod):
         "the scheduler's line starts with bash, which the OS scheduler may not find: %s" % line)
     assert "--session %s" % SID in line, "the scheduler's line names no session: %s" % line
     assert "--dir" in line, line
-    print("ok - the scheduler's line is not `bash ...` and names the session")
+    # ⛔ THE CALLER'S STATE DIRECTORY, not whatever usage.state_dir() resolves: review 2 drove
+    # do_arm(sdir=<scratch>) and it registered a task named for the REAL default directory.
+    with scratch_dir("line-sdir") as sdir:
+        cmd, _ = mod.schedule(time.localtime(time.time() + 3600), True, SID, sdir=sdir)
+    assert mod.task_name(sdir, SID) in cmd and mod.dir8(sdir) in " ".join(cmd), (
+        "schedule() did not use the state directory it was given: %s" % " ".join(cmd))
+    print("ok - the scheduler's line is not `bash ...`, names the session and the caller's state dir")
 
 
 def case_line_round_trips(mod):
@@ -137,10 +143,14 @@ def case_probe(mod, shim):
             os.remove(p)                                 # a rewrite run.sh says is current
         shim.write(sdir, repo_path())
         assert mod.launch_probe(sdir, SID)[0] is not False, "the real shim did not come back"
+        if os.name == "nt":
+            okh, dh = mod.launch_probe(sdir, SID, headless=True)
+            print("  headless probe here: %s - %s" % (okh, dh[:80]))
+            assert okh is not False or "did not reach" in dh, dh
         bash_there = _registry_path_has_bash()
         if bash_there is False:
             saved = shim.scheduled
-            shim.scheduled = lambda d, script, *a: shim.command(d, script, *a)
+            shim.scheduled = lambda d, script, *a, **k: shim.command(d, script, *a)
             try:
                 ok3, detail3 = mod.launch_probe(sdir, SID)
             finally:
@@ -161,8 +171,8 @@ def case_unlaunchable_arm_is_announced(mod):
         with open(os.path.join(task, "HANDOFF.md"), "w", encoding="utf-8") as f:
             f.write("# handoff\n" + "the next step is written here in full. " * 12)
         saved = (mod.schedule, mod.launch_probe, mod.subprocess.run, mod.arming_session)
-        mod.schedule = lambda when, dry, sid=None: (["schtasks"], Result(0))
-        mod.launch_probe = lambda sdir_, sid_, env=None: (False, "PROBE-SAID-NO")
+        mod.schedule = lambda when, dry, sid=None, headless=False, **k: (["schtasks"], Result(0))
+        mod.launch_probe = lambda sdir_, sid_, env=None, headless=False: (False, "PROBE-SAID-NO")
         mod.subprocess.run = lambda *a, **k: Result(1)
         mod.arming_session = lambda sdir_, sid_: (SID, None)
         here = os.getcwd()
@@ -180,6 +190,41 @@ def case_unlaunchable_arm_is_announced(mod):
         assert os.path.exists(marker), "nothing announces it - the auto-arm output is thrown away"
         assert "PROBE-SAID-NO" in json.load(open(marker, encoding="utf-8"))["why"]
     print("ok - an arm the scheduler cannot start is taken down and announced")
+
+    if os.name != "nt":
+        return
+    # ⭐ HEADLESS FIRST, PLAIN AS THE FALLBACK: which one is registered follows the probe.
+    # (probe says headless works?, scheduler accepts the headless line?, registrations, record)
+    for headless_ok, reg_ok, want, final in ((True, True, [True], True),
+                                             (False, True, [False], False),
+                                             (True, False, [True, False], False)):
+        with scratch_dir("headless-%s-%s" % (headless_ok, reg_ok)) as sdir:
+            task = os.path.join(sdir, "Memory", "tasks", "20260101-000000-t")
+            os.makedirs(task)
+            with open(os.path.join(task, "HANDOFF.md"), "w", encoding="utf-8") as f:
+                f.write("# handoff\n" + "the next step is written here in full. " * 12)
+            got = []
+            saved = (mod.schedule, mod.launch_probe, mod.subprocess.run, mod.arming_session)
+            mod.schedule = lambda when, dry, sid=None, headless=False, **k: (
+                got.append(headless), (["schtasks"], Result(0 if (reg_ok or not headless) else 1)))[1]
+            mod.launch_probe = lambda sdir_, sid_, env=None, headless=False: (
+                (headless_ok, "probe") if headless else (True, "probe"))
+            mod.subprocess.run = lambda *a, **k: Result(1)
+            mod.arming_session = lambda sdir_, sid_: (SID, None)
+            here = os.getcwd()
+            os.chdir(sdir)
+            try:
+                with contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    rc = mod.do_arm(["--arm", "--task", task, "--at", "03:00"], sdir, {})
+            finally:
+                os.chdir(here)
+                mod.schedule, mod.launch_probe, mod.subprocess.run, mod.arming_session = saved
+            assert rc == 0 and got == want, (
+                "headless probe %s, registration %s: registered %r, wanted %r"
+                % (headless_ok, reg_ok, got, want))
+            assert json.load(open(mod.record_path(sdir, SID), encoding="utf-8"))["headless"] is final
+    print("ok - the headless line is registered when it launches, the plain one when it does not")
 
 
 def case_status_reads_the_scheduler(mod):
@@ -220,7 +265,7 @@ def case_upgrade_re_registers_old_alarms(mod):
         mod.write_record(sdir, "GONE", {"session_id": "GONE", "at": now + 3600})      # task deleted
         calls = []
         saved = mod.schedule, mod._run
-        mod.schedule = lambda when, dry, sid=None: (calls.append(sid), (["x"], Result(0)))[1]
+        mod.schedule = lambda when, dry, sid=None, **k: (calls.append(sid), (["x"], Result(0)))[1]
         mod._run = lambda cmd: not cmd[-1].endswith("-GONE")      # the scheduler holds all but GONE
         try:
             with contextlib.redirect_stderr(io.StringIO()):
@@ -234,6 +279,65 @@ def case_upgrade_re_registers_old_alarms(mod):
     print("ok - an alarm an older version armed is re-registered once, fired ones are left alone")
 
 
+def case_missed_alarm_is_announced_once(mod):
+    """An alarm whose time passed with no wake is announced once; a woken or future one is not."""
+    with scratch_dir("missed") as sdir:
+        now = time.time()
+        mod.write_record(sdir, "MISSED", {"session_id": "MISSED", "task": "T-missed",
+                                          "at": now - 3600})
+        mod.write_record(sdir, "WOKE", {"session_id": "WOKE", "at": now - 3600,
+                                        "woke_at": now - 3500})          # running or ran
+        mod.write_record(sdir, "SOON", {"session_id": "SOON", "at": now - 60})   # inside grace
+        mod.write_record(sdir, "AHEAD", {"session_id": "AHEAD", "at": now + 3600})
+        with contextlib.redirect_stderr(io.StringIO()):
+            n1 = mod.announce_missed(sdir, now)
+            n2 = mod.announce_missed(sdir, now)
+        markers = sorted(os.path.basename(p) for p in
+                         __import__("glob").glob(os.path.join(sdir, "resume", "*.failed")))
+        assert (n1, n2) == (1, 0), "not exactly once: %r" % ((n1, n2),)
+        assert markers == ["MISSED.failed"], "wrong alarms announced: %r" % markers
+        why = json.load(open(os.path.join(sdir, "resume", "MISSED.failed"), encoding="utf-8"))
+        assert why["task"] == "T-missed" and "NEVER STARTED" in why["why"], why
+
+        # ⛔ and do_run must mark the wake BEFORE it does anything long (claude -p can take hours)
+        handoff = os.path.join(sdir, "HANDOFF.md")
+        with open(handoff, "w", encoding="utf-8") as f:
+            f.write("x" * 400)
+        mod.write_record(sdir, "RUNNING", {"session_id": "RUNNING", "handoff": handoff,
+                                           "task": sdir, "at": now - 3600})
+        seen = {}
+        saved = mod.session_alive_minutes
+        mod.session_alive_minutes = lambda d, s=None: (
+            seen.update(json.load(open(mod.record_path(d, "RUNNING"), encoding="utf-8"))), 1)[1]
+        saved_run = mod.subprocess.run
+        mod.subprocess.run = lambda *a, **k: Result(1)
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                mod.do_run(sdir, {}, "RUNNING")
+        finally:
+            mod.session_alive_minutes, mod.subprocess.run = saved, saved_run
+        assert (seen.get("woke_at") or 0) >= now - 3600, (
+            "do_run had not recorded its wake when it started deciding - a long run would be "
+            "announced as never started: %r" % seen)
+    print("ok - a missed alarm is announced once; a woken, recent or future one is not")
+
+    # ⭐ The prompt path reads only ITS OWN marker, leaving other sessions' for their session start.
+    with scratch_dir("own-marker") as sdir:
+        mod.announce_failure(sdir, "WHY-A", "SESSION-A", "T-A")
+        mod.announce_failure(sdir, "WHY-B", "SESSION-B", "T-B")
+        with contextlib.redirect_stderr(io.StringIO()):
+            mine = mod.dispatch_gate.failed_resume_note(sdir, "SESSION-A")
+        assert "WHY-A" in mine and "WHY-B" not in mine, mine
+        assert os.path.exists(mod.failed_path(sdir, "SESSION-B")), "another session's marker was consumed"
+        assert not os.path.exists(mod.failed_path(sdir, "SESSION-A")), "its own marker was not consumed"
+        # ⛔ it runs on every prompt, so a malformed marker must not raise (that fails the hook open)
+        with open(mod.failed_path(sdir, "SESSION-C"), "w", encoding="utf-8") as f:
+            json.dump({"at": "not-a-time", "why": "WHY-C"}, f)
+        got = mod.dispatch_gate.failed_resume_note(sdir, "SESSION-C")
+        assert "WHY-C" in got, got
+    print("ok - a session's prompt reads only its own failure marker, and a bad one cannot raise")
+
+
 def main():
     fresh_scratch()
     os.environ["CLAUDE_DISPATCH_DIR"] = os.path.join(fresh_scratch(), "state-dir-for-the-log")
@@ -244,6 +348,7 @@ def main():
     case_unlaunchable_arm_is_announced(mod)
     case_status_reads_the_scheduler(mod)
     case_upgrade_re_registers_old_alarms(mod)
+    case_missed_alarm_is_announced_once(mod)
     print("resume launch OK")
     return 0
 
