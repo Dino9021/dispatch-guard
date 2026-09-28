@@ -1214,6 +1214,15 @@ python hooks/resume.py --cancel                      # ⚠ 取消這個狀態目
   ⛔ **但它撐不過登出。** 2026-08-26 實測：`schtasks /Create` 沒帶 `/RU` / `/IT` 建出來的工作，
   Logon Mode 是 **`Interactive only`** — 只在使用者互動登入時執行。
   關終端機、關編輯器沒問題；**登出或切換使用者就不會觸發**。
+  ⛔ **0.65.2 以前，在 PATH 上沒有 `bash` 的 Windows 上，這條路從來沒起來過。** 排程執行的指令以
+  `bash` 開頭，Claude Code 找得到自己的 bash，工作排程器找不到 —— 2026-09-28 實測，一台機器上
+  09-22 到 09-28 的 8 個排程全部準時觸發、全部 `0x80070002`（找不到檔案），而且沒有任何地方報錯。
+  ⭐ **0.65.3 起**：Windows 排程改跑狀態資料夾裡的 `run.cmd`（只需要 `cmd.exe`），POSIX 改用 `sh`；
+  指令帶上 `--session`；**預約當下就用排程器看得到的 PATH（登錄檔裡的使用者＋系統 PATH）實際跑一次**，
+  起不來（找不到 Python、找不到 `claude`）就**不預約**，並留下標記讓下一個 session 念出來；
+  `resume.py --status` 會多一行 `scheduler:`，是工作排程器自己回報的「上次執行時間／結果」。
+  ⚠ 所以排程要用的 **Python 和 `claude` 必須在「使用者 PATH」上**（重新登入後拿到的那個），
+  不是只在某個終端機裡。
 
 ⭐ **兩條同時預約是安全的。** hook 會替每個 session 蓋一個心跳戳記，
 排程醒來時若發現**預約它的那個 session** 30 分鐘內還活動過，或 handoff 裡已經有一行 `TAKEN OVER`，就只取消自己這一筆並退場，
@@ -2903,6 +2912,17 @@ Two routes exist, and the gate offers both when it refuses a dispatch:
   logging out or switching user means it never fires.
   No elevation needed: measured on a non-elevated account, `schtasks` created, listed and
   deleted a task with no prompt.
+  ⛔ **Up to 0.65.2, on a Windows machine with no `bash` on PATH, this route never started.** The
+  scheduled line began with `bash`; Claude Code finds its own bash, Task Scheduler does not.
+  Measured 2026-09-28: on one machine all 8 tasks from 09-22 to 09-28 fired on time and every one
+  failed with `0x80070002` (file not found), with nothing reported anywhere.
+  ⭐ **Since 0.65.3**: the Windows task runs the state directory's `run.cmd` (needs only
+  `cmd.exe`) and POSIX uses `sh`; the line carries `--session`; **arming runs that exact line once
+  under the PATH the scheduler will use (the registry's user + system PATH)**, and if it cannot
+  start (no Python, no `claude`) it does **not** arm and leaves a marker the next session reads out;
+  `resume.py --status` adds a `scheduler:` line - Task Scheduler's own last run time and result.
+  ⚠ So the **Python and `claude` the resume needs must be on your USER PATH** (what a fresh logon
+  gets), not only in one terminal.
 
 ⭐ **Arming both is safe.** The gate touches a per-session heartbeat, and the scheduled run stands
 down - cancelling only its own record - if **the session that armed it** was active in the last 30 minutes, or its

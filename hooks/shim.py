@@ -172,9 +172,32 @@ def write(sdir, plugin_dir=PLUGIN_DIR):
 
 
 def command(sdir, script, *args):
-    """The command line a MESSAGE should name, with no version number in it."""
+    """The command line a MESSAGE should name, with no version number in it.
+
+    ⛔ FOR TEXT A SESSION READS, NEVER FOR SOMETHING THE OS RUNS. `bash` is right inside Claude
+    Code, which brings its own; anything else must use scheduled() below.
+    """
     sh = paths(sdir)[0].replace("\\", "/")
     return 'bash "%s" %s' % (sh, " ".join([script] + list(args)))
+
+
+def scheduled(sdir, script, *args):
+    """The command line the OS SCHEDULER runs: nothing may be assumed on PATH but the shell.
+
+    ⛔ command() WAS USED HERE, AND NO SCHEDULED RESUME EVER STARTED. Measured 2026-09-28 on a
+    Windows Server 2022 machine: its PATH has `Git\\cmd` and `Git\\mingw64\\bin` but no directory
+    holding `bash.exe`, so every task fired on time and failed with 0x80070002 (file not found)
+    before resume.py could log a word - eight tasks from 09-22 to 09-28, none of them visible
+    anywhere. Claude Code finds its own bash; Task Scheduler and `at` do not.
+    ⇒ Windows: run.cmd, which needs only cmd.exe. POSIX: `sh`, which `at` itself runs under.
+    ⚠ What run.cmd still needs is a Python on the SCHEDULER's PATH, so resume.py executes this
+    exact line once at arm time (launch_probe) instead of trusting it.
+    """
+    sh_path, cmd_path = paths(sdir)
+    rest = " ".join([script] + list(args))
+    if os.name == "nt":
+        return '"%s" %s' % (cmd_path.replace("/", "\\"), rest)
+    return 'sh "%s" %s' % (sh_path, rest)
 
 
 def _selftest():
@@ -245,6 +268,10 @@ def _selftest():
 
         assert "run.sh" in command(tmp, "usage.py", "--verdict")
         assert "usage.py --verdict" in command(tmp, "usage.py", "--verdict")
+        # ⛔ THE SCHEDULER'S LINE MUST NOT START WITH `bash` - see scheduled().
+        line = scheduled(tmp, "usage.py", "--verdict")
+        assert not line.startswith("bash"), line
+        assert (CMD if os.name == "nt" else SH) in line and "usage.py --verdict" in line, line
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print("shim selftest OK")

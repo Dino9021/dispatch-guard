@@ -57,6 +57,14 @@ def main():
         os.makedirs(task)
         env = dict(os.environ, CLAUDE_DISPATCH_DIR=sdir)
         base = {"session_id": SID, "cwd": repo}
+        # ⛔ A FIXED, LOW USAGE READING. Without one the gate fetched the machine's REAL usage, and
+        # run while that said PACE/STOP it auto-armed a resume - a REAL Task Scheduler entry,
+        # `ClaudeDispatchGuardResume-<dir>-slot-lifecycle`, three of them found 2026-09-28
+        # pointing into deleted temp folders. This check is about slots, never about usage.
+        now = time.time()
+        with open(os.path.join(sdir, "token_usage.json"), "w", encoding="utf-8") as f:
+            json.dump({"ts": int(now * 1000),
+                       "five_hour": {"used_percentage": 5, "resets_at": int(now) + 3 * 3600}}, f)
 
         fire(env, dict(base, hook_event_name="SessionStart"))
         # ⚠ AFTER the session stamp, and a second later: the plan check compares mtimes, and

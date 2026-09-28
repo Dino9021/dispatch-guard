@@ -153,7 +153,11 @@ before that, ANY active session stood every alarm down). On `SessionStart`/`User
 verdict is back to GO/PACE (early reset, or a changed account) and says so — repeat that
 line to the user. If the account changed while an alarm is armed, its time is meaningless:
 have the user run `resume.py --cancel --session <that session's id>` (`resume.py --status` shows `⛔ STALE` and prints
-the exact command; a bare `--cancel` clears EVERY session's alarm). The
+the exact command; a bare `--cancel` clears EVERY session's alarm). Arming runs the
+scheduler's own line once under the scheduler's PATH and refuses an alarm that cannot start
+(announced to the next session); `resume.py --status` prints Task Scheduler's own last result
+on a `scheduler:` line (0.65.3 - until then, on Windows without `bash` on PATH, no scheduled
+resume ever started). The
 transcript is a fallback, not a plan — the resumed run reads parts of it only when
 `HANDOFF.md` leaves it unable to act.
 

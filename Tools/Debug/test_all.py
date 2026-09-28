@@ -17,6 +17,7 @@ outside its sandbox, once into the working tree and once into ~/.claude.
 """
 
 import os
+import re
 import subprocess
 import sys
 
@@ -39,6 +40,7 @@ CHECKS = [
     ("unattended",    [repo_path("hooks", "unattended.py"), "--selftest"]),
     ("install",       [os.path.join(DEBUG_DIR, "test_install.py")]),
     ("resume cancel", [os.path.join(DEBUG_DIR, "test_resume_cancel.py")]),
+    ("resume launch", [os.path.join(DEBUG_DIR, "test_resume_launch.py")]),
     ("cmd guards",    [os.path.join(DEBUG_DIR, "test_guards.py")]),
     # ⛔ 0.64.0 shipped a cowork SKILL.md whose frontmatter was invalid YAML, and the skill
     # vanished from every session without a warning. This reads each SKILL.md the way the
@@ -70,6 +72,27 @@ CHECKS = [
 CHECK_TIMEOUT = 180
 
 
+def _resume_tasks():
+    """Every `ClaudeDispatchGuardResume*` task registered on this machine; None if unknowable.
+
+    ⛔ A CHECK MUST NOT LEAVE A REAL SCHEDULED TASK BEHIND. Found 2026-09-28: three
+    `ClaudeDispatchGuardResume-<dir>-slot-lifecycle` entries, registered by a check whose gate
+    auto-armed against the machine's real usage, pointing into temp folders that no longer
+    existed. No single check can see that; only a count before and after the whole run can.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        r = subprocess.run(["schtasks", "/Query", "/FO", "CSV", "/NH"], capture_output=True,
+                           timeout=120, stdin=subprocess.DEVNULL)
+    except Exception:
+        return None
+    if r.returncode != 0:
+        return None
+    text = (r.stdout or b"").decode("mbcs", "replace")
+    return set(re.findall(r'"\\(ClaudeDispatchGuardResume[^"\\]*)"', text))
+
+
 def main():
     # ⛔ THE RUNNER'S OWN CONSOLE, and it matters most when something FAILS. The children are
     # already read as UTF-8, but printing their ⭐ and ⚠ back out through a legacy codepage
@@ -84,6 +107,7 @@ def main():
     # ⭐ Prepared HERE, once, so the children inherit DG_SCRATCH_PREPARED and add to it
     # instead of each wiping the last one's files.
     fresh_scratch()
+    tasks_before = _resume_tasks()
     failed = []
     for name, argv in CHECKS:
         # ⚠ cwd is the REPOSITORY, not this folder: the hook selftests resolve sibling
@@ -116,6 +140,20 @@ def main():
         print("%-16s %s" % (name, "PASS" if ok else "FAIL"))
         if not ok:
             failed.append((name, argv, r))
+    total = len(CHECKS)
+    tasks_after = _resume_tasks()
+    if tasks_before is not None and tasks_after is not None:
+        total += 1
+        left = sorted(tasks_after - tasks_before)
+        print("%-16s %s" % ("no tasks left", "FAIL" if left else "PASS"))
+        if left:
+            failed.append(("no tasks left", [os.path.join(DEBUG_DIR, "test_all.py")],
+                           subprocess.CompletedProcess([], 1, stdout="", stderr=(
+                               "the run left %d NEW scheduled task(s) - a check reached the real "
+                               "scheduler (or a live session armed meanwhile; the name says "
+                               "which): %s\n" % (len(left), ", ".join(left))))))
+    else:
+        print("%-16s %s" % ("no tasks left", "not checked (no Windows scheduler to ask)"))
     for name, argv, r in failed:
         print("\n---- %s ----\n%s%s" % (name, r.stdout[-2000:], r.stderr[-2000:]))
         # ⭐ POINT AT WHAT IT WROTE. Every file a check produces is kept after the run, on
@@ -132,7 +170,7 @@ def main():
             if os.path.isdir(cand):
                 print("what it wrote is still here: %s" % cand)
                 break
-    print("\n%d/%d passed" % (len(CHECKS) - len(failed), len(CHECKS)))
+    print("\n%d/%d passed" % (total - len(failed), total))
     return 1 if failed else 0
 
 

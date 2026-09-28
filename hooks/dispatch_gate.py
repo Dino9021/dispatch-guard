@@ -2221,10 +2221,17 @@ def arm_from_handoff(root, sdir, cfg, session_id, v=None):
     # (ADR 20260917-132015, D8); this line used to print the bare form to one session about its
     # own alarm, and measured 2026-09-25, a session following such advice retired every other
     # session's resume.
+    # ⚠ AND IT SAYS THIS IS ROUTE (B). resume.py prints "arm route (A) as well" only on a hand-run
+    # `--arm`; this path arms detached, so until 0.65.3 no agent that was auto-armed ever saw it
+    # (both write-ups of the 2026-09-27 incident say so). Here the model reads it on a prompt;
+    # on Stop only the person does, because the turn is already over.
     return (" ⭐ dispatch-guard: a resume was ARMED for `%s` (the HANDOFF.md written this "
             "session) because the usage window is closing (%s); it wakes a few minutes after "
-            "%s and continues from that handoff. Cancel it with `%s --cancel --session %s` if "
-            "you do not want that (that cancels this session's alarm only)."
+            "%s and continues from that handoff. It is the BACKUP route: if this session stays "
+            "open, ALSO schedule a one-shot CronCreate wake for then before ending the turn. If "
+            "the OS scheduler cannot start it, the next session is told. Cancel it with "
+            "`%s --cancel --session %s` if you do not want that (that cancels this session's "
+            "alarm only)."
             % (folder, v["verdict"], v.get("resets_clock", "the reset"),
                runnable("resume.py"), session_id))
 
@@ -2713,6 +2720,7 @@ def on_session_start(payload, root, sdir, cfg):
         import resume as _resume_reap
         _resume_reap.migrate_legacy(sdir)
         _resume_reap.reap_records(sdir)
+        _resume_reap.upgrade_records(sdir)     # an alarm an older version registered (0.65.3)
     except Exception as exc:
         log(root, "REAP-FAILED %r" % (exc,))
     # ⚠ The message below tells the agent the task root "already exists". Say that only

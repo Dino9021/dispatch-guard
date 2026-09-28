@@ -33,6 +33,28 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.65.3
+
+⛔ **排好的續跑從來沒有醒來過 —— 在 PATH 上沒有 `bash` 的 Windows 上。** 2026-09-28 由兩個專案的 session 回報、
+這裡重新量過：一台機器上 09-22 到 09-28 的 8 個排程全部準時觸發、全部 `Last Result 0x80070002`（找不到檔案），
+`resume.py` 一次都沒被啟動，所以 log 裡一行都沒有，`--status` 也照樣寫「armed」。
+
+- **啟動器**：排程執行的指令原本以 `bash` 開頭（給畫面訊息用的那一條）。Windows 改跑狀態資料夾裡的
+  `run.cmd`（只需要 `cmd.exe`），POSIX 改用 `sh`。
+- **第二個洞，報告裡沒有**：指令從 0.60 起就沒帶 `--session`，所以就算起得來，醒來也會
+  `RUN-ABORT ... refusing to guess` 放棄。現在帶上了。
+- **預約當下實跑一次**：用排程器看得到的 PATH（登錄檔的系統＋使用者 PATH，**不是**目前終端機的）執行同一條指令的
+  `--launch-check`，要看到 `resume.py` 自己印的標記（不是 exit 0）、而且找得到 `claude`。起不來就**不預約**，
+  並留下失敗標記讓下一個 session 念出來 —— 自動上鬧鐘是在背景跑的，畫面上看不到它的輸出。排程器拒絕登記時也一樣。
+- `resume.py --status` 多一行 `scheduler:`：工作排程器自己回報的上次執行時間與結果，`0x80070002` 會翻成白話；
+  舊版登記的（`bash` 開頭或沒有 `--session`）會被標出來，要重新預約。
+- 找 `claude` 改用 `shutil.which`（npm 安裝的 `claude.cmd` 以前找不到；用 `.cmd` 傳長提示字串**未實測**）。
+- 自動上鬧鐘的訊息現在會說「這是備援，session 還開著就另外排 CronCreate 喚醒」。
+- **升級前就排好的鬧鐘**：Windows 上，session 啟動時把「舊版登記、還沒觸發、排程還在」的鬧鐘用新格式重新登記一次；POSIX 做不到（`at` 沒有名字），這種鬧鐘醒來時會因沒有 `--session` 放棄 —— 現在會留下失敗標記，不再無聲。
+- 測試：新檢查 `test_resume_launch`（10 個突變全數抓到）；`test_slot_lifecycle` 改用固定的低用量資料 ——
+  以前它會吃到機器的真實用量，在 PACE/STOP 時真的註冊排程（找到 3 個殘留）；`test_all` 前後比對排程數量，多了就失敗。
+- 已知未修（記在 PENDING）：「讓路」條件可能讓給一個沒人排的喚醒（F8，要改已核准的 ADR）。
+
 ## 0.65.2
 
 0.65.1 漏掉一處：`config.example.json` 的 `dispatch._auto_arm_resume`（中英兩條）仍寫「用 `resume.py --cancel` 撤銷自動上的
@@ -2861,6 +2883,32 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.65.3
+
+⛔ **Armed resumes never woke up - on Windows machines with no `bash` on PATH.** Reported 2026-09-28 by sessions in two
+projects and re-measured here: on one machine all 8 tasks from 09-22 to 09-28 fired on time and every one ended
+`Last Result 0x80070002` (file not found). `resume.py` never started, so nothing was logged and `--status` still said
+"armed".
+
+- **Launcher**: the scheduled line began with `bash` (the line meant for on-screen messages). Windows now runs the state
+  directory's `run.cmd` (needs only `cmd.exe`); POSIX uses `sh`.
+- **A second hole, not in the reports**: since 0.60 the line carried no `--session`, so even a task that started would
+  have woken to `RUN-ABORT ... refusing to guess`. It carries it now.
+- **Arming runs it once**: the same line with `--launch-check`, under the PATH the scheduler will use (the registry's
+  system + user PATH, **not** this terminal's). It must print resume.py's own marker (not merely exit 0) and find
+  `claude`. If it cannot, the resume is **not** armed and a failure marker is left for the next session to read out -
+  the auto-arm runs detached, so its output is never on screen. Same when the scheduler refuses to register.
+- `resume.py --status` adds a `scheduler:` line - Task Scheduler's own last run time and result, with `0x80070002`
+  spelled out; a task registered by an older version (`bash ...` or no `--session`) is flagged for re-arming.
+- `claude` is resolved with `shutil.which` (an npm `claude.cmd` was not found before; passing the long prompt through a
+  `.cmd` is **not measured**).
+- The auto-arm message now says it is the backup route and to also schedule a CronCreate wake if the session stays open.
+- **Alarms armed before the upgrade**: on Windows, session start re-registers, under the new line, an alarm an older version armed that is still ahead and whose task still exists. POSIX cannot (`at` jobs have no names); such an alarm wakes, finds no `--session` and gives up - it now leaves a failure marker instead of only a log line.
+- Tests: new `test_resume_launch` (10 mutations, all killed); `test_slot_lifecycle` uses a fixed low-usage reading - it
+  used to read the machine's real usage and, at PACE/STOP, registered real tasks (3 found left over); `test_all` counts
+  scheduled tasks before and after and fails if the count grew.
+- Known, not fixed (in PENDING): the stand-down can yield to a wake nobody armed (F8; needs a change to an approved ADR).
 
 ## 0.65.2
 

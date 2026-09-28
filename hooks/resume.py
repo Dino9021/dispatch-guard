@@ -8,6 +8,7 @@
     resume.py --cancel [--all]     cancel EVERY session's resume in this state directory
                                    (--all: POSIX only, removes EVERY `at` job you have)
     resume.py --run                 (the scheduler calls this; not for humans)
+    resume.py --launch-check        (arm runs it through the scheduler's own line; changes nothing)
 
 ⭐ WHAT THIS IS FOR, and why it is not the same as telling an agent to remember.
 
@@ -35,10 +36,12 @@ protocol rather than ported as-is. Four deliberate differences:
  4. **It logs to the same gate log** as everything else, so one file answers "what
     happened while nobody was watching".
 
-⚠ IT CANNOT VERIFY THAT THE RESUME WILL WORK. Scheduling succeeds long before the
-scheduled moment, and whether `claude` is on PATH for the scheduler's user, whether the
-machine is awake, and whether credentials are still valid are all unknown until it fires.
-`--status` reports what was registered, never that it will succeed.
+⚠ IT CANNOT FULLY VERIFY THAT THE RESUME WILL WORK. Scheduling succeeds long before the
+scheduled moment. Since 0.65.3 arming EXECUTES the scheduler's own line once under the
+scheduler's PATH (launch_probe) and refuses an alarm that cannot start - which is what every
+resume on one machine did silently for a week - and `--status` reads Task Scheduler's own
+Last Result back. Whether the machine is awake, the user logged on, and credentials still
+valid remain unknown until it fires.
 """
 
 import glob
@@ -185,6 +188,53 @@ def reap_records(sdir, now=None):
         except Exception:
             continue                           # housekeeping never breaks a hook
     return removed
+
+
+LAUNCHER = 2       # the shape of the scheduled line; 2 = run.cmd / sh + --session (0.65.3)
+
+
+def upgrade_records(sdir, now=None):
+    """Re-register, with today's line, an alarm an OLDER version registered that has not fired.
+
+    ⛔ AN UPGRADE DOES NOT REACH A TASK ALREADY IN THE SCHEDULER. Before 0.65.3 the registered
+    line began with `bash` and carried no `--session` - on a Windows PATH without bash it could
+    not start, and had it started it would have aborted. Fixing schedule() fixes the NEXT arm
+    only; an alarm armed for tonight by the previous version would still fail tonight.
+    ⇒ At session start, a record without `launcher == LAUNCHER` whose alarm is still ahead is
+    registered again under its own name (`/F` replaces the task in place).
+    ⚠ Windows only: `at` has no names, and replacing a job there means removing the old one by
+    number first - unmeasured on this plugin's development machine (ADR 20260917-132015, A1),
+    so a POSIX alarm armed by an older version needs a hand re-arm. NEVER RAISES.
+    """
+    if os.name != "nt":
+        return 0
+    now = time.time() if now is None else now
+    done = 0
+    for rec in record_paths(sdir):
+        try:
+            state = usage.read_json(rec, None)
+            if not isinstance(state, dict) or state.get("launcher") == LAUNCHER:
+                continue
+            at = state.get("at")
+            if not isinstance(at, (int, float)) or at <= now + 60:
+                continue                       # fired, or about to: nothing to replace
+            sid = state.get("session_id") or os.path.basename(rec)[:-len(".json")]
+            # ⚠ ONLY A TASK THAT IS STILL THERE. Somebody who deleted it in the Task Scheduler UI
+            # meant "no alarm"; recreating it from the record would undo that (found by review).
+            if not _run(["schtasks", "/Query", "/TN", task_name(sdir, sid)]):
+                continue
+            _cmd, r = schedule(time.localtime(at), False, sid)
+            if getattr(r, "returncode", 1) != 0:
+                continue
+            state["launcher"] = LAUNCHER
+            write_record(sdir, sid, state)
+            done += 1
+            log_line("RE-REGISTERED the alarm an older version armed for session %s - its line "
+                     "began with bash and had no --session, so it could not have resumed"
+                     % str(sid)[:8])
+        except Exception:
+            continue
+    return done
 
 
 def migrate_legacy(sdir):
@@ -654,6 +704,102 @@ def taken_over_since(path, armed_at):
     return None
 
 
+def scheduled_line(sdir, verb, session_id=None):
+    """The exact line the OS scheduler runs for this session's resume, with `verb` in it.
+
+    ⛔ `--session` IS IN IT, and until 0.65.3 it was not. 0.60 made `--run` read `--session` to
+    find its record (main -> do_run), but this line only ever carried `--dir`, so an alarm that
+    woke found `RUN-ABORT no --session and no legacy record ... refusing to guess` - measured
+    2026-09-28 in a throwaway state directory. Nobody saw it only because the launcher itself
+    never started (see shim.scheduled()). `safe_session()` is the record's own filename rule
+    and is idempotent, so the id it yields names the same record and is safe on a command line.
+    ⭐ ONE builder for the registered line AND the arm-time probe, so the probe executes what
+    will actually fire rather than a lookalike.
+    """
+    import shim
+    return shim.scheduled(sdir, "resume.py", verb, "--dir", '"%s"' % sdir.replace("\\", "/"),
+                          "--session", dispatch_gate.safe_session(session_id))
+
+
+def scheduler_env():
+    """The environment the OS scheduler gives a task, rebuilt as closely as this process can.
+
+    ⛔ THE INHERITED ENVIRONMENT IS THE WRONG ONE TO TEST WITH. This process usually runs under
+    Claude Code, whose PATH includes Git's `usr\\bin` - so `bash` resolves here and did not
+    resolve for Task Scheduler, which starts a task from the user's REGISTERED environment.
+    ⇒ Windows: PATH = the Machine PATH then the User PATH from the registry, expanded. POSIX:
+    `at` keeps the submitting shell's environment, so the inherited one is the right one.
+    Returns None when the registry cannot be read - the caller then says "not verified".
+    """
+    env = dict(os.environ)
+    if os.name != "nt":
+        return env
+    import winreg
+    parts = []
+    for hive, key in ((winreg.HKEY_LOCAL_MACHINE,
+                       r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+                      (winreg.HKEY_CURRENT_USER, r"Environment")):
+        try:
+            with winreg.OpenKey(hive, key) as k:
+                parts.append(winreg.ExpandEnvironmentStrings(winreg.QueryValueEx(k, "Path")[0]))
+        except OSError:
+            continue
+    if not parts:
+        return None
+    env["PATH"] = ";".join(parts)
+    return env
+
+
+LAUNCH_MARK = "DG-LAUNCH-OK"
+
+
+def launch_probe(sdir, session_id, env=None):
+    """Run the scheduler's own line once, with a harmless verb. Returns (ok, detail).
+
+    ⛔ REGISTERED IS NOT RUNNABLE. `schtasks /Create` accepted every one of the eight tasks that
+    later failed to start, and the gate printed "a resume was ARMED" each time. This executes
+    the SAME line (scheduled_line, `--launch-check` in place of `--run`) under the scheduler's
+    PATH, so an alarm that cannot start is refused NOW, while somebody is still there.
+    ⛔ AND IT MATCHES A MARKER, NEVER AN EXIT CODE: both shims print a message and `exit 0` when
+    they find no Python or no installed copy, so "exit 0" would pass exactly that failure.
+    ok is None when the check itself could not be set up - "not verified", never "fine".
+    ⚠ It cannot see what only happens at fire time: a logged-off user, a sleeping machine, an
+    expired credential, a PATH changed later.
+    """
+    env = scheduler_env() if env is None else env
+    if env is None:
+        return None, "the scheduler's PATH could not be read from the registry"
+    line = scheduled_line(sdir, "--launch-check", session_id)
+    try:
+        if os.name == "nt":
+            # /s strips exactly the outer pair of quotes, so a line that itself starts with a
+            # quoted path survives cmd's quote rule intact.
+            r = subprocess.run('cmd /d /s /c "%s"' % line, env=env, capture_output=True,
+                               timeout=120, creationflags=getattr(subprocess, "CREATE_NO_WINDOW",
+                                                                  0x08000000))
+        else:
+            r = subprocess.run(["sh", "-c", line], env=env, capture_output=True, timeout=120)
+    except Exception as exc:
+        return False, "the line could not be run at all: %r" % (exc,)
+    out = ((r.stdout or b"") + b"\n" + (r.stderr or b"")).decode("utf-8", "replace")
+    found = re.search(LAUNCH_MARK + r"[^\r\n]*", out)
+    if not found:
+        return False, ("it did not reach resume.py (rc=%s): %s"
+                       % (r.returncode, " ".join(out.split())[-300:] or "no output"))
+    if "claude=MISSING" in found.group(0):
+        return False, ("it starts, but `claude` is not on the PATH the scheduler uses, so the "
+                       "resume would wake and fail: %s" % found.group(0))
+    return True, found.group(0)
+
+
+def do_launch_check():
+    """`--launch-check`: prove the scheduler's line reaches this file. Changes nothing."""
+    import shutil
+    print("%s python=%s claude=%s" % (LAUNCH_MARK, sys.executable,
+                                      shutil.which("claude") or "MISSING"))
+    return 0
+
+
 def schedule(when, dry_run, session_id=None):
     """Register a ONE-SHOT task at `when` (a struct_time). Returns the command run.
 
@@ -682,8 +828,7 @@ def schedule(when, dry_run, session_id=None):
     # ⚠ Quoted and forward-slashed: this string goes inside `schtasks /TR`, and a home
     # directory with a space in it is ordinary. `state_dir()` calls abspath on whatever it
     # receives, so either separator arrives correctly.
-    inner = shim.command(sdir, "resume.py", "--run", "--dir",
-                         '"%s"' % sdir.replace("\\", "/"))
+    inner = scheduled_line(sdir, "--run", session_id)
     if os.name == "nt":
         cmd = ["schtasks", "/Create", "/TN", task_name(sdir, session_id), "/SC", "ONCE",
                "/ST", time.strftime("%H:%M", when), "/SD", time.strftime("%m/%d/%Y", when),
@@ -714,8 +859,8 @@ def print_route_a_reminder(when):
     turn having armed the backup and nothing else.
 
     ⛔ THAT COMBINATION IS THE ONE HOLE WHERE NOTHING RESUMES. The OS task stands down
-    when any session was active in the last ALIVE_WITHIN_MIN minutes, because it assumes
-    the wake is handling it. If the wake was never armed, the stand-down hands the work to
+    when the session that ARMED it was active in the last ALIVE_WITHIN_MIN minutes (since
+    0.60; before that, any session), because it assumes the wake is handling it. If the wake was never armed, the stand-down hands the work to
     a route that does not exist, and both alarms stay silent.
 
     ⭐ Route (A) is also the one the person actually wants: the work carries on in the
@@ -729,8 +874,8 @@ def print_route_a_reminder(when):
     print("   for about %s with CronCreate (ToolSearch \"select:CronCreate\"," % stamp_)
     print("   recurring:false), then END THE TURN. When it fires you carry on in this same")
     print("   conversation, on screen, with nothing to reconstruct.")
-    print("   ⛔ Arm ONLY the OS task and there is a hole: if anybody touched a session")
-    print("   in the last %d minutes, the OS task stands down expecting a wake that was" % ALIVE_WITHIN_MIN)
+    print("   ⛔ Arm ONLY the OS task and there is a hole: if THIS session was active in the")
+    print("   last %d minutes when it fires, the OS task stands down expecting a wake that was" % ALIVE_WITHIN_MIN)
     print("   never armed - and NOTHING resumes.")
     print("   ⚠ (A) dies with the session, which is exactly why (B) above is armed too.")
 
@@ -813,7 +958,8 @@ def do_arm(argv, sdir, cfg):
     work_cwd = dispatch_gate.session_cwd(sdir, sid) or os.getcwd()
     state = {"task": folder, "handoff": path, "at": when_epoch,
              "armed_at": time.time(), "session_id": sid, "cwd": work_cwd,
-             "transcript": transcript, "armed_for_reset": armed_reset, "at_job": None}
+             "transcript": transcript, "armed_for_reset": armed_reset, "at_job": None,
+             "launcher": LAUNCHER}
     # ⛔ THE RECORD GOES DOWN BEFORE THE TASK IS REGISTERED, and the order is the point. The
     # reaper deletes a registered task that no record claims, so registering first leaves a
     # window in which a sibling session's start sweep can delete an alarm that was armed
@@ -839,6 +985,23 @@ def do_arm(argv, sdir, cfg):
         # do_cancel() remove this job without removing every other `at` job the user has.
         state["at_job"] = at_job_id(result)
         write_record(sdir, sid, state)
+        # ⛔ REGISTERED IS NOT RUNNABLE - see launch_probe(). An alarm the scheduler cannot start
+        # is taken back down and ANNOUNCED: the gate arms from a detached process whose output
+        # nobody sees, so the failure marker the next session reads out loud is the only channel.
+        good, detail = launch_probe(sdir, sid)
+        if good is False:
+            do_cancel(sdir, quiet=True, session_id=sid)
+            print("status        : ⛔ NOT ARMED - the scheduler could not start it: %s" % detail)
+            print("               Fix: put a working Python (and `claude`) on your USER PATH -")
+            print("               the one a fresh logon gets, not this terminal's - then re-arm.")
+            log_line("ARM-UNLAUNCHABLE task=%s session=%s %s"
+                     % (folder, str(sid or "")[:8] or "?", detail))
+            announce_failure(sdir, "a resume for %s could NOT be armed: the OS scheduler would "
+                                   "not be able to start it (%s). Nothing will wake up for it."
+                             % (folder, detail), sid, folder)
+            return 1
+        print("launch check  : %s" % (("OK - " + detail) if good else
+                                       "⚠ NOT VERIFIED - " + detail))
         print("status        : ARMED (this is the BACKUP route - see below)")
         log_line("ARMED task=%s at=%s session=%s"
                  % (folder, time.strftime("%Y-%m-%d %H:%M", when),
@@ -855,13 +1018,19 @@ def do_arm(argv, sdir, cfg):
         except OSError:
             pass
         log_line("ARM-FAILED task=%s session=%s" % (folder, str(sid or "")[:8] or "?"))
+        # ⛔ ANNOUNCED, like an unlaunchable one: the gate's auto-arm runs this detached with its
+        # output thrown away, so a log line alone is a failure nobody reads.
+        announce_failure(sdir, "a resume for %s could NOT be armed: the OS scheduler refused "
+                               "to register it (%s). Nothing will wake up for it."
+                         % (folder, (detail.decode("utf-8", "replace").strip()
+                                     or repr(result))[:200]), sid, folder)
     print()
     if ok:
         print_route_a_reminder(when)
     print()
-    print("⚠ Armed is not the same as will-work. Whether `claude` is on PATH for the")
-    print("  scheduler's user, whether the machine is awake, and whether credentials are")
-    print("  still valid are all unknown until it fires.")
+    print("⚠ Armed is not the same as will-work. The launch check covers the launcher, Python")
+    print("  and `claude` on the scheduler's PATH today; whether the machine is awake, the user")
+    print("  is logged on, and credentials are still valid are unknown until it fires.")
     return 0 if ok else 1
 
 
@@ -892,6 +1061,13 @@ def do_run(sdir, cfg, session_id=None):
             log_line("RUN-ABORT no --session and no legacy record, but %d per-session "
                      "record(s) exist - refusing to guess which one this alarm is for"
                      % len(record_paths(sdir)))
+            # ⛔ SAID OUT LOUD. Until 0.65.3 EVERY per-session alarm woke this way (its line had no
+            # `--session`); on POSIX, where upgrade_records() cannot re-register it, this is how
+            # such an alarm ends - and a log line nobody opens is not an announcement.
+            announce_failure(sdir, "a resume woke without --session (registered by a version "
+                                   "before 0.65.3) and could not tell which task was its own, "
+                                   "so nothing resumed - re-arm with `resume.py --arm --task "
+                                   "<folder>`", "unknown-session")
             return 1
     path = state.get("handoff")
     if not path or not os.path.exists(path):
@@ -1066,8 +1242,14 @@ def do_run(sdir, cfg, session_id=None):
                   "stale-high until a statusline renders."
                   % (path, extra, identity, when, path))
     log_line("RUN starting for %s (attempt %d)" % (path, attempts))
+    # ⚠ RESOLVED, NOT NAMED. On Windows a bare "claude" is found only as `claude.exe`
+    # (CreateProcess adds `.exe` and nothing else); an npm install is `claude.cmd`, which
+    # shutil.which finds through PATHEXT. ⚠ Passing this long prompt through a `.cmd` is NOT
+    # measured - cmd.exe re-parses its arguments - so that install path stays UNCONFIRMED.
+    import shutil
+    claude = shutil.which("claude") or "claude"
     try:
-        r = subprocess.run(["claude", "-p", prompt], capture_output=True, timeout=3 * 3600)
+        r = subprocess.run([claude, "-p", prompt], capture_output=True, timeout=3 * 3600)
         rc = r.returncode
         log_line("RUN finished rc=%s" % rc)
     except Exception as exc:
@@ -1310,6 +1492,59 @@ def do_status(sdir, cfg):
     return 0
 
 
+def task_readback(sdir, session_id, state=None):
+    """One line: what the OS scheduler itself says about this session's task. None off Windows.
+
+    ⛔ --status USED TO REPORT ONLY WHAT WAS REGISTERED. Measured 2026-09-28: 96 minutes after a
+    fire time it still printed `attempts : 0 so far` with no warning, while Task Scheduler held
+    the one direct answer - `Last Result -2147024894`, fired on time and could not start. The
+    owner read the silence as "it never tried".
+    ⚠ Columns by POSITION (5 = Last Run Time, 6 = Last Result), never by header: the headers
+    are localised, the order is not. ⛔ NOT column 8 (Task To Run): schtasks does not escape the
+    quotes inside it, so a state directory with a comma in its path splits it - measured by
+    review, a current line was then flagged as old. "Armed by an older version" is read from the
+    RECORD's own `launcher` field instead, which the scheduler's formatting cannot touch.
+    """
+    if os.name != "nt":
+        return None
+    import csv
+    import io
+    name = task_name(sdir, session_id)
+    try:
+        r = subprocess.run(["schtasks", "/Query", "/TN", name, "/FO", "CSV", "/V", "/NH"],
+                           capture_output=True, timeout=60,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+    except Exception as exc:
+        return "scheduler: could not ask it (%r)" % (exc,)
+    if r.returncode != 0:
+        return "scheduler: ⛔ NO TASK named %s - nothing will fire for this record" % name
+    rows = list(csv.reader(io.StringIO((r.stdout or b"").decode("mbcs", "replace"))))
+    row = rows[0] if rows else []
+    if len(row) < 9:
+        return "scheduler: an answer this cannot read: %r" % ((r.stdout or b"")[:120],)
+    last_run = row[5]
+    try:
+        code = int(row[6]) & 0xFFFFFFFF
+    except ValueError:
+        return "scheduler: last result %r" % row[6]
+    if isinstance(state, dict) and state.get("launcher") != LAUNCHER:
+        old = ("  ⛔ registered by an OLDER version (before 0.65.3): its line starts with `bash` "
+               "and has no `--session`, so it cannot resume. Re-arm: `resume.py --arm --task "
+               "<folder>` (a session start re-registers it on Windows while it is still ahead).")
+    else:
+        old = ""
+    if code == 0x41303:
+        return "scheduler: has not fired yet" + (chr(10) + old if old else "")
+    if code == 0x41301:
+        return "scheduler: RUNNING now (fired %s)" % last_run
+    if code == 0:
+        return "scheduler: fired %s and its program exited 0" % last_run
+    what = ("could NOT START its program (0x80070002, file not found) - nothing ran, which is "
+            "why no RESUME line was logged" if code == 0x80070002
+            else "failed with result 0x%08X" % code)
+    return ("scheduler: ⛔ FIRED %s and %s" % (last_run, what)) + (chr(10) + old if old else "")
+
+
 def _status_one(sdir, cfg, state):
     print("task     : %s" % state.get("task"))
     print("handoff  : %s" % state.get("handoff"))
@@ -1320,13 +1555,17 @@ def _status_one(sdir, cfg, state):
                               if tr and os.path.exists(tr) else "none recorded"))
     print("fires at : %s" % time.strftime("%Y-%m-%d %H:%M", time.localtime(state.get("at", 0))))
     print("armed at : %s" % time.strftime("%Y-%m-%d %H:%M", time.localtime(state.get("armed_at", 0))))
+    back = task_readback(sdir, state.get("session_id"), state)
+    if back:
+        print(back)
     print(stale_alarm_note(sdir, cfg, state))
     rc_ = rcfg(sdir)
     print("attempts : %d so far" % state.get("attempts", 0))
     print("retrying : every %d min, for up to %d min from the first attempt"
           % (rc_["retry_every_min"], rc_["retry_window_min"]))
     print()
-    print("⚠ This reports what was REGISTERED, not that it will succeed. The schedule is")
+    print("⚠ The `scheduler:` line is Task Scheduler's own answer (Windows); the rest is what")
+    print("  was REGISTERED, not that it will succeed. The schedule is")
     print("  removed only after a run exits cleanly; a failure, or a window that had not")
     print("  actually reset, re-arms it. When the window above runs out it stops for good")
     print("  and leaves a marker the NEXT Claude session reads out loud, so a resume that")
@@ -1350,6 +1589,8 @@ def main():
         migrate_legacy(sdir)
         return True
 
+    if "--launch-check" in argv:          # before --run, and it reads no record: no migration
+        return do_launch_check()
     if "--run" in argv and migrated():
         return do_run(sdir, cfg, arg(argv, "--session"))
     if "--cancel" in argv and migrated():
