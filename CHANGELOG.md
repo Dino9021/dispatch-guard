@@ -33,6 +33,12 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.66.1
+
+- 撞牆告知（WALL-HIT）只給**那個視窗裡真的在 NET 區工作過**的 session。0.66.0 會告訴 6 小時內每一個有輸入的 session——閒置的、
+  重置後才開的、無頭續跑也算——同一行字會出現在擁有者開的每個視窗。現在 session 在 NET 區呼叫工具時留一個記號，只有帶記號的會被告知。
+  2 個新突變都被抓到；`test_all` 17/17。
+
 ## 0.66.0
 
 ⛔ **快重置時上的鬧鐘等於沒上，而無人職守的 session 根本沒被上鬧鐘。** 2026-09-29 14:00–14:10：放寬規則在 91、92、94% 都說「撐得到
@@ -2922,6 +2928,13 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.66.1
+
+- The WALL-HIT notice now reaches only sessions that **worked in the net zone of that window**. 0.66.0 told every session
+  that prompted within 6 hours - idle ones, ones started after the reset, headless resumes - so the same line appeared in
+  every window the owner opened. A session calling tools in the net zone now leaves a marker, and only marked sessions are
+  told. 2 new mutations, both killed; `test_all` 17/17.
 
 ## 0.66.0
 

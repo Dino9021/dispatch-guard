@@ -1945,6 +1945,15 @@ def wind_down_note(payload, root, sdir, cfg, now=None):
         reset = window_reset(sdir, v)
         if relaxed_stop and reset:
             note_relaxed(sdir, reset, "7d" if v.get("relaxed_driver") == "7d" else "5h")
+            # ⭐ THIS session worked in the net zone of this window - only such a session hears the
+            # WALL-HIT afterwards (wall_hit_note); an idle one, a later one, a headless resume do not.
+            seen = state_path(sdir, sid, "net-seen-%d" % reset)
+            if not os.path.exists(seen):
+                try:
+                    with open(seen, "w", encoding="utf-8") as f:
+                        f.write(str(now))
+                except OSError:
+                    pass
         # ⛔ ARM HERE, BECAUSE AN UNATTENDED SESSION REACHES NOTHING ELSE. Until 0.66 a resume was
         # armed on a dispatch, a prompt at PACE/STOP, or the end of a turn - and a session told
         # "keep working" in the net zone does none of those; when the cap cut it, the cut fired
@@ -2244,6 +2253,11 @@ def wall_hit_note(sdir, session_id, now=None):
             if not (isinstance(reset, (int, float)) and isinstance(hit, (int, float))):
                 continue
             if now - reset > 6 * 3600:
+                continue
+            # ⚠ ONLY A SESSION THAT WAS IN THE NET ZONE OF THAT WINDOW (0.66.1). Broadcasting to
+            # every session that prompts within 6 h told idle, later and headless sessions about a
+            # cut they could not have suffered - the same line from every window the owner opens.
+            if not os.path.exists(state_path(sdir, session_id, "net-seen-%d" % int(reset))):
                 continue
             seen = state_path(sdir, session_id, "wall-hit-seen-%d" % reset)
             if os.path.exists(seen):

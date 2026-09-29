@@ -155,6 +155,8 @@ def case_tool_path_arms_once_per_window(gate):
             now, reset = net_dir(gate, sdir)
             note = gate.wind_down_note({"session_id": SID}, sdir, sdir, {}, now=now)
             assert calls == [SID], "the first net note did not try to arm: %r" % calls
+            assert os.path.exists(gate.state_path(sdir, SID, "net-seen-%d" % reset)), \
+                "a session in the net zone was not marked, so it would never hear a WALL-HIT"
             assert note and "being armed" in note, note
             gate.wind_down_note({"session_id": SID}, sdir, sdir, {}, now=now + 60)
             gate.wind_down_note({"session_id": SID}, sdir, sdir, {}, now=now + 120)
@@ -298,10 +300,16 @@ def case_wall_hit(gate):
         assert abs(d["hit"] - (reset - 180)) <= 1, ("the other account's row was taken: %r" % d)
         log = open(os.path.join(sdir, ".claude", "dispatch_gate.log"), encoding="utf-8").read()
         assert log.count("WALL-HIT") == 1, "WALL-HIT not logged exactly once: %r" % log
+        # only sessions that worked in the net zone of that window hear it (0.66.1)
+        for s in (SID, "OTHER-NET-SESSION", "LATE-SESSION"):
+            touch(gate.state_path(sdir, s, "net-seen-%d" % reset), reset - 900)
         n1 = gate.wall_hit_note(sdir, SID, now)
         n2 = gate.wall_hit_note(sdir, SID, now + 60)
-        n3 = gate.wall_hit_note(sdir, "ANOTHER-SESSION", now)
+        n3 = gate.wall_hit_note(sdir, "OTHER-NET-SESSION", now)
+        n4 = gate.wall_hit_note(sdir, "NEVER-IN-THE-NET-ZONE", now)
         assert "hit the cap" in n1 and n2 == "" and "hit the cap" in n3, (n1, n2, n3)
+        assert n4 == "", ("a session that was never in the net zone was told about a cap cut it "
+                          "could not have suffered: %r" % n4)
         assert gate.wall_hit_note(sdir, "LATE-SESSION", reset + 7 * 3600) == "", \
             "a wall hit was announced more than 6 hours later"
     with scratch_dir("wall-clear") as sdir:
