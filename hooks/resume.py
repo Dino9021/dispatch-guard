@@ -82,8 +82,9 @@ FAILED_MARKER = "resume_failed.json"
 # ADR 20260917-132015, D1.
 RESUME_DIR = "resume"
 LEGACY_RECORD = "resume.json"           # pre-0.60 single slot; migrated by migrate_legacy()
-# A session the gate touched within this many minutes counts as live, so the scheduled
-# route stands down and lets the session-wake route do the work.
+# A session the gate touched within this many minutes is reported by --status as "still there".
+# ⚠ Since 0.66 it no longer decides whether the scheduled route stands down - that asks whether
+# the arming session was active AFTER the reset (liveness_threshold(), ADR 20260929-152000 D3).
 ALIVE_WITHIN_MIN = 30
 
 
@@ -452,9 +453,10 @@ def session_alive_minutes(sdir, session_id=None):
     - and with one resume per session the machine-wide answer vetoed every parallel resume,
     which is the whole feature. ADR 20260917-132015, D5.
 
-    ⭐ WITH one, it answers the question both callers now ask: is the session that armed this
-    resume still there? --status asks it to tell a person they can just carry on in that
-    conversation; do_run() asks it to decide whether to run headless at all.
+    ⭐ WITH one, it answers the question --status asks: is the session that armed this resume
+    still there, so a person can just carry on in that conversation? ⚠ do_run() NO LONGER asks
+    it (0.66): "recently active" is not "survived the reset" - see session_last_seen() and
+    liveness_threshold(), and ADR 20260929-152000 D3.
 
     ⛔ THIS IS THE CONFLICT RESOLUTION between the two resume routes, and both routes
     genuinely need to exist: waking the live session is better because it keeps all its
@@ -483,6 +485,38 @@ def session_alive_minutes(sdir, session_id=None):
         if newest is None or m > newest:
             newest = m
     return None if newest is None else (time.time() - newest) / 60.0
+
+
+def session_last_seen(sdir, session_id):
+    """Epoch of THIS session's last hook event, or None. Never "any session".
+
+    ⛔ NO GLOB FALLBACK. With no id the answer is "not seen", which makes do_run() RUN: a
+    machine-wide glob would count the headless `claude -p` of this very alarm's earlier attempt
+    (a different session, hooks and all) as activity and stand the retry down.
+    """
+    if not session_id:
+        return None
+    try:
+        return os.path.getmtime(dispatch_gate.state_path(sdir, session_id, "alive"))
+    except OSError:
+        return None
+
+
+def liveness_threshold(state, rc_):
+    """The moment after which the arming session's activity means "it survived the wait".
+
+    `armed_for_reset` when the alarm was aimed at a reset (the auto-arm and `--arm` without
+    `--at`); else the ORIGINAL fire time `first_at` less resume_offset_min - never `at`, which
+    _rearm() moves on every retry. None for a record written before 0.66 with neither: then
+    liveness cannot stand the run down and it RUNS ("anything ambiguous runs", ADR 20260917).
+    """
+    r = state.get("armed_for_reset")
+    if isinstance(r, (int, float)):
+        return r
+    f = state.get("first_at")
+    if isinstance(f, (int, float)):
+        return f - rc_["resume_offset_min"] * 60
+    return None
 
 
 def origin_session_note(sdir, state):
@@ -927,10 +961,11 @@ def print_route_a_reminder(when):
     call. So arming was the only visible step, and an agent could reasonably finish its
     turn having armed the backup and nothing else.
 
-    ⛔ THAT COMBINATION IS THE ONE HOLE WHERE NOTHING RESUMES. The OS task stands down
-    when the session that ARMED it was active in the last ALIVE_WITHIN_MIN minutes (since
-    0.60; before that, any session), because it assumes the wake is handling it. If the wake was never armed, the stand-down hands the work to
-    a route that does not exist, and both alarms stay silent.
+    ⭐ THE TWO DO NOT COLLIDE. The OS task stands down only if the session that ARMED it was
+    active AFTER the reset (since 0.66, ADR 20260929-152000 D3) - a wake that fired counts - so
+    a live session carries on and a session that died waiting leaves the work to the OS task.
+    ⚠ Until 0.66 it stood down on "active in the last 30 minutes", which cancelled every alarm
+    armed near a reset: the hole where nothing resumed.
 
     ⭐ Route (A) is also the one the person actually wants: the work carries on in the
     conversation already on their screen, so they can walk away and come back to it
@@ -943,9 +978,8 @@ def print_route_a_reminder(when):
     print("   for about %s with CronCreate (ToolSearch \"select:CronCreate\"," % stamp_)
     print("   recurring:false), then END THE TURN. When it fires you carry on in this same")
     print("   conversation, on screen, with nothing to reconstruct.")
-    print("   ⛔ Arm ONLY the OS task and there is a hole: if THIS session was active in the")
-    print("   last %d minutes when it fires, the OS task stands down expecting a wake that was" % ALIVE_WITHIN_MIN)
-    print("   never armed - and NOTHING resumes.")
+    print("   ⭐ They do not collide: the OS task stands down only if THIS session was active")
+    print("   AFTER the reset (the wake counts), so the work runs once either way.")
     print("   ⚠ (A) dies with the session, which is exactly why (B) above is armed too.")
 
 
@@ -1028,7 +1062,10 @@ def do_arm(argv, sdir, cfg):
     state = {"task": folder, "handoff": path, "at": when_epoch,
              "armed_at": time.time(), "session_id": sid, "cwd": work_cwd,
              "transcript": transcript, "armed_for_reset": armed_reset, "at_job": None,
-             "launcher": LAUNCHER}
+             "launcher": LAUNCHER,
+             # ⭐ the ORIGINAL fire time: _rearm() moves `at`, and liveness_threshold() must not
+             # move with it (ADR 20260929-152000 D3)
+             "first_at": when_epoch}
     # ⛔ THE RECORD GOES DOWN BEFORE THE TASK IS REGISTERED, and the order is the point. The
     # reaper deletes a registered task that no record claims, so registering first leaves a
     # window in which a sibling session's start sweep can delete an alarm that was armed
@@ -1184,11 +1221,19 @@ def do_run(sdir, cfg, session_id=None):
 
     rc_ = rcfg(sdir)
 
-    # ⭐ Stand down if THE SESSION THAT ARMED THIS has picked the work back up itself.
-    # ⚠ "Recently active", NOT "active since the window reopened": resets_at names the
-    # NEXT reset, so deriving the reopening from it is arithmetic that is easy to get
-    # backwards - a first version did exactly that, compared against a future timestamp,
-    # and the check never fired. Recency is what the question actually reduces to.
+    # ⭐ Stand down if THE SESSION THAT ARMED THIS has picked the work back up itself - which
+    # means it was active AFTER THE RESET THIS ALARM WAS ARMED FOR. ADR 20260929-152000 (D3).
+    # ⛔ UNTIL 0.66 THIS WAS "ACTIVE IN THE LAST 30 MINUTES", AND THAT CANCELLED EVERY ALARM ARMED
+    # NEAR A RESET. The alarm fires at reset + resume_offset_min, so a session that worked until
+    # ~27 minutes before the reset and was then cut by the cap - a cut fires no Stop hook and
+    # leaves the heartbeat fresh while the session is dead - stood its own backup down. Measured
+    # on the real scheduler 2026-09-28 (`RUN-SKIPPED ... was active 2 min ago`) and in the
+    # 2026-09-29 14:07 incident. A heartbeat from BEFORE the reset says nothing about surviving it.
+    # ⚠ THE RECORDED FAILURE, AND WHY THIS IS NOT IT AGAIN. A first version of "active since the
+    # window reopened" derived the reopening from `resets_at` read at RUN time - that names the
+    # NEXT reset, a future timestamp - and the check never fired. This compares against the
+    # STORED `armed_for_reset` (fixed at arm time, in the past when the alarm wakes), or for an
+    # `--at` alarm the stored `first_at` (which _rearm never moves); see liveness_threshold().
     #
     # ⛔ THIS ASKED "IS ANYBODY ALIVE?" UNTIL 0.60, AND THAT QUESTION CANNOT BE ANSWERED BY
     # THE SIGNAL IT USED. `session_alive_minutes(sdir)` globs every `state/*.alive`, and the
@@ -1210,13 +1255,15 @@ def do_run(sdir, cfg, session_id=None):
     # ⚠ The 2026-08-30 reason for the second signal - our own `.alive` can go flat when the
     # hook is not wired - is narrowed rather than answered: a record only EXISTS because the
     # gate hook fired for that session at arm time. Not zero; recorded in the ADR as A2.
-    alive = session_alive_minutes(sdir, my_sid)
-    if alive is not None and alive < ALIVE_WITHIN_MIN:
+    threshold = liveness_threshold(state, rc_)
+    seen = session_last_seen(sdir, my_sid)
+    if threshold is not None and seen is not None and seen > threshold:
         do_cancel(sdir, quiet=True, session_id=my_sid)
-        log_line("RUN-SKIPPED the session that armed this (%s) was active %.0f min ago "
-                 "(< %d), so it is awake and will carry the work on itself - standing down "
-                 "rather than running it twice"
-                 % (str(my_sid or "?")[:8], alive, ALIVE_WITHIN_MIN))
+        log_line("RUN-SKIPPED the session that armed this (%s) was active at %s, after the "
+                 "reset it was armed for (%s), so it survived the wait and will carry the work "
+                 "on itself - standing down rather than running it twice"
+                 % (str(my_sid or "?")[:8], time.strftime("%H:%M", time.localtime(seen)),
+                    time.strftime("%H:%M", time.localtime(threshold))))
         return 0
 
     # ⭐ AND THE OTHER WAY THE WORK CAN ALREADY BE IN HAND: somebody picked it up in a

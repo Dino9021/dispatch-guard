@@ -73,8 +73,11 @@ def case_line_round_trips(mod):
         handoff = os.path.join(sdir, "HANDOFF.md")
         with open(handoff, "w", encoding="utf-8") as f:
             f.write("x" * 400)
+        # armed for a reset that passed a minute ago; the heartbeat below is AFTER it, so the
+        # found record stands down (ADR 20260929-152000 D3)
         mod.write_record(sdir, SID, {"task": sdir, "handoff": handoff, "session_id": SID,
-                                     "at": time.time(), "armed_at": time.time() - 60})
+                                     "at": time.time(), "armed_at": time.time() - 600,
+                                     "armed_for_reset": time.time() - 60})
         # the arming session is live, so a found record stands down: no claude, no tokens
         alive = mod.dispatch_gate.state_path(sdir, SID, "alive")
         os.makedirs(os.path.dirname(alive), exist_ok=True)
@@ -304,18 +307,21 @@ def case_missed_alarm_is_announced_once(mod):
         with open(handoff, "w", encoding="utf-8") as f:
             f.write("x" * 400)
         mod.write_record(sdir, "RUNNING", {"session_id": "RUNNING", "handoff": handoff,
-                                           "task": sdir, "at": now - 3600})
+                                           "task": sdir, "at": now - 3600,
+                                           "armed_for_reset": now - 3780})
         seen = {}
-        saved = mod.session_alive_minutes
-        mod.session_alive_minutes = lambda d, s=None: (
-            seen.update(json.load(open(mod.record_path(d, "RUNNING"), encoding="utf-8"))), 1)[1]
+        saved = mod.session_last_seen
+        # the liveness read is do_run's FIRST decision; capture the record as it stands then,
+        # and report activity after the reset so the run stands down (no claude, no tokens)
+        mod.session_last_seen = lambda d, s: (
+            seen.update(json.load(open(mod.record_path(d, "RUNNING"), encoding="utf-8"))), now)[1]
         saved_run = mod.subprocess.run
         mod.subprocess.run = lambda *a, **k: Result(1)
         try:
             with contextlib.redirect_stderr(io.StringIO()):
                 mod.do_run(sdir, {}, "RUNNING")
         finally:
-            mod.session_alive_minutes, mod.subprocess.run = saved, saved_run
+            mod.session_last_seen, mod.subprocess.run = saved, saved_run
         assert (seen.get("woke_at") or 0) >= now - 3600, (
             "do_run had not recorded its wake when it started deciding - a long run would be "
             "announced as never started: %r" % seen)

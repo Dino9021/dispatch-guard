@@ -1930,21 +1930,42 @@ def wind_down_note(payload, root, sdir, cfg, now=None):
         return None
     word = v["verdict"]
     relaxed_stop = v.get("relaxed_stop")
+    now = now if now is not None else time.time()
+    # ⭐ WALL-HIT, checked on the path every session reaches (ADR 20260916's reconsideration
+    # clause, never implemented until 0.66). Cheap: a glob, plus one history read per window.
+    try:
+        check_wall_hit(root, sdir, now)
+    except Exception as exc:
+        log(root, "WALL-HIT-CHECK-FAILED %r" % (exc,))
     # ⭐ THE NET ZONE. A STOP was relaxed near the reset, so the word is GO and the brake does
-    # not fire - but the agent must keep its handoff fresh and start no new dispatch, because
-    # the window can still hit the cap. ⚠ A BINDING STOP WINS: if the combined word is still
-    # STOP (the OTHER window is a far STOP), that is the message, not the net. Treated as its
-    # own level for the once-per-level marker.
+    # not fire - but the window can still hit the cap. ⚠ A BINDING STOP WINS: if the combined
+    # word is still STOP (the OTHER window is a far STOP), that is the message, not the net.
+    arm_state, arm_rec, reset = None, {}, None
+    if word == "STOP" or relaxed_stop:
+        reset = window_reset(sdir, v)
+        if relaxed_stop and reset:
+            note_relaxed(sdir, reset, "7d" if v.get("relaxed_driver") == "7d" else "5h")
+        # ⛔ ARM HERE, BECAUSE AN UNATTENDED SESSION REACHES NOTHING ELSE. Until 0.66 a resume was
+        # armed on a dispatch, a prompt at PACE/STOP, or the end of a turn - and a session told
+        # "keep working" in the net zone does none of those; when the cap cut it, the cut fired
+        # no Stop hook either. Measured 2026-09-29 14:07: 3 of 4 net-zone sessions cut, only the
+        # attended one armed. ADR 20260916 REVISION site 3 already said the net arms; this is the
+        # path that was never wired. ADR 20260929-152000 item 2. Once per session per window.
+        arm_state, arm_rec = own_resume(sdir, sid, now)
+        # ⚠ never from a sub-agent's tool call: its payload carries the PARENT's session id
+        if (arm_state == "none" and not payload.get("agent_id")
+                and tool_path_arm(root, sdir, cfg, sid, v, reset)):
+            arm_state = "arming"
     if word == "STOP":
-        level_key = "STOP"
+        level_key = "STOP-" + ("none" if arm_state == "none" else "armed")
     elif relaxed_stop:
-        # ⭐ THE NET RE-FIRES ON A ~10-MIN CADENCE, not once. The owner's requirement is to keep
-        # HANDOFF.md fresh WHILE working into the net zone (每 N 分鐘重寫), so the marker is
-        # time-bucketed: each 10-minute bucket is a distinct key, so the reminder returns once
-        # per bucket instead of self-suppressing for the rest of the session. PACE and STOP keep
-        # their once-per-level semantics.
-        now = now if now is not None else time.time()
-        level_key = "NET-%d" % (int(now) // 600)
+        # ⭐ ONCE PER WINDOW, NOT EVERY 10 MINUTES (0.66). The 10-minute re-fire asked for a
+        # HANDOFF rewrite each time; all four sessions interviewed on 2026-09-29 called that
+        # noise. The note returns only when the session's resume state changes (none -> armed)
+        # and once more inside the last 15 minutes. ADR 20260929-152000 item 6.
+        late = reset is not None and (reset - now) < 15 * 60
+        level_key = "NET-%s-%s%s" % (reset or "?", "none" if arm_state == "none" else "armed",
+                                     "-late" if late else "")
     elif word == "PACE":
         level_key = "PACE"
     else:
@@ -1963,22 +1984,281 @@ def wind_down_note(payload, root, sdir, cfg, now=None):
             f.write(level_key)
     except OSError:
         pass
-    log(root, "USAGE(%s) tool-path%s" % (level_key, " agent=" + str(agent) if agent else ""))
-    if level_key.startswith("NET"):
-        return ("dispatch-guard: usage is in the NET zone - a STOP is relaxed because this "
-                "window resets soon and the remaining budget survives. Keep working, but "
-                "rewrite HANDOFF.md every ~10 min and start NO new dispatch (a sub-agent). A "
-                "resume is armed, so if the window does hit the cap the next run continues from "
-                "your handoff.")
+    # ⚠ The logged level stays the bare word (STOP / NET / PACE): people and checks grep for
+    # `USAGE(STOP) tool-path`. The resume state and the window ride along after it.
+    log(root, "USAGE(%s) tool-path%s%s" % (
+        level_key.split("-")[0], " agent=" + str(agent) if agent else "",
+        (" resume=%s reset=%s" % (arm_state, reset)) if arm_state else ""))
     if level_key == "PACE":
         return ("dispatch-guard: usage is at PACE. Finish the step you are on and do not "
                 "start anything new or expand scope. There is no need to stop working.")
+    # ⛔ THE RESUME SENTENCE IS THIS SESSION'S REAL STATE. It used to say "a resume is armed" to
+    # every session; on 2026-09-29 three of the four sessions told so had none. item 3.
+    armed_line = resume_state_line(arm_state, arm_rec, now,
+                                   cfg.get("auto_arm_resume", DEFAULTS["auto_arm_resume"]))
+    if level_key.startswith("NET"):
+        return net_facts_line(v, reset, now, armed_line, arm_state, arm_rec)
     return ("dispatch-guard: usage is at STOP - this window is nearly spent and the next "
             "tool call may be the last one that succeeds. \u26d4 Write a stand-alone HANDOFF.md "
-            "into your task folder NOW, then end the turn. The gate arms a resume by itself, "
-            "so a handoff you write is what the next run reads instead of rebuilding from "
-            "scratch. Nothing is being refused: writing and running commands still work, "
-            "because those are how you get out.")
+            "into your task folder NOW, then end the turn. %s Nothing is being refused: writing "
+            "and running commands still work, because those are how you get out." % armed_line)
+
+
+def own_resume(sdir, session_id, now=None):
+    """(state, record) of THIS session's resume: "armed" / "arming" / "none". Never raises.
+
+    "armed" = its record exists and fires in the future. "arming" = no record yet but the gate
+    spawned `resume.py --arm` for it under two minutes ago (the record lands ~1 s later, or is
+    taken back down by the launch probe - then this reads "none" again).
+    """
+    now = now if now is not None else time.time()
+    rec = {}
+    try:
+        sys.path.insert(0, HERE)
+        import resume as _resume
+        rec = usage.read_json(_resume.record_path(sdir, session_id), {}) or {}
+    except Exception:
+        rec = {}
+    if not isinstance(rec, dict):
+        rec = {}
+    at = rec.get("at")
+    # ⚠ a real epoch only: a bool is an int in Python, and a huge value overflows localtime()
+    if (isinstance(at, (int, float)) and not isinstance(at, bool)
+            and now < at < now + 30 * 86400):
+        return "armed", rec
+    try:
+        if now - os.path.getmtime(state_path(sdir, session_id, ARM_MARK)) < 120:
+            return "arming", {}
+    except OSError:
+        pass
+    return "none", {}
+
+
+def tool_path_arm(root, sdir, cfg, session_id, v, reset):
+    """Arm THIS session's resume from its own fresh HANDOFF.md - once per window. True if started.
+
+    \u26a0 ONE ATTEMPT PER WINDOW HERE (marker `state/<sid>.tool-arm-<reset>`), so a session with no
+    handoff does not re-scan and re-log on every tool call; a HANDOFF.md written LATER is armed
+    from PostToolUse (arm_on_handoff_write). A real handoff only, under the unchanged freshness
+    rule - no generated handoff (ADR 20260902 decision 4). Never raises.
+    """
+    mark = state_path(sdir, session_id, "tool-arm-%s" % (reset or "unknown"))
+    if os.path.exists(mark):
+        return False
+    try:
+        os.makedirs(os.path.dirname(mark), exist_ok=True)
+        with open(mark, "w", encoding="utf-8") as f:
+            f.write(str(time.time()))
+    except OSError:
+        return False
+    try:
+        return bool(arm_from_handoff(root, sdir, cfg, session_id, v))
+    except Exception as exc:
+        log(root, "TOOL-ARM-FAILED %r" % (exc,))
+        return False
+
+
+def arm_on_handoff_write(root, sdir, cfg, session_id):
+    """A HANDOFF.md was just written: arm it at once if the window is at STOP or in the net zone.
+
+    \u2b50 THE NOTE SAID "write HANDOFF.md now - the gate arms it as soon as it sees the write", and
+    this is that promise. Cheap verdict; skipped when this session already has a live resume or
+    an arm is in flight. Never raises.
+    """
+    try:
+        v = usage.verdict(sdir, usage.config(sdir), cheap=True)
+        if not (v["verdict"] == "STOP" or v.get("relaxed_stop")):
+            return False
+        if own_resume(sdir, session_id)[0] != "none":
+            return False
+        return bool(arm_from_handoff(root, sdir, cfg, session_id, v))
+    except Exception as exc:
+        log(root, "TOOL-ARM-FAILED %r" % (exc,))
+        return False
+
+
+def resume_state_line(arm_state, arm_rec, now, auto=True):
+    """The one sentence about THIS session's resume. See wind_down_note().
+
+    \u26a0 The time carries the DATE when it is not today: a record armed for the 7d reset is armed,
+    but not for this window, and "armed for 14:13" would claim coverage it does not give.
+    """
+    if arm_state == "armed":
+        at = arm_rec["at"]
+        fmt = "%H:%M" if time.localtime(at)[:3] == time.localtime(now)[:3] else "%m-%d %H:%M"
+        return ("Your resume is armed for %s - if the cap cuts this turn, it continues from "
+                "your HANDOFF.md." % time.strftime(fmt, time.localtime(at)))
+    if arm_state == "arming":
+        return "Your resume is being armed from your HANDOFF.md (started just now)."
+    if not auto:
+        return ("\u26d4 You have NO resume, and auto_arm_resume is off: write a stand-alone "
+                "HANDOFF.md in your task folder and run `resume.py --arm --task <folder>`.")
+    return ("\u26d4 You have NO resume: if the cap cuts this turn, nothing continues this work. "
+            "Write a stand-alone HANDOFF.md in your task folder now - the gate arms it as soon "
+            "as it sees the write.")
+
+
+def safe_resume_line(sdir, session_id, cfg):
+    """resume_state_line() for a caller that must never raise (the dispatch refusal)."""
+    try:
+        now = time.time()
+        state, rec = own_resume(sdir, session_id, now)
+        return resume_state_line(state, rec, now,
+                                 cfg.get("auto_arm_resume", DEFAULTS["auto_arm_resume"]))
+    except Exception:
+        return "`resume.py --status` shows whether this session has a resume."
+
+
+def net_facts_line(v, reset, now, armed_line, arm_state, arm_rec):
+    """The net-zone note: facts, once per window. Decides nothing (the 2026-08-29 pin)."""
+    seven = v.get("relaxed_driver") == "7d"
+    pct = v.get("pct_7d") if seven else v.get("pct")
+    clock = time.strftime("%H:%M", time.localtime(reset)) if reset else v.get(
+        "resets_clock", "the reset")
+    left = ("%d min left" % max(0, round((reset - now) / 60.0))) if reset else "soon"
+    line = ("dispatch-guard: %s at %s%%, resets %s (%s) - a STOP is relaxed because the rest "
+            "of the budget should last (the NET zone). Keep working in short, interruptible "
+            "steps; start NO new sub-agent until %s. %s"
+            % ("7d" if seven else "5h", round(pct) if isinstance(pct, (int, float)) else "?",
+               clock, left, clock, armed_line))
+    if arm_state == "armed" and reset and (reset - now) < 15 * 60:
+        try:
+            age = (now - os.path.getmtime(str(arm_rec.get("handoff") or ""))) / 60.0
+        except (OSError, ValueError, TypeError):
+            age = None
+        if age is not None and age > 10:
+            line += " Refresh HANDOFF.md once now (it is %d min old)." % age
+    return line
+
+
+def window_reset(sdir, v):
+    """Epoch of the reset of the window this verdict is about, or None. A file read, no verdict.
+
+    The relaxed window in the net zone; the 7d when a 7d STOP binds; otherwise the 5h.
+    """
+    try:
+        d = usage.read_json(usage.config(sdir)["token_usage_file"], {}) or {}
+    except Exception:
+        return None
+    seven = v.get("relaxed_driver") == "7d" or (v.get("verdict") == "STOP"
+                                                and v.get("driver") == "7d")
+    r = (d.get("seven_day" if seven else "five_hour") or {}).get("resets_at")
+    return int(r) if isinstance(r, (int, float)) else None
+
+
+WALL_DIR_MARKS = ("relaxed-", "wall-checked-", "wall-hit-")   # state/<mark><reset epoch>.json
+
+
+def note_relaxed(sdir, reset, window="5h"):
+    """Record, once, that a relaxation was shown in the window ending at `reset`."""
+    p = os.path.join(sdir, "state", "relaxed-%d.json" % reset)
+    if os.path.exists(p):
+        return
+    try:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump({"reset": reset, "window": window, "acct": usage._current_account(),
+                       "at": time.time()}, f)
+    except Exception:
+        pass
+
+
+def check_wall_hit(root, sdir, now=None):
+    """After a relaxed window has reset, ask ONCE whether it reached the cap first -> WALL-HIT.
+
+    \u26d4 AFTER THE RESET, FROM THE HISTORY - NOT "SEEN AT >= 99% BEFORE THE RESET". On 2026-09-29
+    the 100% sample landed at 14:07:12 and the next hook of any session came at 14:10:15, after
+    the 14:10 reset: the sessions had been cut, so nothing was there to see the number live. The
+    history kept the row. \u26a0 Rows of another account are ignored (acct recorded at relaxation).
+    """
+    now = now if now is not None else time.time()
+    for p in glob.glob(os.path.join(sdir, "state", "relaxed-*.json")):
+        # ⚠ DECIDED FROM THE NAME FIRST. This runs on every tool call, and reading each JSON cost
+        # ~0.27 ms per file (review, 2026-09-29) while they live 7 days - skip the checked and the
+        # not-yet-reset ones without opening them.
+        name = os.path.basename(p)[len("relaxed-"):-len(".json")]
+        if not name.isdigit() or now < int(name):
+            continue
+        reset = int(name)
+        done = os.path.join(sdir, "state", "wall-checked-%d.json" % reset)
+        if os.path.exists(done):
+            continue
+        d = usage.read_json(p, {})
+        d = d if isinstance(d, dict) else {}
+        hit = first_cap_row(sdir, reset, d.get("acct"), d.get("window") == "7d")
+        try:
+            with open(done, "w", encoding="utf-8") as f:
+                json.dump({"reset": reset, "hit": hit}, f)
+        except OSError:
+            continue
+        if hit is None:
+            continue
+        try:
+            with open(os.path.join(sdir, "state", "wall-hit-%d.json" % reset), "w",
+                      encoding="utf-8") as f:
+                json.dump({"reset": reset, "hit": hit}, f)
+        except OSError:
+            pass
+        log(root, "WALL-HIT %s (%d min before the %s reset, after a relaxation)"
+            % (time.strftime("%H:%M", time.localtime(hit)), round((reset - hit) / 60.0),
+               time.strftime("%H:%M", time.localtime(reset))))
+
+
+def first_cap_row(sdir, reset, acct, seven=False):
+    """Epoch of the first history row at >= 99% in the window ending at `reset`, or None.
+
+    The 7d window reads the `sd_pct` / `sd_resets` columns of the same rows.
+    """
+    pct_key, reset_key = ("sd_pct", "sd_resets") if seven else ("pct", "resets_at")
+    cfg_u = usage.config(sdir)
+    rows = []
+    for path in sorted(glob.glob(os.path.join(usage.history_dir(sdir, cfg_u),
+                                              usage.HISTORY_PREFIX + "*.jsonl")))[-2:]:
+        try:
+            with open(path, encoding="utf-8") as f:
+                rows += [json.loads(l) for l in f if l.strip()]
+        except Exception:
+            continue
+    first = None
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        at, ra, pct = usage.unstamp(r.get("at")), usage.unstamp(r.get(reset_key)), r.get(pct_key)
+        if at is None or ra is None or abs(ra - reset) > 1 or not isinstance(pct, (int, float)):
+            continue
+        if acct and r.get("acct") and r.get("acct") != acct:
+            continue
+        if pct >= 99 and at < reset and (first is None or at < first):
+            first = at
+    return first
+
+
+def wall_hit_note(sdir, session_id, now=None):
+    """Once per session: the window hit the cap after a relaxation (within 6 h). Never raises."""
+    now = now if now is not None else time.time()
+    out = []
+    try:
+        for p in sorted(glob.glob(os.path.join(sdir, "state", "wall-hit-*.json"))):
+            d = usage.read_json(p, {}) or {}
+            reset, hit = d.get("reset"), d.get("hit")
+            if not (isinstance(reset, (int, float)) and isinstance(hit, (int, float))):
+                continue
+            if now - reset > 6 * 3600:
+                continue
+            seen = state_path(sdir, session_id, "wall-hit-seen-%d" % reset)
+            if os.path.exists(seen):
+                continue
+            with open(seen, "w", encoding="utf-8") as f:
+                f.write(str(now))
+            out.append(" \u26d4 TELL THE USER: the usage window hit the cap at %s, %d min before "
+                       "its %s reset, after the gate had relaxed a STOP; a turn that stopped "
+                       "around then was cut by the cap - check that its last step finished."
+                       % (time.strftime("%H:%M", time.localtime(hit)),
+                          round((reset - hit) / 60.0),
+                          time.strftime("%H:%M", time.localtime(reset))))
+    except Exception:
+        return "".join(out)
+    return "".join(out)
 
 
 def emit_with(event, own_text, wind, systemMessage=None):
@@ -2129,14 +2409,16 @@ def note_handoff_write(sdir, cfg, session_id, tool, tool_input):
         text = " ".join(re.findall(r">>?\s*[\"']?(\S+?" + re.escape(HANDOFF) + r")(?=[\"'\s;&|)]|$)",
                                    cmd))
     if HANDOFF not in text:
-        return
+        return []
     tr = str(cfg["task_root"]).replace("\\", "/")
     names = re.findall(re.escape(tr) + r"/([A-Za-z0-9._-]+)/" + re.escape(HANDOFF)
                        + r"(?=[\"'\s;&|)]|$)", text.replace("\\", "/"))
     have = handoffs_written(sdir, session_id)
     new = [n for n in dict.fromkeys(names) if n not in have]
+    # ⭐ RETURNS every task folder this write names, new or not - a REWRITE of a known handoff is
+    # still a fresh handoff, and the caller arms on it (arm_on_handoff_write, 0.66).
     if not new:
-        return
+        return names
     path = state_path(sdir, session_id, HANDOFF_SEEN)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -2145,6 +2427,7 @@ def note_handoff_write(sdir, cfg, session_id, tool, tool_input):
                 f.write(n + "\n")
     except OSError:
         pass
+    return names
 
 
 def handoffs_written(sdir, session_id):
@@ -2887,6 +3170,14 @@ def on_user_prompt(payload, root, sdir, cfg):
     except Exception as exc:              # a notice must never take the brake down with it
         log(root, "FAILED-NOTE-ERROR %r" % (exc,))
         mine = ""
+    # ⭐ AND "THE WINDOW HIT THE CAP": a turn cut by the cap ends silently on screen - two of the
+    # three sessions cut on 2026-09-29 never knew. Checked here too, because the first hook after
+    # a reset is often a prompt. ADR 20260929-152000 item 5.
+    try:
+        check_wall_hit(root, sdir)
+        mine += wall_hit_note(sdir, sid)
+    except Exception as exc:
+        log(root, "WALL-HIT-CHECK-FAILED %r" % (exc,))
     note = mine + (stand_down_resume(root, sdir, v, sid) or "")
     if v["verdict"] not in ("PACE", "STOP"):
         if note:
@@ -3087,12 +3378,13 @@ def on_pre_agent(payload, root, sdir, cfg, wind=None):
             deny(event, "dispatch gate: %s ⛔ You are in the NET zone - a STOP was relaxed "
                         "because the window resets soon and the budget survives. Keep doing "
                         "your OWN work, but dispatching a NEW sub-agent is refused: it can burn "
-                        "the budget the relaxation is counting on, and the armed resume does "
+                        "the budget the relaxation is counting on, and a resume does "
                         "not cover an in-flight sub-agent. Rewrite HANDOFF.md and continue "
                         "yourself." % v["text"],
                  systemMessage=("dispatch-guard: sub-task dispatch REFUSED - NET zone (a STOP "
                                 "relaxed near the reset). Nothing was dispatched; the main "
-                                "session keeps working and a resume is armed."))
+                                "session keeps working. %s"
+                                % safe_resume_line(sdir, sid, cfg)))
             return
         if v["verdict"] == "PACE" and cfg["warn_on_usage"]:
             note = ("Usage is high (%s). Do this unit and report; do NOT expand scope, "
@@ -3300,7 +3592,12 @@ def main():
     # Write, an Edit and a Bash redirect are all seen. Never decides anything; never returns.
     if event == "PostToolUse":
         try:
-            note_handoff_write(sdir, cfg, sid, tool, payload.get("tool_input") or {})
+            if (note_handoff_write(sdir, cfg, sid, tool, payload.get("tool_input") or {})
+                    and not payload.get("agent_id")):
+                # ⭐ at STOP / in the net zone a fresh HANDOFF.md is armed the moment it lands.
+                # ⚠ Not from a SUB-AGENT: its payload carries the PARENT's session id, so its
+                # handoff would arm the parent's resume for the sub-agent's folder (review B N1).
+                arm_on_handoff_write(root, sdir, cfg, sid)
         except Exception as exc:
             log(root, "HANDOFF-NOTE-FAILED %r" % (exc,))
 
@@ -4083,28 +4380,42 @@ def selftest():
             sys.modules.pop("resume", None)
     shutil.rmtree(_ndir, ignore_errors=True)
 
-    # ⛔ THE NET ADVISORY RE-FIRES ON A ~10-MIN CADENCE, not once - the owner's "每 N 分鐘重寫
-    # handoff". The marker is time-bucketed: two calls in the same 10-min bucket emit once, a
-    # call in the next bucket emits again. Real relaxed-STOP scenario: 5h 90%, resets in 12 min.
+    # ⛔ THE NET NOTE IS FACTS, ONCE PER WINDOW (0.66, ADR 20260929-152000 items 3 and 6) - no
+    # longer every 10 minutes. It returns when THIS session's resume state changes (none ->
+    # armed) and once inside the last 15 minutes, and it never claims a resume that does not
+    # exist. Real relaxed-STOP scenario: 5h 90%, resets in 20 min.
     _wdir = tempfile.mkdtemp(prefix="dg-wind-")
     os.makedirs(os.path.join(_wdir, "state"), exist_ok=True)
     _wsid = "sess-net"
     with open(state_path(_wdir, _wsid, "start"), "w", encoding="utf-8") as _f:
         _f.write("x")                                       # stamp the session
     _rt = time.time()
+    _reset = int(_rt + 20 * 60)
     with open(os.path.join(_wdir, "token_usage.json"), "w", encoding="utf-8") as _f:
         json.dump({"ts": int(_rt * 1000),
-                   "five_hour": {"used_percentage": 90, "resets_at": int(_rt + 12 * 60)}}, _f)
+                   "five_hour": {"used_percentage": 90, "resets_at": _reset}}, _f)
     _wpayload = {"session_id": _wsid}
     _wv = usage.verdict(_wdir, usage.config(_wdir), now=_rt)
     assert _wv["verdict"] == "GO" and _wv["relaxed_stop"] is True, ("not the net zone: %r" % _wv)
-    _base = (int(_rt) // 600) * 600                          # bucket-aligned, no boundary flake
-    _m1 = wind_down_note(_wpayload, _wdir, _wdir, {}, now=_base + 5)
-    assert _m1 and "NET zone" in _m1, ("the net advisory did not fire: %r" % (_m1,))
-    _m2 = wind_down_note(_wpayload, _wdir, _wdir, {}, now=_base + 65)      # same 10-min bucket
-    assert _m2 is None, ("the net advisory repeated inside one bucket: %r" % (_m2,))
-    _m3 = wind_down_note(_wpayload, _wdir, _wdir, {}, now=_base + 665)     # next bucket
-    assert _m3 and "NET zone" in _m3, ("the net advisory did not re-fire after ~10 min: %r" % (_m3,))
+    _m1 = wind_down_note(_wpayload, _wdir, _wdir, {}, now=_rt)
+    assert _m1 and "NET zone" in _m1, ("the net note did not fire: %r" % (_m1,))
+    assert "NO resume" in _m1 and "is armed" not in _m1, (
+        "the net note claims a resume this session does not have: %r" % (_m1,))
+    assert wind_down_note(_wpayload, _wdir, _wdir, {}, now=_rt + 60) is None, \
+        "the net note repeated inside one window"
+    # the session's resume lands -> the note says so, once
+    os.makedirs(os.path.join(_wdir, "resume"), exist_ok=True)
+    with open(os.path.join(_wdir, "resume", safe_session(_wsid) + ".json"), "w",
+              encoding="utf-8") as _f:
+        json.dump({"at": _reset + 180, "session_id": _wsid}, _f)
+    _m4 = wind_down_note(_wpayload, _wdir, _wdir, {}, now=_rt + 2 * 60)
+    assert _m4 and "resume is armed for" in _m4, ("the armed state was not reported: %r" % (_m4,))
+    assert wind_down_note(_wpayload, _wdir, _wdir, {}, now=_rt + 3 * 60) is None, \
+        "the net note re-fired without a change (the old 10-minute cadence is gone)"
+    # ...and once more inside the last 15 minutes (13 min left here, clear of the boundary)
+    _m6 = wind_down_note(_wpayload, _wdir, _wdir, {}, now=_rt + 7 * 60)
+    assert _m6 and "NET zone" in _m6, ("no last-15-minutes note: %r" % (_m6,))
+    assert wind_down_note(_wpayload, _wdir, _wdir, {}, now=_rt + 8 * 60) is None
     shutil.rmtree(_wdir, ignore_errors=True)
 
     # ⛔ prune_state SWEEPS EVERY PER-SESSION MARKER BY AGE (not a suffix list), keeps the recent

@@ -41,6 +41,7 @@ CHECKS = [
     ("install",       [os.path.join(DEBUG_DIR, "test_install.py")]),
     ("resume cancel", [os.path.join(DEBUG_DIR, "test_resume_cancel.py")]),
     ("resume launch", [os.path.join(DEBUG_DIR, "test_resume_launch.py")]),
+    ("net zone",      [os.path.join(DEBUG_DIR, "test_net_zone.py")]),
     ("cmd guards",    [os.path.join(DEBUG_DIR, "test_guards.py")]),
     # ⛔ 0.64.0 shipped a cowork SKILL.md whose frontmatter was invalid YAML, and the skill
     # vanished from every session without a warning. This reads each SKILL.md the way the

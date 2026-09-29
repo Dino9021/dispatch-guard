@@ -33,6 +33,28 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.66.0
+
+⛔ **快重置時上的鬧鐘等於沒上，而無人職守的 session 根本沒被上鬧鐘。** 2026-09-29 14:00–14:10：放寬規則在 91、92、94% 都說「撐得到
+14:10 重置」，14:07:12 讀到 100%，NET 區 4 個 session 有 3 個被伺服器拒絕；只有有人陪、回合正常結束的那一個有鬧鐘。而就算有，
+舊的讓路規則也會把它取消。實地研究與 ADR：`Memory/tasks/20260929-141033-*`、`Memory/tasks/20260929-152000-*`（ADR v3，擁有者
+裁示「只做縮小版」）。
+
+- **鬧鐘讓路改成「上鬧鐘的 session 在重置之後還有動作」**（取代 0.60 的「30 分鐘內有動作」）。舊規則讓任何在重置前約 27 分鐘內上的
+  鬧鐘都自己讓路：被上限切斷的回合不觸發 Stop hook、心跳還是新的，人卻已經停了。`--at` 鬧鐘用原始觸發時間（重試不會移動它）；
+  0.66 以前的舊紀錄沒有門檻 → 一律執行；沒有 session id 時不再退回全機器的心跳。代價：回合剛好橫跨重置時刻的活 session 可能多跑一次。
+- **無人職守的 session 也會被上鬧鐘**：在 STOP 或 NET 區第一次收到工具提示時，gate 就用它自己寫的 HANDOFF.md 上鬧鐘（每視窗一次）；
+  在那兩種狀態下寫下 HANDOFF.md 的當下也立刻上。以前只有派工、PACE/STOP 時的輸入、回合結束這三個時機——「繼續做」的 session 一個都碰不到。
+- **提示照實說**：拿掉三處寫死的「A resume is armed」，改成這個 session 的真實狀態（「你的鬧鐘排在 HH:MM」／「⛔ 你沒有鬧鐘，現在寫
+  HANDOFF.md」）。
+- **5h 放寬天花板 95 → 92**（擁有者決定）：NET 區剩 90–91%；當天 14:02:34 就會改口 STOP。
+- **撞牆紀錄 WALL-HIT**（9/16 ADR 規定、從沒寫進程式的條款）：放寬過的視窗在重置前撞到上限，重置後從用量歷史查出來、記一行 `WALL-HIT`，
+  並在每個 session 下一次輸入時告知一次——被切斷的回合在畫面上只是安靜地結束，被切的 3 個 session 有 2 個自己不知道。
+- **NET 提示改成一行事實、每視窗只印一次**（重置時間、剩幾分鐘、那之前不派新子代理、鬧鐘狀態；剩不到 15 分鐘時再印一次，HANDOFF 超過
+  10 分鐘沒更新才提醒重寫一次）。取代每 10 分鐘重印——4 個受訪 session 都說那是噪音。
+- 刻意不做（擁有者裁示）：每個 session 各自的 STOP 判定、訂閱 `StopFailure`／提高最低版本、重新定義「新 HANDOFF」、改 `reset_time`。
+- 測試：新檢查 `test_net_zone`（含以真實 hook 子行程驗 NET 區拒絕派工）；`test_all` 17/17；17 個突變全數抓到；兩輪程式審查（其中一輪抓到 NET 區拒絕派工時會當掉、反而放行的錯，另一輪抓到子代理會替父 session 上鬧鐘，都已修正）。
+
 ## 0.65.4
 
 0.65.3 的收尾：審查員指出工作單要求「session 啟動時的訊息」也要看得到沒跑成的續跑，那一半沒做；另外實測到續跑會開視窗。
@@ -2900,6 +2922,36 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.66.0
+
+⛔ **An alarm armed near a reset cancelled itself, and an unattended session was never armed at all.** 2026-09-29
+14:00-14:10: the relaxation said "it lasts to the 14:10 reset" at 91, 92 and 94%; the meter read 100% at 14:07:12 and three of
+the four sessions in the net zone were refused by the provider. Only the attended one, whose turn ended normally, had a
+resume - and the old stand-down rule would have cancelled even that. Field study and ADR: `Memory/tasks/20260929-141033-*`,
+`Memory/tasks/20260929-152000-*` (ADR v3, owner ruling "the reduced version only").
+
+- **A resume stands down only if the session that armed it was active AFTER the reset** (replaces 0.60's "active in the last
+  30 minutes"). The old rule made every alarm armed within ~27 minutes of a reset stand itself down: a turn the cap cuts
+  fires no Stop hook and leaves a fresh heartbeat on a session that has stopped. `--at` alarms use the ORIGINAL fire time
+  (retries do not move it); a record from before 0.66 has no threshold and runs; no session id never falls back to the
+  machine-wide heartbeat. Cost: a live session whose turn spans the reset may get a headless run as well.
+- **Unattended sessions get armed too**: the first time a session is told STOP or NET on the tool path, the gate arms its
+  resume from its OWN HANDOFF.md (once per window), and a HANDOFF.md written in either state is armed the moment it lands.
+  Before, arming happened only on a dispatch, a prompt at PACE/STOP, or a turn's end - none of which a "keep working"
+  session reaches.
+- **Truthful notes**: the three hard-coded "a resume is armed" are gone; the note states this session's real state ("your
+  resume is armed for HH:MM" / "⛔ you have NO resume - write HANDOFF.md now").
+- **5h relaxation ceiling 95 → 92** (owner decision): the net zone is 90-91%; on the day it would have said STOP at 14:02:34.
+- **WALL-HIT** (the ADR 20260916 clause that was never implemented): a relaxed window that hit the cap before its reset is
+  found from the usage history after the reset, logged as `WALL-HIT`, and told once to each session at its next prompt - a
+  turn the cap cuts just ends quietly, and two of the three cut sessions did not know.
+- **The NET note is one line of facts, printed once per window** (reset clock, minutes left, no new sub-agent until then,
+  the resume state; once more inside the last 15 minutes, with one HANDOFF refresh only if it is over 10 minutes old).
+  Replaces the 10-minute re-fire - all four sessions interviewed called it noise.
+- Deliberately not done (owner ruling): a per-session STOP gate, subscribing to `StopFailure` / raising the version floor,
+  redefining a "fresh HANDOFF", changing `reset_time`.
+- Tests: new `test_net_zone` (incl. the net-zone dispatch refusal through the real hook process); `test_all` 17/17; 17 mutations, all killed; two code reviews (one caught the net-zone refusal crashing - and therefore allowing - the dispatch, the other a sub-agent arming its parent's resume; both fixed).
 
 ## 0.65.4
 

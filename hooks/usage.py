@@ -121,7 +121,11 @@ DEFAULTS = {
     # at zero added danger.
     "relax_margin": 1.5,        # require headroom >= margin * rate * minutes_to_reset
     "relax_horizon_min": 60,    # 5h: do not trust a projection more than this far from reset
-    "relax_ceiling_5h": 95,     # never relax the 5h window at or above this pct
+    # ⛔ 92, NOT 95, SINCE 0.66 (owner, 2026-09-29). At 95 the relaxation said GO at 91, 92 and 94%
+    # and the next sample read 100%: a 2.8 %/min burst from four sessions cut three of them 3 min
+    # before the reset, and with samples ~2.5 min apart the 95 backstop never saw a row inside it.
+    # 92 would have said STOP at 14:02:34, 7 min before the reset. ADR 20260929-152000 D4.
+    "relax_ceiling_5h": 92,     # never relax the 5h window at or above this pct
     "relax_ceiling_7d": 99,     # never relax the 7d window at or above this pct (owner's 98% case)
     # ⭐ HOW FAR BACK THE BURN GAUGE LOOKS. The gauge answers "how fast am I burning NOW",
     # so it reads the last `burn_window_min` minutes rather than the whole five-hour window.
@@ -2720,10 +2724,13 @@ def verdict(sdir, cfg, now=None, data=None, cheap=False):
     # window reopens, defers, and announces failure (the exact case reset_for_driver exists to
     # prevent). ⚠ Prefer 7d when BOTH relaxed: a 7d cap-hit costs longer to recover.
     relaxed_driver = "7d" if seven_relaxed_stop else "5h" if five_relaxed_stop else None
+    # ⛔ NO "A RESUME IS ARMED" HERE (0.66). This text has no session in scope, and on 2026-09-29
+    # it told four sessions they had a resume when three had none. The gate's own note says
+    # whether THIS session's resume is armed (`resume.py --status` lists them).
     net_note = ("" if not relaxed_stop else
-                " ⛔ NET: a STOP is relaxed near the reset - keep working, but rewrite "
-                "HANDOFF.md every ~10 min and start NO new dispatch. A resume is armed, so if "
-                "the window does hit the cap the next run continues from your handoff.")
+                " ⛔ NET: a STOP is relaxed near the reset - keep working in short steps and "
+                "start NO new dispatch. Whether a session has a resume is on its own gate note "
+                "(`resume.py --status`); without one, a cap cut is not continued.")
     return {"verdict": level or "GO", "exit": {"STOP": 2, "PACE": 1}.get(level, 0),
             "pct": pct, "pct_7d": pct7, "driver": driver if level else None,
             "remain_min": remain_min, "resets_clock": clock,
@@ -4901,7 +4908,8 @@ def selftest():
     # were true and the answer was wrong, which is the shape of every defect in this file.
     _bnow2 = time.time()
     _bc = {"soft_pct_5h": 70, "hard_pct_5h": 85, "soft_pct_7d": 95, "hard_pct_7d": 97,
-           "relax_margin": 1.5, "relax_horizon_min": 60, "relax_ceiling_5h": 95,
+           "relax_margin": 1.5, "relax_horizon_min": 60,
+           "relax_ceiling_5h": DEFAULTS["relax_ceiling_5h"],
            "relax_ceiling_7d": 99, "stale_min": 15, "debug": {"token_usage": False}}
     _bdir = tempfile.mkdtemp(prefix="dg-brake-")
 
@@ -4959,9 +4967,14 @@ def selftest():
     assert _verdict(90, 10, r5=_bnow2 + 40 * 60)["verdict"] == "STOP", "survives must fail"
     # ...and FAR from reset the same STOP stands (horizon 60): default r5 is 180 min out.
     assert _verdict(90, 10)["verdict"] == "STOP", "beyond the horizon, no relaxation"
-    # ⛔ THE 5h CEILING (95) IS AN ABSOLUTE BACKSTOP - the projection's blind spot. At 96%,
-    # even 12 min from reset, no relaxation.
-    assert _verdict(96, 10, r5=_bnow2 + 12 * 60)["verdict"] == "STOP", "5h ceiling 95"
+    # ⛔ THE 5h CEILING IS AN ABSOLUTE BACKSTOP - the projection's blind spot. AT the shipped
+    # ceiling (92 since 0.66), even 12 min from reset, no relaxation; one point below it, with the
+    # same headroom arithmetic, it still relaxes - so the boundary is the DEFAULT, not a typed 95.
+    _ceil = DEFAULTS["relax_ceiling_5h"]
+    assert _ceil == 92, "the 5h ceiling moved without its measurement (ADR 20260929-152000 D4)"
+    assert _verdict(_ceil, 10, r5=_bnow2 + 12 * 60)["verdict"] == "STOP", "5h ceiling"
+    assert _verdict(_ceil - 1, 10, r5=_bnow2 + 12 * 60)["verdict"] == "GO", "just below the ceiling"
+    assert _verdict(96, 10, r5=_bnow2 + 12 * 60)["verdict"] == "STOP", "above the ceiling"
     # ⛔ THE 5h HORIZON (60) IS A DORMANT BACKSTOP. At the shipped margin 1.5 and soft>=75,
     # `survives` is always stricter than the horizon, so it never bites - UNTIL the owner lowers
     # the margin (the reconsideration loop). Isolated here with a tiny margin so `survives`

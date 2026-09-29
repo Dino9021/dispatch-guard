@@ -376,8 +376,13 @@ def case_only_the_owner_session_stands_a_resume_down():
     assert "session_alive_minutes(sdir)" not in code, (
         "do_run stands down on ANY live session again - on a machine with one session open, "
         "no parallel resume will ever fire")
-    assert "session_alive_minutes(sdir, my_sid)" in code, (
+    # ⭐ 0.66: the question is "was the ARMING session active AFTER the reset?" (ADR
+    # 20260929-152000 D3), asked through session_last_seen(), which has no any-session form.
+    assert "session_last_seen(sdir, my_sid)" in code, (
         "do_run does not ask about the session that armed the resume")
+    assert "session_alive_minutes(" not in code, (
+        "do_run stands down on 'recently active' again - that cancels every alarm armed near "
+        "a reset (ADR 20260929-152000 D3)")
     assert "usage._user_activity_min()" not in code, (
         "the machine-wide keyboard signal is back in do_run; it reports every session too, "
         "including the headless run a resume spawns")

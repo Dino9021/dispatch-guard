@@ -1179,7 +1179,12 @@ python hooks/usage.py --verdict --json   # 給程式讀的格式
 ⛔ **請依「那個字」行動，不要依百分比。**
 接近重置時，若整窗燃燒速度顯示剩餘額度撐得到重置，PACE/STOP 會**故意**放寬成 GO
 （只放寬、永不收緊），因為在那個時間點撞到上限的代價只是等幾分鐘，不是把做到一半的工作賠掉。
-被放寬的 STOP 會進入 NET 區：自動設好續跑、提示更新 HANDOFF.md、並拒絕新派工。
+被放寬的 STOP 會進入 NET 區（0.66.0 起 5h 天花板是 **92%**，NET 區只剩 90–91%）：拒絕新派工；
+每個 session 第一次收到提示時，gate 就用**它自己寫的** HANDOFF.md 替它上鬧鐘，提示照實寫「你的鬧鐘排在 HH:MM」或
+「⛔ 你沒有鬧鐘，現在寫 HANDOFF.md」——寫下的那一刻就上鬧鐘。提示每個視窗只印一次（鬧鐘狀態改變、剩不到 15 分鐘時各補一次）。
+⚠ 0.66.0 以前那句「A resume is armed」是對每個 session 都這樣講；2026-09-29 被上限切斷的 3 個 session 全都沒有鬧鐘。
+視窗在放寬之後、重置之前撞到上限時，gate 記一行 `WALL-HIT`，重置後每個 session 下一次輸入會被告知一次
+（被上限切斷的回合在畫面上只是安靜地結束，當事的 session 自己不會知道）。
 結論還處理了三件單看數字會判斷錯的事：重置時間的計算、週用量的假警報、以及燒完速度的推估。
 
 ---
@@ -1229,8 +1234,12 @@ python hooks/resume.py --cancel                      # ⚠ 取消這個狀態目
   **下一個 session 啟動時會念出來**，不會再無聲消失。
 
 ⭐ **兩條同時預約是安全的。** hook 會替每個 session 蓋一個心跳戳記，
-排程醒來時若發現**預約它的那個 session** 30 分鐘內還活動過，或 handoff 裡已經有一行 `TAKEN OVER`，就只取消自己這一筆並退場，
-所以工作不會做兩次。⚠ 0.60.0 以前問的是「有沒有**任何** session 活動過」—— 有一個 session 開著就會否決所有鬧鐘，所以改了。
+排程醒來時若發現**預約它的那個 session 在重置之後**還活動過（路線 A 的喚醒也算），或 handoff 裡已經有一行 `TAKEN OVER`，
+就只取消自己這一筆並退場，所以工作不會做兩次。
+⛔ **0.66.0 以前問的是「30 分鐘內活動過」——這讓任何在重置前約 27 分鐘內上的鬧鐘都自己讓路**：被上限切斷的 session 不會觸發
+Stop hook、心跳還是新的、人卻已經停了（2026-09-28 真實排程器上量到 `RUN-SKIPPED … was active 2 min ago`）。重置之前的活動
+證明不了它撐過了重置。⚠ 代價：一個回合剛好橫跨重置時刻的活 session，可能會多跑一次無頭續跑。
+⚠ 0.60.0 以前問的是「有沒有**任何** session 活動過」—— 有一個 session 開著就會否決所有鬧鐘，所以改過一次。
 
 ### ⭐ 提前恢復作業時，鬧鐘會自己被殺掉
 
@@ -2873,9 +2882,16 @@ without parsing.
 ⛔ **Act on the word, never on the percentage.** Near a reset, a PACE/STOP is deliberately
 RELAXED to GO when the whole-window burn rate says the remaining budget survives to the reset (it
 only loosens, never tightens), because hitting the cap there costs a pause of a few minutes rather
-than lost work. A relaxed STOP enters the NET zone: a resume is armed, HANDOFF.md is kept fresh,
-and new dispatch is refused. Three things the verdict handles that a raw reading gets wrong: reset
-arithmetic, weekly false alarms, and burn projection.
+than lost work. A relaxed STOP enters the NET zone (since 0.66.0 the 5h ceiling is **92%**, so the
+net zone is 90-91%): new dispatch is refused; the first time a session is told, the gate arms THAT
+session's resume from its OWN HANDOFF.md, and the note says so truthfully - "your resume is armed for
+HH:MM" or "⛔ you have NO resume - write HANDOFF.md now", which arms the moment it lands. The note is
+printed once per window (again when the resume state changes, and once inside the last 15 minutes).
+⚠ Until 0.66.0 it said "a resume is armed" to every session; on 2026-09-29 the three sessions the cap
+cut had none. When the window hits the cap after a relaxation and before its reset, the gate logs a
+`WALL-HIT` and tells each session once at its next prompt after the reset (a turn the cap cuts just
+ends quietly on screen - the session itself does not know). Three things the verdict handles that a
+raw reading gets wrong: reset arithmetic, weekly false alarms, and burn projection.
 
 ---
 
@@ -2934,9 +2950,14 @@ Two routes exist, and the gate offers both when it refuses a dispatch:
   at the next session start** instead of vanishing.
 
 ⭐ **Arming both is safe.** The gate touches a per-session heartbeat, and the scheduled run stands
-down - cancelling only its own record - if **the session that armed it** was active in the last 30 minutes, or its
-handoff carries a `TAKEN OVER` line, so the work never runs twice. ⚠ Until 0.60.0 it asked whether ANY session was
-active - one open session vetoed every alarm - which is why it changed.
+down - cancelling only its own record - if **the session that armed it was active AFTER the reset**
+(a route-A wake counts), or its handoff carries a `TAKEN OVER` line, so the work never runs twice.
+⛔ **Until 0.66.0 it asked "active in the last 30 minutes" - which made every alarm armed within about
+27 minutes of a reset stand itself down**: a session cut by the cap fires no Stop hook, keeps a fresh
+heartbeat, and is gone (measured on the real scheduler 2026-09-28: `RUN-SKIPPED ... was active 2 min
+ago`). Activity before the reset proves nothing about surviving it. ⚠ The cost: a live session whose
+turn spans the reset may get a headless run as well. ⚠ Until 0.60.0 it asked whether ANY session was
+active - one open session vetoed every alarm - which is why it changed the first time.
 
 ### ⭐ Resuming early kills the alarm by itself
 
