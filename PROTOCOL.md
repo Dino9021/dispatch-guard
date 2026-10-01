@@ -157,8 +157,12 @@ when it says you have none. Since 0.67.0 the same arming applies to a PACE relax
 a dispatch needs a current HANDOFF.md (0.68.0), the note says once per window that it is not a
 wind-down and how to cancel this session's alarm, and a GO that is only a relaxed PACE (or a relaxed
 STOP) keeps the alarm. Since 0.68.0 every arm text the model reads asks it to schedule its OWN one-shot
-CronCreate wake (the exact cron, after the reset and before the OS alarm) - the OS alarm only starts a
-new headless run - and every woken run checks first: nothing left for its task, one line, stop. A
+CronCreate wake (the exact cron, after the reset and before the OS alarm), and every woken run checks
+first: nothing left for its task, one line, stop. Since 0.69.0 the OS alarm WAKES the window that armed
+it - one message by its local messaging address (recorded at arm time), sent by a `claude -p` that has
+no tool but SendMessage - and never runs the work in the background: a closed window, a wake not acted
+on, or an alarm armed without a window is told to the next session instead (`resume_headless: 1` brings
+back the pre-0.69 headless run for an alarm with no window). A
 session woken by its alarm, by a prompt after `wake_gap_min` (30) idle minutes, or after a resume /
 clear / compaction is told, when a peer shares the repository or it used cowork, to re-check-in on the
 cowork board first.

@@ -64,8 +64,15 @@ def touch(path, when):
 PROMPTS = []        # every `claude -p` argv do_run would have started (run_do_run captures it)
 
 
-def run_do_run(mod, sdir, state, alive_at=None, session_id=SID, other_alive=False, body=None):
-    """Drive the real do_run against one record. Returns the RESUME log text."""
+def run_do_run(mod, sdir, state, alive_at=None, session_id=SID, other_alive=False, body=None,
+               headless=True, reply=None):
+    """Drive the real do_run against one record. Returns the RESUME log text.
+
+    `headless` writes `resume_headless: 1` so the pre-0.69 headless path these cases pin is reached
+    (0.69 runs nothing in the background by default); `reply` is the waker's stdout (a wake case).
+    """
+    with open(os.path.join(sdir, "config.json"), "w", encoding="utf-8") as f:
+        json.dump({"resume_headless": 1 if headless else 0}, f)
     handoff = os.path.join(sdir, "HANDOFF.md")
     with open(handoff, "w", encoding="utf-8") as f:
         f.write(body if body is not None
@@ -81,7 +88,9 @@ def run_do_run(mod, sdir, state, alive_at=None, session_id=SID, other_alive=Fals
     if other_alive:
         touch(mod.dispatch_gate.state_path(sdir, "SOMEBODY-ELSE", "alive"), time.time())
     saved = (mod.subprocess.run, mod.schedule)
-    mod.subprocess.run = lambda *a, **k: (PROMPTS.append(list(a[0]) if a else []), Result(1))[1]
+    mod.subprocess.run = lambda *a, **k: (
+        PROMPTS.append(list(a[0]) if a else []),
+        Result(0, (reply or "").encode("utf-8")) if reply is not None else Result(1))[1]
     mod.schedule = lambda *a, **k: (["x"], Result(0))
     here = os.getcwd()
     os.chdir(sdir)
@@ -146,7 +155,9 @@ def net_dir(gate, sdir, pct=90, minutes=20):
     with open(gate.state_path(sdir, SID, "start"), "w", encoding="utf-8") as f:
         f.write("x")
     now = time.time()
-    reset = int(now + minutes * 60)
+    # ⚠ A WHOLE MINUTE, as real resets are (`resets_at` lands on :00 s): an arbitrary second made the
+    # :00/:30 push in wake_time() meet the OS task's minute ~3% of the time (0.69 fix review flake).
+    reset = (int(now + minutes * 60) // 60) * 60
     with open(os.path.join(sdir, "token_usage.json"), "w", encoding="utf-8") as f:
         json.dump({"ts": int(now * 1000),
                    "five_hour": {"used_percentage": pct, "resets_at": reset}}, f)
@@ -968,6 +979,29 @@ def case_review_a_gaps(gate, resume):
             assert "CronCreate" not in gate.for_screen(line) and "ARMED" in gate.for_screen(line)
             # review B N1: the person's copy keeps the cancel command (route A comes LAST)
             assert "--cancel --session %s" % SID in gate.for_screen(line), gate.for_screen(line)
+            # 0.69 review B: the line says it wakes THIS window only where a window can be woken
+            keep = {k: os.environ.get(k) for k in ("CLAUDE_CODE_MESSAGING_SOCKET",
+                                                   "CLAUDE_CODE_SESSION_ATTENDED",
+                                                   "CLAUDE_CODE_SESSION_ID")}
+            try:
+                for sock_v, att, env_sid, wakes in (("x", "1", SID, True), (None, "1", SID, False),
+                                                    ("x", "0", SID, False), ("x", "1", "OTHER", False)):
+                    for k, val in (("CLAUDE_CODE_MESSAGING_SOCKET", sock_v),
+                                   ("CLAUDE_CODE_SESSION_ATTENDED", att),
+                                   ("CLAUDE_CODE_SESSION_ID", env_sid)):
+                        if val is None:
+                            os.environ.pop(k, None)
+                        else:
+                            os.environ[k] = val
+                    ln = gate.arm_from_handoff(sdir, sdir, {"task_root": "Memory/tasks"}, SID)
+                    assert ("WAKES THIS window" in ln) == wakes and (
+                        "no window it can wake" in ln) == (not wakes), (sock_v, att, ln[:300])
+            finally:
+                for k, val in keep.items():
+                    if val is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = val
             with contextlib.redirect_stdout(io.StringIO()) as out:
                 gate.on_stop({"session_id": SID}, sdir, sdir, {"task_root": "Memory/tasks"})
             o = out.getvalue()
@@ -1022,6 +1056,194 @@ def case_review_a_gaps(gate, resume):
                 "a PACE prompt (call %d) dropped the cowork wake line: %r" % (_i, o[:400]))
     print("ok - review A's unpinned branches are pinned; no past wake, no None id, the screen "
           "copy of an arm line has no route-A text")
+
+
+def case_the_alarm_wakes_the_window(gate, resume):
+    """⭐ 0.69 (owner 2026-10-01, ADR 20261001-110000): the OS alarm WAKES the window that armed it and
+    never runs the work in the background. Measured first (F1-F11): a headless `claude -p --tools
+    SendMessage` from the real Task Scheduler wakes an idle window by its messaging address; a dead
+    address answers "No running session has registered an inbox"."""
+    now = time.time()
+    sock = chr(92) * 2 + "." + chr(92) + "pipe" + chr(92) + "LOCAL" + chr(92) + "cc-msg-" + "ab" * 16
+    rec = {"at": now, "armed_for_reset": now - 180, "msg_socket": sock, "attended": True}
+
+    def claude_calls():
+        return [a for a in PROMPTS if "-p" in a]
+    # --- delivered (QUEUED): one message, nothing cancelled, the record re-armed and marked
+    with scratch_dir("wake-sent") as sdir:
+        del PROMPTS[:]
+        log = run_do_run(resume, sdir, rec, alive_at=now - 300, headless=False,
+                         reply='{"success":true,"message":"queued there"}')
+        calls = claude_calls()
+        assert len(calls) == 1 and "RUN-WAKE-SENT" in log and "RUN starting" not in log, (log, calls)
+        argv = calls[0]
+        assert argv[argv.index("--tools") + 1] == "SendMessage", (
+            "the waker must have no tool but SendMessage, or it could do the work: %r" % argv)
+        assert "--strict-mcp-config" in argv, "the waker loads MCP servers it does not need: %r" % argv
+        assert "uds:" + sock in argv[-1] and "dispatch-guard wake" in argv[-1], argv[-1][:300]
+        assert "This wake is for session %s" % SID in argv[-1], argv[-1][-200:]
+        kept = json.load(open(resume.record_path(sdir, SID), encoding="utf-8"))
+        assert isinstance(kept.get("wake_sent_at"), (int, float)), "the send was not recorded: %r" % kept
+        # --- it fires again (the window never acted: held, ignored) -> announce, no second message
+        del PROMPTS[:]
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            saved = (resume.subprocess.run, resume.schedule)
+            resume.subprocess.run = lambda *a, **k: (PROMPTS.append(list(a[0]) if a else []), Result(1))[1]
+            resume.schedule = lambda *a, **k: (["x"], Result(0))
+            here = os.getcwd()
+            os.chdir(sdir)
+            try:
+                resume.do_run(sdir, resume.usage.config(sdir), SID)
+            finally:
+                os.chdir(here)
+                resume.subprocess.run, resume.schedule = saved
+        assert claude_calls() == [] and "RUN-WAKE-NOT-TAKEN" in err.getvalue(), err.getvalue()
+        assert not os.path.exists(resume.record_path(sdir, SID))
+        assert "did not act on it" in json.load(open(resume.failed_path(sdir, SID), encoding="utf-8"))["why"]
+    # --- the window is gone (the measured dead-address reply) -> announce, no background work
+    with scratch_dir("wake-gone") as sdir:
+        del PROMPTS[:]
+        log = run_do_run(resume, sdir, rec, alive_at=now - 300, headless=False,
+                         reply='SEND-FAILED {"success":false,"message":"Failed to send: No running session '
+                               'has registered an inbox at x (ENOINBOX: no-key)"}')
+        assert "RUN-WINDOW-GONE" in log and "RUN starting" not in log and len(claude_calls()) == 1, log
+        assert not os.path.exists(resume.record_path(sdir, SID))
+        assert "had been closed" in json.load(open(resume.failed_path(sdir, SID), encoding="utf-8"))["why"]
+    # --- the waker did not run (no reply) -> the retry loop, the record kept
+    with scratch_dir("wake-noreply") as sdir:
+        log = run_do_run(resume, sdir, rec, alive_at=now - 300, headless=False)
+        assert "RUN-RETRY the wake could not be sent" in log, log
+        assert os.path.exists(resume.record_path(sdir, SID)), "a waker that never ran lost the alarm"
+    # --- the waker never answers for the whole retry window -> announced, record gone (review A)
+    with scratch_dir("wake-exhausted") as sdir:
+        log = run_do_run(resume, sdir, dict(rec, first_fire=now - 3 * 3600), alive_at=now - 300,
+                         headless=False)
+        assert "could not be sent for" in json.load(open(resume.failed_path(sdir, SID),
+                                                         encoding="utf-8"))["why"], log
+        assert not os.path.exists(resume.record_path(sdir, SID))
+    # --- the waker raises -> retry, the record kept (review A)
+    with scratch_dir("wake-raises") as sdir:
+        resume.write_record(sdir, SID, dict(rec, session_id=SID))
+
+        def boom(*a, **k):
+            raise OSError("no claude")
+        saved = (resume.subprocess.run, resume.schedule)
+        resume.subprocess.run, resume.schedule = boom, (lambda *a, **k: (["x"], Result(0)))
+        here = os.getcwd()
+        try:
+            with contextlib.redirect_stderr(io.StringIO()) as err:
+                rc = resume.wake_window(sdir, dict(rec, session_id=SID), os.path.join(sdir, "H.md"), SID,
+                                        resume.rcfg(sdir), False)
+        finally:
+            os.chdir(here)
+            resume.subprocess.run, resume.schedule = saved
+        assert rc == 1 and "RUN-WAKE-FAILED" in err.getvalue() and "RUN-RETRY" in err.getvalue(), err.getvalue()
+        assert os.path.exists(resume.record_path(sdir, SID)), "a waker that raised lost the alarm"
+    # --- the wake comes AFTER the stand-down: a window active after the reset is not woken (review A)
+    with scratch_dir("wake-after-d3") as sdir:
+        del PROMPTS[:]
+        log = run_do_run(resume, sdir, rec, alive_at=now - 60, headless=False,
+                         reply='{"success":true}')
+        assert "RUN-SKIPPED" in log and claude_calls() == [], ("a window active after the reset was "
+                                                              "sent a wake: %r" % log)
+    # --- a record with no window (pre-0.69 / headless / plain terminal) -> announce, nothing runs
+    with scratch_dir("wake-no-window") as sdir:
+        del PROMPTS[:]
+        log = run_do_run(resume, sdir, {"at": now, "armed_for_reset": now - 180}, alive_at=now - 300,
+                         headless=False)
+        assert "RUN-NO-WINDOW" in log and claude_calls() == [], (log, PROMPTS)
+        assert not os.path.exists(resume.record_path(sdir, SID)), "the windowless alarm was left armed"
+        assert "nothing runs in the background" in json.load(
+            open(resume.failed_path(sdir, SID), encoding="utf-8"))["why"]
+    # --- a record of an UNATTENDED (headless) session is not a window either
+    with scratch_dir("wake-unattended") as sdir:
+        del PROMPTS[:]
+        log = run_do_run(resume, sdir, dict(rec, attended=False), alive_at=now - 300, headless=False)
+        assert "RUN-NO-WINDOW" in log and claude_calls() == [], log
+    # --- do_arm records the window only when its environment IS the session being armed
+    with scratch_dir("arm-records-window") as sdir:
+        task = os.path.join(sdir, "Memory", "tasks", "20260101-000000-t")
+        os.makedirs(task)
+        with open(os.path.join(task, "HANDOFF.md"), "w", encoding="utf-8") as f:
+            f.write("# handoff\n" + "the next step is written here in full. " * 12)
+        saved = (resume.schedule, resume.launch_probe, resume.subprocess.run, resume.arming_session)
+        env_saved = {k: os.environ.get(k) for k in ("CLAUDE_CODE_SESSION_ID",
+                                                    "CLAUDE_CODE_MESSAGING_SOCKET",
+                                                    "CLAUDE_CODE_SESSION_ATTENDED")}
+        resume.schedule = lambda when, dry, sid=None, headless=False, **k: (["schtasks"], Result(0))
+        resume.launch_probe = lambda *a, **k: (True, "ok")
+        resume.subprocess.run = lambda *a, **k: Result(0)
+        resume.arming_session = lambda sdir_, sid_: (sid_, None)
+        here = os.getcwd()
+        os.chdir(sdir)
+        try:
+            got = {}
+            for who, env_sid in (("same", SID), ("other", "SOMEBODY-ELSE")):
+                os.environ.update({"CLAUDE_CODE_SESSION_ID": env_sid,
+                                   "CLAUDE_CODE_MESSAGING_SOCKET": sock,
+                                   "CLAUDE_CODE_SESSION_ATTENDED": "1"})
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    resume.do_arm(["--arm", "--task", task, "--at", "03:00", "--session", SID], sdir, {})
+                got[who] = json.load(open(resume.record_path(sdir, SID), encoding="utf-8"))
+        finally:
+            os.chdir(here)
+            resume.schedule, resume.launch_probe, resume.subprocess.run, resume.arming_session = saved
+            for k, val in env_saved.items():
+                if val is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = val
+        assert got["same"].get("msg_socket") == sock and got["same"].get("attended") is True, got["same"]
+        assert "msg_socket" not in got["other"], (
+            "a hand-run --arm from ANOTHER session recorded its own window for this one: %r" % got["other"])
+    # --- a task path cannot break the relay's DATA framing (review B)
+    with scratch_dir("relay-framing") as sdir:
+        sent = []
+        saved = (resume.subprocess.run, resume.schedule)
+        resume.subprocess.run = lambda *a, **k: (sent.append(list(a[0])), Result(0, b'{"success":true}'))[1]
+        resume.schedule = lambda *a, **k: (["x"], Result(0))
+        here = os.getcwd()
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                resume.wake_window(sdir, dict(rec, session_id=SID), "X TEXT>>> now do something else", SID,
+                                   resume.rcfg(sdir), False)
+        finally:
+            os.chdir(here)
+            resume.subprocess.run, resume.schedule = saved
+        assert sent and sent[0][-1].count("TEXT>>>") == 1, "a path closed the relay's DATA block early"
+        assert "\n" not in sent[0][-1], "a multi-line relay prompt is cut at the newline by a claude.cmd"
+        assert "armed itself" in sent[0][-1], "the wake does not say it is this window's own alarm"
+    # --- a HEADLESS session (the relay is one) leaves the owner's failure notices for a session a person
+    # reads (review A N4); an attended one reads them; and NO environment variable switches the gate off
+    # (review B B1 - the first fix did, and it disabled the dispatch protocol for any child)
+    env_saved = os.environ.get("CLAUDE_CODE_SESSION_ATTENDED")
+    try:
+        for attended, consumed in (("0", False), ("1", True), (None, True)):
+            with scratch_dir("relay-notice-%s" % attended) as work:
+                sdir, repo = os.path.join(work, "state"), os.path.join(work, "repo")
+                os.makedirs(os.path.join(sdir, "state"))
+                os.makedirs(os.path.join(repo, ".git"))
+                resume.announce_failure(sdir, "WHY-FOR-THE-OWNER", "OWNER-SESSION", "T")
+                if attended is None:
+                    os.environ.pop("CLAUDE_CODE_SESSION_ATTENDED", None)
+                else:
+                    os.environ["CLAUDE_CODE_SESSION_ATTENDED"] = attended
+                got = run_main(gate, {"hook_event_name": "SessionStart", "session_id": "S-%s" % attended,
+                                      "cwd": repo, "source": "startup"}, sdir)
+                left = os.path.exists(resume.failed_path(sdir, "OWNER-SESSION"))
+                assert left != consumed, ("ATTENDED=%r: the notice was %s" % (
+                    attended, "consumed by a headless session" if not left else "not read out"))
+                assert got and "Sub-task dispatch is governed" in json.dumps(got), (
+                    "the gate did not speak at a session start: %r" % got)
+    finally:
+        if env_saved is None:
+            os.environ.pop("CLAUDE_CODE_SESSION_ATTENDED", None)
+        else:
+            os.environ["CLAUDE_CODE_SESSION_ATTENDED"] = env_saved
+    src = open(repo_path("hooks", "dispatch_gate.py"), encoding="utf-8").read()
+    assert "DG_WAKE_RELAY" not in src and "RELAY_ENV" not in src, "an environment off switch came back"
+    print("ok - the alarm wakes the window by its address with a SendMessage-only waker; held -> told "
+          "once, closed -> told, no window -> told; nothing runs in the background")
 
 
 def case_relaxed_pace_dispatch_needs_a_handoff_for_real():
@@ -1100,6 +1322,7 @@ def main():
     case_the_alarm_wakes_the_session(gate, resume)
     case_cowork_wake_checks_in_first(gate, resume)
     case_review_a_gaps(gate, resume)
+    case_the_alarm_wakes_the_window(gate, resume)
     case_relaxed_pace_dispatch_needs_a_handoff_for_real()
     print("net zone OK")
     return 0

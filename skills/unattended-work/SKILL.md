@@ -156,6 +156,13 @@ Do everything that does not need the owner FIRST; owner-blocked items go to the 
 queue. **Unless the owner must physically operate something, do not ask — keep going.**
 This removes the habit of checking in; it removes no approval gate the project defines.
 When only owner-blocked items remain, stop cleanly — do not invent adjacent work.
+⛔ **AN OWNER MESSAGE DURING A RUN IS ADDED TO THE WORK, NOT A NEW TASK THAT REPLACES IT.** Answer it
+(do it, if it asks for something), then carry on with the queue you were working through. The
+message itself stops the run only when the owner says so — stop, pause, wait, "that's enough", 停,
+暫停, 先等一下 — or it plainly replaces the task; every other stop rule (usage STOP, only
+owner-blocked items left) still applies. Observed by the owner 2026-10-01: with no rule, a session
+answered a mid-run question and ended its turn, dropping the rest of the queue — sometimes,
+depending on how the message read.
 ⛔ **An item blocked on a PEER session is not owner-blocked.** Stopping cleanly on it leaves you
 asleep while the peer finishes — nothing wakes you. Arm a wake-up before ending the turn:
 `cowork` → `reference/cross-machine.md` 1.8 (it applies on one machine too).

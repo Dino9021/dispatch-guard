@@ -47,7 +47,7 @@ skill 是模型看了描述之後**自己決定**要不要用；文件是模型*
 | ⭐ **自動把規範加在每個子任務提示詞前面** | 每一層都加，派遣的人什麼都不用做 |
 | ⭐ **每次派遣的結果自動寫進 `progress.md`** | 之後的 session 才分得出「真的做完」跟「看起來做完」 |
 | ⭐ **附帶 `unattended-work` skill** | 沒人看著時怎麼工作。開場提醒可以關掉 |
-| ⭐ **可預約用量重置後的一次性續跑** | 關掉終端機、關掉編輯器、session 死掉都還在。⚠ 但**登出不算** — 見下方 |
+| ⭐ **可預約用量重置後的一次性續跑** | 0.69 起是叫醒上鬧鐘的那個視窗；視窗已關就只在下次開 session 時告訴你，不在背景跑。⚠ 但**登出不算** — 見下方 |
 
 ⭐ **第二組：擋「安靜失敗」的指令** —— 做錯跟做對在螢幕上長得一模一樣的那種。
 每一條都有自己的開關，預設全開。
@@ -1188,11 +1188,14 @@ python hooks/usage.py --verdict --json   # 給程式讀的格式
 並附上取消這個 session 鬧鐘的指令（`resume.py --cancel --session <id>`）——撐過重置、重置後觸發過 hook 的 session，鬧鐘會自己讓路；
 重置前就做完離開的，用那一行取消。
 ⭐ 0.68.0 起：放寬 PACE 時派工也要先有當前的 HANDOFF.md；使用者輸入時也會上鬧鐘；撞牆告知也涵蓋這一段。
-**鬧鐘叫醒的是 session 自己**：OS 排程只能另開一個無頭 session，所以每一則給模型看的上鬧鐘提示都請 session 自己排一個一次性的
+**鬧鐘叫醒的是 session 自己**：（0.68 時）OS 排程只能另開一個無頭 session，所以每一則給模型看的上鬧鐘提示都請 session 自己排一個一次性的
 CronCreate 喚醒（給確切的 cron，在重置之後、OS 排程之前）；它一醒，gate 就取消這個 session 的 OS 排程。
-**醒來先檢查**：不論是自己醒還是無頭續跑，都先重讀 HANDOFF、比對這個任務還有什麼沒做；真的沒有，寫一行就停，不去找別的事做。
+**醒來先檢查**：不論是自己醒還是被鬧鐘叫醒，都先重讀 HANDOFF、比對這個任務還有什麼沒做；真的沒有，寫一行就停，不去找別的事做。
 **醒來先報到**：同一個 repo 還有別的 session 活著（或這個 session 用過 cowork）時，被鬧鐘叫醒、閒置超過 `wake_gap_min`（30）
 分鐘後的輸入、resume／`/clear`／內容壓縮之後，gate 都會提醒它先重讀協力板、用這個 session id 重寫自己的報到檔。
+⭐ 0.69.0 起，**OS 鬧鐘叫醒的是原本的視窗，不在背景做事**：鬧鐘響時，送一則喚醒訊息進上鬧鐘的那個視窗（用上鬧鐘時記下的本機傳訊
+地址，送訊的 `claude -p` 只能用 SendMessage），它在原本的對話裡醒來接著做。視窗已關、訊息沒被處理、或鬧鐘沒有視窗可叫時，只在下次
+開 session 時告訴你，不在背景跑（`resume_headless: 1` 可找回舊行為）。
 視窗在放寬之後、重置之前撞到上限時，gate 記一行 `WALL-HIT`，重置後，那個視窗裡在 NET 區工作過的每個 session，下一次輸入時會被告知一次
 （被上限切斷的回合在畫面上只是安靜地結束，當事的 session 自己不會知道）。
 結論還處理了三件單看數字會判斷錯的事：重置時間的計算、週用量的假警報、以及燒完速度的推估。
@@ -1223,7 +1226,7 @@ python hooks/resume.py --cancel                      # ⚠ 取消這個狀態目
   ⚠ **而它不是比較省的那條**，這是最容易誤讀的地方。留住 session 留不住 token：
   需要 resume 的等待一定比 prompt cache 活得久，所以醒來後的第一個請求會把整段對話
   重送一次、全額計費（實測 `cache_read` 是 **0**）。它買到的是**正確性**，不是比較少的帳單。
-- **作業系統的一次性排程**（`schtasks` / `at`） — 這是 session **沒活下來**時唯一有效的路，
+- **作業系統的一次性排程**（`schtasks` / `at`） — 備援：0.69 起它叫醒上鬧鐘的那個視窗；視窗沒活下來時只告訴下一個 session、不在背景跑，
   ⚠ **而讓 session 死掉的，常常正是你在等的那個上限。**
   不需要系統管理員權限：在非提權帳號實測過，`schtasks` 建立、列出、刪除都沒跳任何提示。
   ⛔ **但它撐不過登出。** 2026-08-26 實測：`schtasks /Create` 沒帶 `/RU` / `/IT` 建出來的工作，
@@ -1248,7 +1251,7 @@ python hooks/resume.py --cancel                      # ⚠ 取消這個狀態目
 就只取消自己這一筆並退場，所以工作不會做兩次。
 ⛔ **0.66.0 以前問的是「30 分鐘內活動過」——這讓任何在重置前約 27 分鐘內上的鬧鐘都自己讓路**：被上限切斷的 session 不會觸發
 Stop hook、心跳還是新的、人卻已經停了（2026-09-28 真實排程器上量到 `RUN-SKIPPED … was active 2 min ago`）。重置之前的活動
-證明不了它撐過了重置。⚠ 代價：一個回合剛好橫跨重置時刻的活 session，可能會多跑一次無頭續跑。
+證明不了它撐過了重置。⚠ 代價：一個回合剛好橫跨重置時刻的活 session，可能會多收到一則喚醒訊息（0.69 起；之前是多跑一次無頭續跑）。
 ⚠ 0.60.0 以前問的是「有沒有**任何** session 活動過」—— 有一個 session 開著就會否決所有鬧鐘，所以改過一次。
 
 ### ⭐ 提前恢復作業時，鬧鐘會自己被殺掉
@@ -1714,7 +1717,7 @@ its task. **A refused tool call is not.**
 | ⭐ **prepends the protocol to every sub-task prompt** | at every depth, without the dispatcher doing anything |
 | ⭐ **appends every dispatch's outcome to `progress.md`** | so a later session can tell finished work from work that only looks finished |
 | ⭐ **ships the `unattended-work` skill** | how to work with nobody watching. Its reminder can be switched off |
-| ⭐ **arms a one-shot resume** for after the window reopens | survives closing the terminal, the editor and the session. ⚠ NOT a logoff — see below |
+| ⭐ **arms a one-shot resume** for after the window reopens | since 0.69 it WAKES the window that armed it; if that window was closed, the next session is told and nothing runs in the background. ⚠ NOT a logoff — see below |
 
 ⭐ **A second family: commands that fail SILENTLY** — where the wrong outcome and the right
 one are byte-identical on screen. Each has its own switch; all default to on.
@@ -2912,7 +2915,12 @@ new headless session, so every arm line the model reads asks the session to sche
 for that task, and if nothing is left says so in one line and stops - no looking for other work.
 **A woken session checks in first**: with a live peer in the repository (or cowork used), a wake by
 alarm, a prompt after `wake_gap_min` (30) idle minutes, or a resume / `/clear` / compaction gets a line
-asking it to re-read the board and rewrite its own check-in with this session id. When the window hits the cap after a relaxation and before its reset, the gate logs a
+asking it to re-read the board and rewrite its own check-in with this session id. ⭐ Since 0.69.0 **the
+OS alarm wakes the original window and does no work in the background**: it sends one wake message to the
+window that armed it (by the local messaging address recorded at arm time, from a `claude -p` that has no
+tool but SendMessage), which carries on in its own conversation. A closed window, a wake not acted on, or
+an alarm with no window is only told to the next session (`resume_headless: 1` restores the old run).
+When the window hits the cap after a relaxation and before its reset, the gate logs a
 `WALL-HIT` and tells each session that worked in the net zone of that window once, at its next prompt after the reset (a turn the cap cuts just
 ends quietly on screen - the session itself does not know). Three things the verdict handles that a
 raw reading gets wrong: reset arithmetic, weekly false alarms, and burn projection.
@@ -2948,8 +2956,9 @@ Two routes exist, and the gate offers both when it refuses a dispatch:
   session does not keep the tokens: a wait long enough to need a resume outlives the prompt
   cache, so the first request after the wake re-sends the whole conversation at full price
   (measured `cache_read` of **zero**). It buys **correctness**, not a smaller bill.
-- **A one-shot OS scheduled task** (`schtasks` / `at`) — the only one that works when the session
-  does not survive, and ⚠ **the thing that ends a session is often the very limit you are waiting
+- **A one-shot OS scheduled task** (`schtasks` / `at`) — the backup: since 0.69 it WAKES the window
+  that armed it; when that window did not survive, it tells the next session instead of running
+  anything in the background, and ⚠ **the thing that ends a session is often the very limit you are waiting
   on.** ⛔ **But it does not survive a logoff.** Measured 2026-08-26: a task created by
   `schtasks /Create` without `/RU` or `/IT` has Logon Mode **`Interactive only`**, so it runs
   only while the user is logged on interactively. Closing the terminal and the editor is fine;
@@ -2980,7 +2989,7 @@ down - cancelling only its own record - if **the session that armed it was activ
 27 minutes of a reset stand itself down**: a session cut by the cap fires no Stop hook, keeps a fresh
 heartbeat, and is gone (measured on the real scheduler 2026-09-28: `RUN-SKIPPED ... was active 2 min
 ago`). Activity before the reset proves nothing about surviving it. ⚠ The cost: a live session whose
-turn spans the reset may get a headless run as well. ⚠ Until 0.60.0 it asked whether ANY session was
+turn spans the reset may get a wake message as well (0.69; before, a headless run). ⚠ Until 0.60.0 it asked whether ANY session was
 active - one open session vetoed every alarm - which is why it changed the first time.
 
 ### ⭐ Resuming early kills the alarm by itself

@@ -33,6 +33,27 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.69.0
+
+擁有者 2026-10-01：「我希望鬧鐘乙去叫醒沒有以無人職守模式工作的情況下因為用量窗口而停下來的 session 繼續任務」、「我不希望 session
+跑到背景去做」。ADR：`Memory/tasks/20261001-110000-wake-stopped-sessions/ADR.md`。
+
+- **OS 鬧鐘改成叫醒原本的視窗，不在背景做事。** 上鬧鐘時，記下這個 session 的本機傳訊地址（`CLAUDE_CODE_MESSAGING_SOCKET`，只在
+  環境就是被上鬧鐘的那個 session 時才記）。鬧鐘響時，開一個**只能用 SendMessage** 的 `claude -p`，把「先檢查、沒事就停」的喚醒訊息
+  送進那個視窗——它在原本的對話裡醒來接著做，它的輸入 hook 會把鬧鐘取消。先實測過：從真正的工作排程器（沒有任何 session 環境變數）
+  送出、用地址送、閒置的視窗會醒；地址失效時回「No running session has registered an inbox」。
+- **送出只代表排進佇列，不代表對方動了。** 所以送出後不取消，只記下時間、20 分鐘後再響一次；那時對方還沒動（例如權限模式不同、
+  訊息在等你同意），就不再送第二次，改成下次開 session 時告訴你。視窗已關、或這個鬧鐘根本沒有視窗可叫（舊版、背景、純終端機上的），
+  也都只告訴你、不在背景跑。要找回 0.68 以前「沒視窗就背景跑」的行為：`resume_headless: 1`。
+- **無人職守時被插話：** `unattended-work` 加一條——工作途中擁有者插話，是「加進工作」，不是「換掉工作」：回應完就繼續原本的
+  佇列，除非擁有者說停、暫停、等一下，或那句話明顯取代了任務。
+- 代價：叫醒原 session 要把它整段對話重新送一次（等過一次重置，暫存早已失效），比背景讀 HANDOFF 貴；擁有者選擇了原視窗。
+- **背景 session 不會讀走給你的通知。** 負責傳訊的是背景 session，它開始時本來會把還沒念給你聽的失敗通知讀走；現在只有「有人在用」的
+  session（`CLAUDE_CODE_SESSION_ATTENDED` 不是 0）才念。程式審查 B 抓到第一版用一個環境變數讓 gate 整個停擺——任何 session 都能拿來
+  關掉 gate——已改掉，沒有任何開關。
+- 測試：`test_net_zone` 新增一個案例（送出、沒動、視窗關閉、沒回應、沒有視窗、背景 session、上鬧鐘只記自己的地址、傳訊框架、背景 session
+  不讀通知）；20 個突變全數抓到；`test_all` 18/18；ADR 一輪、程式審查兩輪、修正再審一輪；實測 7 項（含真正的工作排程器環境）。
+
 ## 0.68.0
 
 擁有者 2026-10-01 的四點：「鬧鐘不是就該叫醒 session，然後 session 醒來後將叫醒該 session 的鬧鐘全部關掉?」、「被鬧鐘叫醒後應該去讀
@@ -2993,6 +3014,36 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.69.0
+
+The owner, 2026-10-01: "I want alarm B to wake the session that stopped because of the usage window - when it was not
+working unattended - so it carries on with its task", and "I do not want sessions running in the background". ADR:
+`Memory/tasks/20261001-110000-wake-stopped-sessions/ADR.md`.
+
+- **The OS alarm wakes the window that armed it and does not work in the background.** Arming records the session's
+  local messaging address (`CLAUDE_CODE_MESSAGING_SOCKET`, only when the environment IS the session being armed). When
+  the alarm fires, a `claude -p` that has **no tool but SendMessage** sends that window the check-first wake message -
+  it wakes in its own conversation and its prompt hook cancels the alarm. Measured first: from the real Task Scheduler
+  (no session variables at all), by address, an idle window wakes; a dead address answers "No running session has
+  registered an inbox".
+- **Sent means queued, not acted on.** So nothing is cancelled on the send: the time is recorded and the alarm fires again
+  20 minutes later; if the window still has not acted (another permission mode holds the message for your approval),
+  no second message - the next session is told. A closed window, or an alarm with no window at all (armed by an older
+  version, a headless run or a plain terminal), is also only told, never run in the background. `resume_headless: 1`
+  brings back the pre-0.69 headless run for an alarm with no window.
+- **Interrupted while unattended:** `unattended-work` gains one rule - an owner message during a run is ADDED to the
+  work, not a new task that replaces it: answer it, then carry on with the queue, unless the owner says stop, pause, wait,
+  or the message plainly replaces the task.
+- Cost: waking the original session re-reads its whole conversation (after a reset wait the cache is gone) - more than a
+  headless run reading only the HANDOFF; the owner chose the window.
+- **A headless session does not consume your notices.** The relay is headless, and its start used to read out - and so
+  delete - the failure notices meant for you; now only an attended session (`CLAUDE_CODE_SESSION_ATTENDED` not 0) reads
+  them. Code review B caught a first version that switched the whole gate off by an environment variable (any session
+  could set it for a child); replaced, there is no switch.
+- Tests: one new `test_net_zone` case (sent, not acted on, closed window, no reply, no window, a headless session, the arm
+  records only its own address, the relay's data framing, a headless session leaves the notices); 20 mutations, all
+  killed; `test_all` 18/18; one ADR round, two code reviews and a fix review; 7 probes, one from the real Task Scheduler.
 
 ## 0.68.0
 

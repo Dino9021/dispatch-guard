@@ -191,7 +191,11 @@
 
     "_retry_every_min": "How long to wait between attempts inside that window. Each attempt re-checks whether the window really has reset before running anything.",
     "_retry_every_min_zh": "在那個時間窗裡，每次嘗試之間等多久。每一次嘗試都會重新檢查那個時間窗是不是真的重置了，才會去跑任何東西。",
-    "retry_every_min": 20
+    "retry_every_min": 20,
+
+    "_resume_headless": "0 (default) = an alarm NEVER runs the work in a headless background session (owner, 2026-10-01): it wakes the window that armed it with one message (0.69.0), and an alarm with no window to wake - armed before 0.69, from a headless run or from a plain terminal - only tells the next session. 1 = the pre-0.69 behaviour for an alarm with no window: a fresh headless `claude -p` continues from the HANDOFF.md.",
+    "_resume_headless_zh": "0（預設）＝鬧鐘「絕不」在背景開無頭 session 做事（擁有者 2026-10-01）：它送一則訊息叫醒上鬧鐘的那個視窗（0.69.0）；沒有視窗可叫的鬧鐘（0.69 以前上的、背景 session 上的、純終端機上的）只在下次開 session 時告訴你。1＝沒有視窗時恢復 0.69 以前的做法：開一個新的無頭 `claude -p` 從 HANDOFF.md 接著做。",
+    "resume_headless": 0
   },
 
 

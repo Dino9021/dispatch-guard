@@ -2692,12 +2692,18 @@ def arm_from_handoff(root, sdir, cfg, session_id, v=None):
     # (ADR 20261001-085000 D1/D3) instead of "a one-shot CronCreate wake for then".
     hpath = os.path.join(scan_root, cfg["task_root"].replace("/", os.sep), folder, HANDOFF)
     return (" ⭐ dispatch-guard: a resume was ARMED for `%s` (the HANDOFF.md written this "
-            "session) because the usage window is closing (%s); it wakes a few minutes after "
-            "%s and continues from that handoff in a NEW headless session. It is the BACKUP "
-            "route. If the OS scheduler cannot start it, the next session is told. Cancel it "
+            "session) because the usage window is closing (%s); a few minutes after %s %s"
+            " - nothing runs in the background (0.69). "
+            "If the window is closed or the wake cannot be sent, the next session is told. Cancel it "
             "with `%s --cancel --session %s` if you do not want that (that cancels this "
             "session's alarm only).%s"
             % (folder, relax_band_label(v), v.get("resets_clock", "the reset"),
+               ("it WAKES THIS window to continue from that handoff"
+                if os.environ.get("CLAUDE_CODE_MESSAGING_SOCKET") and
+                os.environ.get("CLAUDE_CODE_SESSION_ATTENDED") == "1" and
+                os.environ.get("CLAUDE_CODE_SESSION_ID") == str(session_id)
+                else "it fires, but this session has no window it can wake (no local messaging, or "
+                     "not interactive), so it will only tell the next session"),
                runnable("resume.py"), session_id,
                # ⚠ LAST: for_screen() cuts here, and the cancel command is the person's (review B N1)
                route_a_line(sdir, v, {"handoff": hpath})))
@@ -3110,6 +3116,19 @@ def release_slot(sdir, cfg, session_id, tool_use_id):
 
 # ---------------------------------------------------------------------------- events
 
+def attended():
+    """Is a person at this session? False only when Claude Code says so (`CLAUDE_CODE_SESSION_ATTENDED=0`:
+    a headless `claude -p`, measured 2026-10-01). Unset (an older build) counts as attended.
+
+    ⛔ WHY IT EXISTS (0.69, review A N4 / review B B1): the wake relay is a headless `claude -p`, and its
+    SessionStart would READ AND CONSUME the owner's failure notices into a session nobody sees. A first
+    fix switched the gate off by an environment variable - which any session could set for a child
+    (review B measured it disabling the dispatch protocol). This one disables nothing: a headless
+    session simply leaves the notices for a session a person will read.
+    """
+    return os.environ.get("CLAUDE_CODE_SESSION_ATTENDED") != "0"
+
+
 def failed_resume_note(sdir, session_id=None):
     """If a scheduled resume gave up while nobody was watching, say so - once.
 
@@ -3450,7 +3469,7 @@ def on_session_start(payload, root, sdir, cfg):
              maybe_adopt_statusline(cfg, sdir),
              # ⭐ resumed / cleared / compacted: re-check-in on the cowork board (0.68, D8)
              cowork_wake_note(payload, root, sdir, cfg)]
-    notes = [failed_resume_note(sdir),
+    notes = [failed_resume_note(sdir) if attended() else "",
              stand_down_resume(root, sdir, v, payload.get("session_id"))]
     notes += [c or "" for c, _s in pairs]
 
@@ -3531,7 +3550,7 @@ def on_user_prompt(payload, root, sdir, cfg):
     # ⛔ THIS SESSION'S OWN FAILED ARM FIRST: the auto-arm told it "ARMED" before the detached arm
     # found the scheduler could not start it (resume.py launch_probe) - see failed_resume_note().
     try:
-        mine = failed_resume_note(sdir, sid)
+        mine = failed_resume_note(sdir, sid) if attended() else ""
     except Exception as exc:              # a notice must never take the brake down with it
         log(root, "FAILED-NOTE-ERROR %r" % (exc,))
         mine = ""
@@ -3729,10 +3748,12 @@ def on_pre_agent(payload, root, sdir, cfg, wind=None):
             deny(event, "dispatch gate: %s Dispatching a sub-task is the most expensive "
                         "thing you can do right now, so it is refused until the window "
                         "resets. Finish and save the current step, then pick a resume:%s"
-                        " ⭐ (B) IF THE SESSION MIGHT NOT SURVIVE, or you are unsure: write "
+                        " ⭐ (B) ALWAYS, as the backup: write "
                         "%s/<task>/HANDOFF.md so it stands completely alone, then run "
-                        "`%s --arm --task <task>` - that registers a one-shot OS task and "
-                        "survives closing everything. Then end the turn."
+                        "`%s --arm --task <task>` - that registers a one-shot OS task that "
+                        "wakes this window after the reset when it can (0.69; a closed window "
+                        "or one it cannot reach is told to the next session - nothing runs in "
+                        "the background). Then end the turn."
                  % (v["text"], _wake_hint(v, sdir), cfg["task_root"],
                     runnable("resume.py")),
                  # ⭐ ON THE SCREEN TOO. This is the strongest thing the plugin ever does -

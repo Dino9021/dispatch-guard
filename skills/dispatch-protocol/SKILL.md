@@ -159,11 +159,12 @@ file FIRST (owner, 2026-10-01; 0.67.0). An alarm that rings after you survived t
 down if this session fired a hook after the reset; one you no longer want is cancelled with
 `resume.py --cancel --session <your id>`.
 
-⭐ **The alarm should wake THIS session (0.68.0).** The OS alarm can only start a NEW headless run; what
-wakes you is the one-shot CronCreate wake the gate's arm line asks you to schedule - with the exact cron,
-after the reset and before the OS alarm. When it fires, the gate cancels your OS alarm. A woken run -
-yours or the headless one - re-reads its HANDOFF.md, checks what is still unfinished for THAT task, and
-if nothing is left says so in one line and stops: no looking for other work.
+⭐ **The alarm wakes THIS session (0.68.0 / 0.69.0).** Since 0.69.0 the OS alarm itself wakes your window:
+it sends it one message by its local messaging address and never runs the work in the background (no
+window to wake - closed, or armed without one - and it only tells the next session). The one-shot
+CronCreate wake the gate's arm line asks you to schedule wakes you a minute earlier; either way, when you
+wake, the gate cancels your alarm. A woken session re-reads its HANDOFF.md, checks what is still
+unfinished for THAT task, and if nothing is left says so in one line and stops: no looking for other work.
 
 ⚠ **N SHOUTS LOUDEST WHERE IT IS LEAST TRUSTWORTHY.** The rate is anchored at the window's own
 open, so a young window makes any spend look steep. Measured 2026-09-14: at **10% used, 10
@@ -185,7 +186,8 @@ reasons) · Decided (not to be re-litigated) · Every path, command and branch. 
 references; never "continue the previous work".
 
 ⛔ **WHO YOU ARE IS FIRST, AND IT IS NOT OPTIONAL — even when nothing is collaborating.**
-Name the session: the role or call sign it answers to, and its session id. A resume wakes a
+Name the session: the role or call sign it answers to, and its session id. Since 0.69.0 the alarm wakes
+the same window; only with `resume_headless: 1` and no window to wake is a resume a
 **FRESH** `claude -p` with a **NEW** session id — never `--resume`, because re-sending a
 transcript costs ~95k tokens/MB at zero cache read — so the successor cannot know who it is
 continuing unless this file says so. With several sessions working together the cost is
