@@ -33,6 +33,13 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.67.1
+
+- 收窄 0.67.0 的「對準別的重置的鬧鐘不算數」：**合併結論是 PACE 時不重新瞄準**。那一格只會是「一個視窗是放寬的 STOP、另一個是遠的
+  PACE」，而 `reset_time` 在那裡會指向遠 PACE 的重置（PENDING 裡記著的 N-7）——0.67.0 會把 NET 區對準 5h 的鬧鐘搬到好幾天後的 7d
+  重置；0.67.0 以前工具路徑會保留它。0.67.0 那條寫「NET 區也適用」說得太滿，就是這一格。修補審查（F2）抓到；1 個新測試、2 個新突變
+  都被抓到；`test_all` 17/17。
+
 ## 0.67.0
 
 ⛔ **近重置「被放寬的 PACE」沒有鬧鐘。** 2026-10-01：一個 session 在 5h 86%、離 07:00 重置 23 分鐘時寫好 HANDOFF.md；那一段被放寬成
@@ -2953,6 +2960,14 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.67.1
+
+- Narrows 0.67.0's "an alarm aimed at another reset no longer counts": **no re-aim when the combined word is PACE**. That
+  cell can only be "one window a relaxed STOP, the other a far PACE", and there `reset_time` names the far PACE's reset (the
+  pended N-7 corner) - 0.67.0 moved a net-zone alarm aimed at the 5h reset to a 7d reset days away, where the tool path
+  before 0.67.0 kept it. The 0.67.0 bullet's "the net zone too" over-claimed for exactly this cell. Found by the fix review
+  (F2); 1 new test and 2 new mutations, both killed; `test_all` 17/17.
 
 ## 0.67.0
 

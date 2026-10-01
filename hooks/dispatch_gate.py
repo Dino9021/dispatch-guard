@@ -1974,7 +1974,10 @@ def wind_down_note(payload, root, sdir, cfg, now=None):
         # path that was never wired. ADR 20260929-152000 item 2. Once per session per window.
         arm_state, arm_rec = own_resume(sdir, sid, now)
         # ⛔ Armed for ANOTHER reset is not armed for this one (0.67 review B, B1) - re-aim it.
-        if arm_state == "armed" and aims_elsewhere(sdir, v, arm_rec):
+        # ⚠ NOT AT A COMBINED PACE (0.67.1): this block sees a PACE only through a relaxed STOP in the
+        # other window, and there reset_time() names the far PACE's window (the pended N-7 corner) -
+        # re-aiming would move a 5h net-zone alarm to a 7d reset days away. Before 0.67 it was kept.
+        if arm_state == "armed" and word != "PACE" and aims_elsewhere(sdir, v, arm_rec):
             # ⚠ ...unless that re-aim is already in flight: a spawn mark NEWER than the old record
             # and under 2 min old means the next tool call would otherwise say "NO resume" while
             # the new record is ~1 s from landing (fix review F1). An old mark is the old arm's.
@@ -2191,8 +2194,10 @@ def arm_on_handoff_write(root, sdir, cfg, session_id):
         if not (v["verdict"] == "STOP" or v.get("relaxed_stop") or v.get("relaxed_pace")):
             return False
         state, rec = own_resume(sdir, session_id)
-        # ⛔ a live resume for ANOTHER reset does not count (0.67 review B, B1)
-        if state == "arming" or (state == "armed" and not aims_elsewhere(sdir, v, rec)):
+        # ⛔ a live resume for ANOTHER reset does not count (0.67 review B, B1) - except at a combined
+        # PACE, for the reason in wind_down_note (0.67.1)
+        if state == "arming" or (state == "armed" and (v["verdict"] == "PACE"
+                                                       or not aims_elsewhere(sdir, v, rec))):
             return False
         return bool(arm_from_handoff(root, sdir, cfg, session_id, v))
     except Exception as exc:

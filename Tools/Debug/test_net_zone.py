@@ -560,6 +560,25 @@ def case_relaxed_pace_edges(gate):
             gate.arm_on_handoff_write(sdir, sdir, {}, SID)
             assert calls == [SID], ("a HANDOFF.md written at the 5h STOP was not armed because a "
                                     "resume for ANOTHER reset exists: %r" % calls)
+        with scratch_dir("net-pace-keeps-5h") as sdir:
+            # ⛔ 0.67.1: 5h relaxed STOP + 7d far PACE reads PACE with driver 7d, and reset_time()
+            # names the 7d reset (pended N-7). A 5h-aimed net-zone alarm must NOT be moved days away.
+            now, _r = net_dir(gate, sdir, pct=90, minutes=20)
+            r5, r7 = int(now + 20 * 60), int(now + 3 * 86400)
+            write_usage(sdir, 90, r5, pct7=95, reset7=r7)
+            v = usage.verdict(sdir, usage.config(sdir), cheap=True)
+            assert v["verdict"] == "PACE" and v["relaxed_stop"] and v["driver"] == "7d", v
+            os.makedirs(os.path.join(sdir, "resume"), exist_ok=True)
+            with open(os.path.join(sdir, "resume", gate.safe_session(SID) + ".json"), "w",
+                      encoding="utf-8") as f:
+                json.dump({"at": r5 + 180, "armed_for_reset": r5, "session_id": SID}, f)
+            del calls[:]
+            gate.wind_down_note({"session_id": SID}, sdir, sdir, {}, now=now)
+            assert calls == [], ("the tool path re-aimed a 5h net-zone alarm at the far 7d PACE's "
+                                 "reset: %r" % calls)
+            gate.arm_on_handoff_write(sdir, sdir, {}, SID)
+            assert calls == [], ("a HANDOFF write re-aimed a 5h net-zone alarm at the far 7d PACE's "
+                                 "reset: %r" % calls)
         with scratch_dir("re-aim-in-flight") as sdir:
             # fix review F1: once the re-aim has started, the next tool call must not say "NO resume"
             now, _r = net_dir(gate, sdir, pct=10, minutes=180)
