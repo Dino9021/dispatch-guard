@@ -33,6 +33,31 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.67.0
+
+⛔ **近重置「被放寬的 PACE」沒有鬧鐘。** 2026-10-01：一個 session 在 5h 86%、離 07:00 重置 23 分鐘時寫好 HANDOFF.md；那一段被放寬成
+GO、`relaxed_stop` 為假，所以什麼都沒上鬧鐘（GO 還會把已上的鬧鐘取消），之後用量從 89% 跳到 95%。擁有者裁示：「近重置放寬沒問題，
+但handoff跟鬧鐘還是要先上。比起重置前就做完停下來不再繼續，萬一撐過了重置、鬧鐘響了，關掉鬧鐘就好。」ADR：
+`Memory/tasks/20261001-065500-relaxed-pace-handoff-and-alarm-first/ADR.md`。
+
+- 用量結論多一個 `relaxed_pace`：PACE 在重置前被放寬成 GO 時為真（只在結論是 GO 時成立）。
+- 在這一段裡，寫下 HANDOFF.md 的當下、回合結束時、第一次工具呼叫時（每視窗一次）、派工時，gate 都用這個 session 自己寫的
+  HANDOFF.md 上鬧鐘；結論是 GO 也**不取消**。重置後（或視窗提早重開）第一次在一般 GO 下輸入或開新 session 時才取消；session 在
+  重置後觸發過任何 hook，鬧鐘醒來時也會讓路。
+- 每個視窗印一次提示（鬧鐘狀態改變時再一次），明講「這不是收尾：繼續做，也可以派工」，只要求 HANDOFF.md 保持最新，並附上取消
+  **這個 session** 鬧鐘的指令。沒有符號、沒有大寫命令句（2026-09-17 與 0.63.2 的教訓）；子代理不會收到；用自己的記號檔，PACE 與
+  放寬 PACE 來回跳也不會重複印。
+- 鬧鐘對準的重置：只有結論是 GO 時才用被放寬的視窗；5h 與 7d 都是放寬 PACE 時取 5h。原本就有值的組合一個都沒變。
+- **對準別的重置的鬧鐘不算數**（程式審查 B 抓到）：7d 放寬 PACE 時上了對準 7d 重置的鬧鐘，之後 5h 到了 STOP（重置更晚），工具
+  路徑與寫 HANDOFF 時不再以「已經有鬧鐘」跳過，會改對準 5h 的重置——否則那個鬧鐘醒在 5h 的 STOP 裡、重試到放棄。NET 區也適用。
+- 上鬧鐘那一行不再只寫「(GO)」，改寫「GO, a PACE relaxed near the reset」；gate log 的 `AUTO-ARM` 多了 `band=relaxed-pace`／
+  `band=net`，方便依 ADR 的重新檢討條件統計。
+- 刻意不做：放寬 PACE 時派工不要求 HANDOFF（不新增拒絕）、輸入時的 GO 分支不上鬧鐘、撞牆告知不延伸到這一段。
+- 代價（擁有者接受）：重置前做完就離開的 session 會留下一個鬧鐘，重置後會無頭跑一次——帳號範圍內每個有新 HANDOFF 的 session 各一個。
+  提示裡的取消指令就是為這個。
+- 測試：`test_net_zone` 新增三個案例（含以真實 hook 子行程驗證放寬 PACE 照樣放行派工）；28 個突變全數抓到；`test_all` 17/17；
+  兩輪程式審查（一輪抓到放寬 PACE 用掉了 NET 區同一視窗的上鬧鐘機會，另一輪抓到上面那個對準錯重置的退步，都已修正）。
+
 ## 0.66.1
 
 - 撞牆告知（WALL-HIT）只給**那個視窗裡真的在 NET 區工作過**的 session。0.66.0 會告訴 6 小時內每一個有輸入的 session——閒置的、
@@ -2928,6 +2953,39 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.67.0
+
+⛔ **A PACE relaxed near the reset had no alarm.** 2026-10-01: a session wrote its HANDOFF.md at 5h 86%, 23 minutes before
+the 07:00 reset. That band was relaxed to GO with `relaxed_stop` false, so nothing armed (and a GO would have cancelled an
+alarm that was armed), and the window then jumped from 89% to 95%. Owner's ruling: 「近重置放寬沒問題，但handoff跟鬧鐘還是要
+先上。比起重置前就做完停下來不再繼續，萬一撐過了重置、鬧鐘響了，關掉鬧鐘就好。」 ("the near-reset relaxation is fine, but the
+handoff and the alarm go on first; if the session survives the reset and the alarm rings, just turn it off"). ADR:
+`Memory/tasks/20261001-065500-relaxed-pace-handoff-and-alarm-first/ADR.md`.
+
+- The verdict gains `relaxed_pace`: true when a PACE was relaxed to GO near the reset (only when the combined word is GO).
+- In that band the gate arms the session's resume from its OWN HANDOFF.md when the file is written, when the turn ends, on
+  the first tool call of the window, and on a dispatch - and a GO does **not** cancel it. The first prompt or session start
+  at a plain GO after the reset (or an early reopen) cancels it; a session that fired any hook after the reset also stands
+  it down when it wakes.
+- One note per window (again when the resume state changes) says plainly "this is not a wind-down: keep working, and
+  dispatching is allowed", asks only that HANDOFF.md be current, and carries the cancel command for **this session's**
+  alarm. No glyph and no capital imperatives (the 2026-09-17 and 0.63.2 lessons); sub-agents do not get it; it has its own
+  marker, so a flicker between PACE and relaxed PACE does not re-print either note.
+- The resume's target reset uses the relaxed window only when the word is GO; both windows relaxed PACE -> the 5h. No
+  combination that had a value before changes it.
+- **An alarm aimed at another reset no longer counts** (found by code review B): armed for the 7d reset at a 7d relaxed
+  PACE, then the 5h reaching STOP with a later reset - the tool path and the HANDOFF write no longer skip on "already
+  armed" but re-aim it at the 5h reset; otherwise it woke into the 5h STOP and retried until it gave up. The net zone too.
+- The ARMED line no longer says a bare "(GO)" but "GO, a PACE relaxed near the reset"; the gate log's `AUTO-ARM` line gains
+  `band=relaxed-pace` / `band=net`, so the ADR's reconsideration criterion can be counted.
+- Deliberately not done: no handoff precondition on a dispatch at relaxed PACE (no new refusal), no arm on the prompt path's
+  GO branch, WALL-HIT not extended to this band.
+- The cost (accepted by the owner): a session that finishes before the reset and leaves keeps an alarm that runs once,
+  headless, after the reset - one per session with a fresh HANDOFF, account-wide. The cancel command in the note is for that.
+- Tests: three new `test_net_zone` cases (including a real hook subprocess proving a relaxed-PACE dispatch is still
+  allowed); 28 mutations, all killed; `test_all` 17/17; two code reviews (one found the relaxed-PACE attempt using up the
+  net zone's arm in the same window, the other the wrong-reset regression above - both fixed).
 
 ## 0.66.1
 

@@ -1183,6 +1183,10 @@ python hooks/usage.py --verdict --json   # 給程式讀的格式
 每個 session 第一次收到提示時，gate 就用**它自己寫的** HANDOFF.md 替它上鬧鐘，提示照實寫「你的鬧鐘排在 HH:MM」或
 「⛔ 你沒有鬧鐘，現在寫 HANDOFF.md」——寫下的那一刻就上鬧鐘。提示每個視窗只印一次（鬧鐘狀態改變、剩不到 15 分鐘時各補一次）。
 ⚠ 0.66.0 以前那句「A resume is armed」是對每個 session 都這樣講；2026-09-29 被上限切斷的 3 個 session 全都沒有鬧鐘。
+⭐ 0.67.0 起，**被放寬的 PACE**（重置前、還沒到 STOP）也是「HANDOFF 跟鬧鐘先上」：照樣繼續做、照樣可以派工，但寫下 HANDOFF.md
+的當下、回合結束、每視窗第一次工具呼叫、派工時，gate 都替這個 session 上鬧鐘，GO 也不取消。提示每視窗一次，明講「這不是收尾」，
+並附上取消這個 session 鬧鐘的指令（`resume.py --cancel --session <id>`）——撐過重置、重置後觸發過 hook 的 session，鬧鐘會自己讓路；
+重置前就做完離開的，用那一行取消。
 視窗在放寬之後、重置之前撞到上限時，gate 記一行 `WALL-HIT`，重置後，那個視窗裡在 NET 區工作過的每個 session，下一次輸入時會被告知一次
 （被上限切斷的回合在畫面上只是安靜地結束，當事的 session 自己不會知道）。
 結論還處理了三件單看數字會判斷錯的事：重置時間的計算、週用量的假警報、以及燒完速度的推估。
@@ -2888,7 +2892,13 @@ session's resume from its OWN HANDOFF.md, and the note says so truthfully - "you
 HH:MM" or "⛔ you have NO resume - write HANDOFF.md now", which arms the moment it lands. The note is
 printed once per window (again when the resume state changes, and once inside the last 15 minutes).
 ⚠ Until 0.66.0 it said "a resume is armed" to every session; on 2026-09-29 the three sessions the cap
-cut had none. When the window hits the cap after a relaxation and before its reset, the gate logs a
+cut had none. ⭐ Since 0.67.0 a **relaxed PACE** (near the reset, below STOP) is also "handoff and alarm
+first": work and dispatch go on, but the gate arms the session's resume when HANDOFF.md is written, when
+the turn ends, on the window's first tool call and on a dispatch, and a GO does not cancel it. The note
+comes once per window, says plainly that it is not a wind-down, and carries the cancel command for that
+session's alarm (`resume.py --cancel --session <id>`) - a session that survives the reset and fires a
+hook after it has its alarm stand itself down; one that finishes before the reset and leaves cancels it
+with that line. When the window hits the cap after a relaxation and before its reset, the gate logs a
 `WALL-HIT` and tells each session that worked in the net zone of that window once, at its next prompt after the reset (a turn the cap cuts just
 ends quietly on screen - the session itself does not know). Three things the verdict handles that a
 raw reading gets wrong: reset arithmetic, weekly false alarms, and burn projection.

@@ -1815,8 +1815,14 @@ def arm_trigger(v):
     was to keep working INTO a window that can still hit the cap - so the resume must be armed
     exactly then, or the safety the relaxation promised does not exist. `relaxed_stop` is true
     whenever a STOP was overridden in either window, independent of the display word.
+
+    ⭐ AND IN THE RELAXED-PACE BAND (0.67). Measured 2026-10-01: a session wrote its HANDOFF at 86%
+    with 23 minutes to the reset, the band read as plain GO, nothing armed - and the window then
+    jumped to 95%. Owner: 「近重置放寬沒問題，但handoff跟鬧鐘還是要先上」; an alarm that rings after
+    the session survived the reset is simply turned off. ADR 20261001-065500 D3.
     """
-    return v.get("verdict") in ("PACE", "STOP") or bool(v.get("relaxed_stop"))
+    return (v.get("verdict") in ("PACE", "STOP") or bool(v.get("relaxed_stop"))
+            or bool(v.get("relaxed_pace")))
 
 
 def generated_handoff(sdir, cfg, session_id, cwd, log_tail=""):
@@ -1930,6 +1936,8 @@ def wind_down_note(payload, root, sdir, cfg, now=None):
         return None
     word = v["verdict"]
     relaxed_stop = v.get("relaxed_stop")
+    # ⭐ THE RELAXED-PACE BAND (0.67) - only when nothing stricter speaks: STOP, then NET, then PACE.
+    relaxed_pace = bool(v.get("relaxed_pace")) and word == "GO" and not relaxed_stop
     now = now if now is not None else time.time()
     # ⭐ WALL-HIT, checked on the path every session reaches (ADR 20260916's reconsideration
     # clause, never implemented until 0.66). Cheap: a glob, plus one history read per window.
@@ -1941,7 +1949,11 @@ def wind_down_note(payload, root, sdir, cfg, now=None):
     # not fire - but the window can still hit the cap. ⚠ A BINDING STOP WINS: if the combined
     # word is still STOP (the OTHER window is a far STOP), that is the message, not the net.
     arm_state, arm_rec, reset = None, {}, None
-    if word == "STOP" or relaxed_stop:
+    # ⚠ At relaxed PACE a sub-agent's tool call does nothing here: the arm skips it anyway (its
+    # payload carries the PARENT's session id) and the note is about the session's own resume.
+    if relaxed_pace and payload.get("agent_id"):
+        return None
+    if word == "STOP" or relaxed_stop or relaxed_pace:
         reset = window_reset(sdir, v)
         if relaxed_stop and reset:
             note_relaxed(sdir, reset, "7d" if v.get("relaxed_driver") == "7d" else "5h")
@@ -1961,9 +1973,23 @@ def wind_down_note(payload, root, sdir, cfg, now=None):
         # attended one armed. ADR 20260916 REVISION site 3 already said the net arms; this is the
         # path that was never wired. ADR 20260929-152000 item 2. Once per session per window.
         arm_state, arm_rec = own_resume(sdir, sid, now)
+        # ⛔ Armed for ANOTHER reset is not armed for this one (0.67 review B, B1) - re-aim it.
+        if arm_state == "armed" and aims_elsewhere(sdir, v, arm_rec):
+            # ⚠ ...unless that re-aim is already in flight: a spawn mark NEWER than the old record
+            # and under 2 min old means the next tool call would otherwise say "NO resume" while
+            # the new record is ~1 s from landing (fix review F1). An old mark is the old arm's.
+            armed_at = arm_rec.get("armed_at")
+            try:
+                mark_at = os.path.getmtime(state_path(sdir, sid, ARM_MARK))
+            except OSError:
+                mark_at = None
+            in_flight = (mark_at is not None and now - mark_at < 120
+                         and isinstance(armed_at, (int, float)) and mark_at > armed_at + 1)
+            arm_state, arm_rec = ("arming" if in_flight else "none"), {}
         # ⚠ never from a sub-agent's tool call: its payload carries the PARENT's session id
         if (arm_state == "none" and not payload.get("agent_id")
-                and tool_path_arm(root, sdir, cfg, sid, v, reset)):
+                and tool_path_arm(root, sdir, cfg, sid, v, reset,
+                                  "rlx-" if relaxed_pace else "")):
             arm_state = "arming"
     if word == "STOP":
         level_key = "STOP-" + ("none" if arm_state == "none" else "armed")
@@ -1977,6 +2003,8 @@ def wind_down_note(payload, root, sdir, cfg, now=None):
                                      "-late" if late else "")
     elif word == "PACE":
         level_key = "PACE"
+    elif relaxed_pace:
+        return relaxed_pace_note(root, sdir, cfg, sid, v, reset, now, arm_state, arm_rec)
     else:
         return None
     agent = payload.get("agent_id")
@@ -2013,6 +2041,67 @@ def wind_down_note(payload, root, sdir, cfg, now=None):
             "and running commands still work, because those are how you get out." % armed_line)
 
 
+def relaxed_pace_note(root, sdir, cfg, sid, v, reset, now, arm_state, arm_rec):
+    """The relaxed-PACE note: once per window and resume state, on its OWN marker. Text or None.
+
+    ⛔ NOT A WIND-DOWN, AND WORDED SO IT CANNOT READ AS ONE - no glyph, no capitals. On 2026-09-17
+    sessions stopped early because a hook's capitals outranked the skill prose, and in 0.63.2 a
+    glyph on a GO line did the same. The owner's ruling is "keep working, but the HANDOFF and the
+    alarm go on first" (2026-10-01), so the note asks for exactly that and nothing more.
+
+    ⚠ ITS OWN MARKER (`warned-rlx`), not `warned-tool`: that one holds a single key, so a window
+    flickering between PACE and relaxed PACE would re-print both notes on every flip. The key
+    carries the reset and the resume state, so it speaks again when the resume gets armed - that
+    line carries the cancel command. ADR 20261001-065500 D4.
+    """
+    level_key = "RLX-%s-%s" % (reset or "?", "none" if arm_state == "none" else "armed")
+    mark = state_path(sdir, sid, "warned-rlx")
+    try:
+        with open(mark, encoding="utf-8") as f:
+            if f.read().strip() == level_key:
+                return None
+    except OSError:
+        pass
+    try:
+        os.makedirs(os.path.dirname(mark), exist_ok=True)
+        with open(mark, "w", encoding="utf-8") as f:
+            f.write(level_key)
+    except OSError:
+        pass
+    log(root, "USAGE(RLX) tool-path resume=%s reset=%s" % (arm_state, reset))
+    seven = v.get("relaxed_driver") == "7d"
+    pct = v.get("pct_7d") if seven else v.get("pct")
+    clock = time.strftime("%H:%M", time.localtime(reset)) if reset else v.get(
+        "resets_clock", "the reset")
+    left = ("%d min left" % max(0, round((reset - now) / 60.0))) if reset else "soon"
+    # ⚠ THE CANCEL COMMAND RIDES ON "ARMING" TOO. "arming" and "armed" share the key, so the note
+    # printed while the arm is in flight is usually the only one this window - and the session
+    # that finishes BEFORE the reset is the one that needs it (ADR T1: nothing alive after the
+    # reset, so do_run's stand-down cannot fire).
+    # ⚠ "ends", not "finish": the owner prefers carrying on over finishing early to stop (review B NB5)
+    cancel = ("If this session fires a hook after the reset it stands itself down; if this session "
+              "ends before the reset and you do not want it, cancel it with `%s --cancel --session %s` "
+              "(this session's alarm only)." % (runnable("resume.py"), sid))
+    if arm_state == "armed":
+        at = arm_rec["at"]
+        fmt = "%H:%M" if time.localtime(at)[:3] == time.localtime(now)[:3] else "%m-%d %H:%M"
+        state = "Your resume is armed for %s. %s" % (time.strftime(fmt, time.localtime(at)), cancel)
+    elif arm_state == "arming":
+        state = "Your resume is being armed from your HANDOFF.md. %s" % cancel
+    elif not cfg.get("auto_arm_resume", DEFAULTS["auto_arm_resume"]):
+        state = ("You have no resume, and auto_arm_resume is off: after writing HANDOFF.md, run "
+                 "`%s --arm --task <folder>`." % runnable("resume.py"))
+    else:
+        state = ("You have no resume yet; the gate arms one as soon as it sees a HANDOFF.md "
+                 "written in your task folder.")
+    return ("dispatch-guard: %s at %s%%, resets %s (%s) - a PACE is relaxed because the rest of "
+            "the budget should last. This is not a wind-down: keep working, and dispatching is "
+            "allowed. Keep a stand-alone HANDOFF.md current in your task folder so the gate can "
+            "arm your resume first. %s"
+            % ("7d" if seven else "5h", round(pct) if isinstance(pct, (int, float)) else "?",
+               clock, left, state))
+
+
 def own_resume(sdir, session_id, now=None):
     """(state, record) of THIS session's resume: "armed" / "arming" / "none". Never raises.
 
@@ -2043,15 +2132,37 @@ def own_resume(sdir, session_id, now=None):
     return "none", {}
 
 
-def tool_path_arm(root, sdir, cfg, session_id, v, reset):
+def aims_elsewhere(sdir, v, rec):
+    """True when THIS session's armed record is for a different reset than the window closing now.
+
+    ⛔ AN ALARM FOR THE WRONG RESET IS NO ALARM (code review B of 0.67, B1): a 7d relaxed PACE arms
+    for the 7d reset; the 5h then reaches STOP with a LATER reset; a skip on "already armed" left
+    the 7d alarm, which wakes into the 5h STOP and gives up after `retry_window_min`. maybe_auto_arm
+    already re-arms on a different reset - this lets the tool path and the HANDOFF-write path reach
+    it. Same comparison (resume.reset_time, 1 s tolerance). Never raises; unknown -> False.
+    """
+    try:
+        sys.path.insert(0, HERE)
+        import resume as _resume
+        want = _resume.reset_time(sdir, usage.config(sdir), v)[0]
+    except Exception:
+        return False
+    got = rec.get("armed_for_reset") if isinstance(rec, dict) else None
+    return (isinstance(want, (int, float)) and isinstance(got, (int, float))
+            and not isinstance(got, bool) and abs(got - want) > 1)
+
+
+def tool_path_arm(root, sdir, cfg, session_id, v, reset, band=""):
     """Arm THIS session's resume from its own fresh HANDOFF.md - once per window. True if started.
 
     \u26a0 ONE ATTEMPT PER WINDOW HERE (marker `state/<sid>.tool-arm-<reset>`), so a session with no
     handoff does not re-scan and re-log on every tool call; a HANDOFF.md written LATER is armed
     from PostToolUse (arm_on_handoff_write). A real handoff only, under the unchanged freshness
     rule - no generated handoff (ADR 20260902 decision 4). Never raises.
+    \u26a0 The relaxed-PACE band has its OWN attempt (`band="rlx-"`, 0.67): sharing the marker let a
+    failed attempt at relaxed PACE use up the NET zone's one attempt later in the same window.
     """
-    mark = state_path(sdir, session_id, "tool-arm-%s" % (reset or "unknown"))
+    mark = state_path(sdir, session_id, "tool-arm-%s%s" % (band, reset or "unknown"))
     if os.path.exists(mark):
         return False
     try:
@@ -2068,7 +2179,7 @@ def tool_path_arm(root, sdir, cfg, session_id, v, reset):
 
 
 def arm_on_handoff_write(root, sdir, cfg, session_id):
-    """A HANDOFF.md was just written: arm it at once if the window is at STOP or in the net zone.
+    """A HANDOFF.md was just written: arm it at once at STOP, in the net zone or at relaxed PACE.
 
     \u2b50 THE NOTE SAID "write HANDOFF.md now - the gate arms it as soon as it sees the write", and
     this is that promise. Cheap verdict; skipped when this session already has a live resume or
@@ -2076,9 +2187,12 @@ def arm_on_handoff_write(root, sdir, cfg, session_id):
     """
     try:
         v = usage.verdict(sdir, usage.config(sdir), cheap=True)
-        if not (v["verdict"] == "STOP" or v.get("relaxed_stop")):
+        # ⚠ Not at a plain PACE: there the turn's end arms (on_stop), as since 0.58.0.
+        if not (v["verdict"] == "STOP" or v.get("relaxed_stop") or v.get("relaxed_pace")):
             return False
-        if own_resume(sdir, session_id)[0] != "none":
+        state, rec = own_resume(sdir, session_id)
+        # ⛔ a live resume for ANOTHER reset does not count (0.67 review B, B1)
+        if state == "arming" or (state == "armed" and not aims_elsewhere(sdir, v, rec)):
             return False
         return bool(arm_from_handoff(root, sdir, cfg, session_id, v))
     except Exception as exc:
@@ -2387,9 +2501,13 @@ def maybe_auto_arm(root, sdir, cfg, folder, started, session_id=None, cwd=None):
     # window?" is the question that says whether per-session resume was worth building, and
     # this line - the auto-arm path, which is where the single-slot clobbering happened - could
     # not answer it. ADR 20260917-132015, D11.
-    log(root, "AUTO-ARM %s for %s (session=%s)"
+    # ⭐ AND THE BAND (0.67), so ADR 20261001-065500's reconsideration criterion - how many
+    # alarms armed at relaxed PACE ran for finished work - can be read off this log.
+    band = (" band=net" if v.get("relaxed_stop") else
+            " band=relaxed-pace" if v.get("relaxed_pace") else "")
+    log(root, "AUTO-ARM %s for %s (session=%s)%s"
               % (folder, time.strftime("%Y-%m-%d %H:%M", time.localtime(want)),
-                 str(session_id or "")[:8] or "?"))
+                 str(session_id or "")[:8] or "?", band))
     return True
 
 
@@ -2529,8 +2647,17 @@ def arm_from_handoff(root, sdir, cfg, session_id, v=None):
             "the OS scheduler cannot start it, the next session is told. Cancel it with "
             "`%s --cancel --session %s` if you do not want that (that cancels this session's "
             "alarm only)."
-            % (folder, v["verdict"], v.get("resets_clock", "the reset"),
+            % (folder, relax_band_label(v), v.get("resets_clock", "the reset"),
                runnable("resume.py"), session_id))
+
+
+def relax_band_label(v):
+    """The word for the ARMED line: "GO" alone would read as "why arm at GO?" (0.67, D7)."""
+    if v.get("relaxed_stop") and v.get("verdict") == "GO":
+        return "GO, a STOP relaxed near the reset"
+    if v.get("relaxed_pace"):
+        return "GO, a PACE relaxed near the reset"
+    return v.get("verdict")
 
 
 def on_stop(payload, root, sdir, cfg):
@@ -2930,6 +3057,10 @@ def stand_down_resume(root, sdir, v, session_id=None):
         GO+relaxed_stop  KEEP. The word is GO only because a STOP was RELAXED near the reset -
                  the window is still closing and we are working into it on purpose. Cancelling
                  the backup here would strip the net exactly when it was armed. See usage._relax.
+        GO+relaxed_pace  KEEP (0.67). The same for a relaxed PACE: the window is closing and the
+                 alarm was armed first on purpose (owner 2026-10-01). It is cancelled by the first
+                 plain GO - the reset, or an early reopen - and do_run stands it down if this
+                 session fired a hook after the reset. ADR 20261001-065500 D3.
 
     ⭐ A route (A) wake lands here too - the cron wake arrives as a UserPromptSubmit - so
     the backup is retired the moment the preferred route actually works.
@@ -2948,7 +3079,8 @@ def stand_down_resume(root, sdir, v, session_id=None):
     # ⛔ THE NET ZONE KEEPS THE RESUME. A relaxed STOP reads GO, but it means the window is
     # still closing and we are knowingly working into it - cancelling the backup here would
     # strip the safety net exactly when it was armed on purpose. Same KEEP as STOP in the table.
-    if v.get("relaxed_stop"):
+    # ⭐ And the relaxed-PACE band, for the same reason (0.67).
+    if v.get("relaxed_stop") or v.get("relaxed_pace"):
         return ""
     # ⛔ ONLY THIS SESSION'S ALARM. It used to cancel whatever the one shared record held,
     # so a session reaching GO retired a DIFFERENT session's still-needed resume.
@@ -4355,6 +4487,8 @@ def selftest():
     # ARM and must NOT be stood down. Both guards key off relaxed_stop, never the word.
     assert arm_trigger({"verdict": "GO", "relaxed_stop": True}) is True, "net zone must arm"
     assert arm_trigger({"verdict": "GO"}) is False, "a plain GO must not arm"
+    # ⭐ 0.67: the relaxed-PACE band arms too (owner 2026-10-01, ADR 20261001-065500 D3).
+    assert arm_trigger({"verdict": "GO", "relaxed_pace": True}) is True, "relaxed PACE must arm"
     assert arm_trigger({"verdict": "PACE"}) is True
     assert arm_trigger({"verdict": "STOP"}) is True
     # stand_down: a relaxed GO must return "" WITHOUT reaching do_cancel, a plain GO with a
@@ -4378,6 +4512,9 @@ def selftest():
         assert stand_down_resume(_ndir, _ndir, {"verdict": "GO", "relaxed_stop": True},
                                  _sid) == "", "net zone must not stand down"
         assert _cc == [], "the net zone reached do_cancel - the resume was cancelled"
+        assert stand_down_resume(_ndir, _ndir, {"verdict": "GO", "relaxed_pace": True},
+                                 _sid) == "", "relaxed PACE must not stand down"
+        assert _cc == [], "relaxed PACE reached do_cancel - the resume was cancelled"
         _msg = stand_down_resume(_ndir, _ndir, {"verdict": "GO"}, _sid)
         assert _cc == [_ndir], "a plain GO with a future alarm must cancel: %r" % (_cc,)
         # ⛔ AND ANOTHER SESSION'S ALARM IS NOT TOUCHED. This is the whole point of the

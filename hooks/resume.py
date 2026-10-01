@@ -545,8 +545,11 @@ def origin_session_note(sdir, state):
             "from here. Check the window before assuming." % (sid[:8], mins))
 
 
-def reset_time(sdir, cfg):
+def reset_time(sdir, cfg, v=None):
     """(epoch, which) - when the window that is ACTUALLY BLOCKING turns over, or (None, None).
+
+    `v` - a verdict the caller already holds (the gate's per-tool-call path passes its cheap one,
+    which names the same driver: the relaxation is in the shared path). None computes it here.
 
     ⛔ IT USED TO READ `five_hour` AND NOTHING ELSE, and that became a trap the moment the
     brake learned to STOP on the seven-day window: the agent would be told to wrap up, arm a
@@ -565,7 +568,8 @@ def reset_time(sdir, cfg):
     question is which window is blocking, not which clock is longer.
     """
     data = usage.read_json(cfg["token_usage_file"], {}) or {}
-    v = usage.verdict(sdir, usage.config(sdir), data=data)
+    if v is None:
+        v = usage.verdict(sdir, usage.config(sdir), data=data)
     # ⛔ `relaxed_driver` COVERS THE RELAXED CASE. When a STOP is relaxed to GO near a reset the
     # combined word is GO, so `driver` is None; without this, a relaxed 7d STOP arms for the 5h
     # reset and wakes hours before the 7d window reopens - the days-away retry loop this function

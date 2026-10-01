@@ -2577,6 +2577,7 @@ def verdict(sdir, cfg, now=None, data=None, cheap=False):
     early = False
     five_level = None
     five_relaxed_stop = seven_relaxed_stop = False
+    five_relaxed_pace = seven_relaxed_pace = False
     if not five_over:
         # ⛔ ONLY THE TWO EXPENSIVE CALLS ARE SKIPPED, never the level computation
         # below them. Gating the whole block was the first attempt and it made `cheap`
@@ -2621,8 +2622,13 @@ def verdict(sdir, cfg, now=None, data=None, cheap=False):
         # ⭐ NEAR-RESET RELAXATION replaces the old one-level soften. A PACE/STOP within
         # `relax_horizon_min` of the reset becomes GO when the whole-window burn survives to
         # the reset. It never tightens. See _relax().
+        five_base = five_level
         five_level, five_relaxed_stop = _relax(
             five_level, pct, remain_min, resets, now, FIVE_HOUR_SECONDS, cfg, "5h")
+        # ⭐ A RELAXED PACE, named (0.67). It read as a plain GO, so nothing armed and a GO
+        # cancelled the alarm - measured 2026-10-01: a session wrote its HANDOFF at 86% with 23
+        # min left and had no resume when the window jumped to 95%. ADR 20261001-065500 D1.
+        five_relaxed_pace = five_base == "PACE" and five_level is None
     # ⛔ THE SENTENCE, NEVER THE DECISION - and since 0.63.2 its GLYPH follows the WORD.
     # Measured 2026-09-14 and 2026-09-19 (Memory/PENDING.md, the wind-down item): a ⛔ on a GO
     # line beside "Headroom available" read as a stop signal, and sessions at 20-27% armed a
@@ -2657,8 +2663,10 @@ def verdict(sdir, cfg, now=None, data=None, cheap=False):
         seven_level = _window_level(pct7, cfg["soft_pct_7d"], cfg["hard_pct_7d"])
         # ⚠ NO horizon cap for 7d: the whole-window 7d rate self-scales, so a near-empty 7d
         # only satisfies `survives` within hours of its own reset. See _relax() and the ADR.
+        seven_base = seven_level
         seven_level, seven_relaxed_stop = _relax(
             seven_level, pct7, remain7, resets7, now, SEVEN_DAY_SECONDS, cfg, "7d")
+        seven_relaxed_pace = seven_base == "PACE" and seven_level is None
 
     # ⭐ THE STRICTER OF THE TWO WINS, and ties go to the five-hour window because it is the
     # nearer and more actionable one to name.
@@ -2724,6 +2732,13 @@ def verdict(sdir, cfg, now=None, data=None, cheap=False):
     # window reopens, defers, and announces failure (the exact case reset_for_driver exists to
     # prevent). ⚠ Prefer 7d when BOTH relaxed: a 7d cap-hit costs longer to recover.
     relaxed_driver = "7d" if seven_relaxed_stop else "5h" if five_relaxed_stop else None
+    # ⭐ A RELAXED PACE ALSO ARMS (0.67, owner 2026-10-01: 「handoff跟鬧鐘還是要先上」) - but it may
+    # only NAME the window when the combined word is GO. ⚠ With a binding PACE/STOP in the other
+    # window, `driver` already names it and a relaxed PACE here must not pull the resume to its
+    # reset. Both relaxed PACE -> the 5h: the nearer reset, and neither is expected to cap.
+    relaxed_pace = (five_relaxed_pace or seven_relaxed_pace) and level is None
+    if relaxed_driver is None and relaxed_pace:
+        relaxed_driver = "5h" if five_relaxed_pace else "7d"
     # ⛔ NO "A RESUME IS ARMED" HERE (0.66). This text has no session in scope, and on 2026-09-29
     # it told four sessions they had a resume when three had none. The gate's own note says
     # whether THIS session's resume is armed (`resume.py --status` lists them).
@@ -2731,12 +2746,18 @@ def verdict(sdir, cfg, now=None, data=None, cheap=False):
                 " ⛔ NET: a STOP is relaxed near the reset - keep working in short steps and "
                 "start NO new dispatch. Whether a session has a resume is on its own gate note "
                 "(`resume.py --status`); without one, a cap cut is not continued.")
+    # ⚠ NOT A WIND-DOWN, and worded so it cannot read as one: no glyph, no capitals (the
+    # 2026-09-17 and 0.63.2 lessons - a hook's shouting outranks the skill prose it contradicts).
+    if relaxed_pace and not relaxed_stop:
+        net_note = (" Relaxed near the reset: a PACE reads GO because the rest of the budget "
+                    "should last - keep working. Have a stand-alone HANDOFF.md current so a "
+                    "resume can be armed first (`resume.py --status`).")
     return {"verdict": level or "GO", "exit": {"STOP": 2, "PACE": 1}.get(level, 0),
             "pct": pct, "pct_7d": pct7, "driver": driver if level else None,
             "remain_min": remain_min, "resets_clock": clock,
             "age_min": age_min, "projected_pct": proj, "seven_day": sd,
             "burnout_min": burn, "burns_out_early": early, "relaxed_stop": relaxed_stop,
-            "relaxed_driver": relaxed_driver,
+            "relaxed_pace": relaxed_pace, "relaxed_driver": relaxed_driver,
             "text": text + net_note + burn_note + stale + (" [%s]" % sd if sd else "")}
 
 
@@ -4987,9 +5008,30 @@ def selftest():
                        "seven_day": {"used_percentage": 0, "resets_at": int(_bnow2 + 3 * 86400)}})
     assert _hv(88, _bnow2 + 90 * 60)["verdict"] == "STOP", "horizon must hold STOP beyond 60 min"
     assert _hv(88, _bnow2 + 55 * 60)["verdict"] == "GO", "within the horizon it relaxes"
-    # ⭐ A relaxed PACE (not STOP) is GO but arms NO net - the owner's 快速早燒不需 handoff.
+    # ⭐ A relaxed PACE (not STOP) is GO with no NET and no dispatch refusal - but since 0.67 it is
+    # NAMED, so the gate arms and keeps the resume there (owner 2026-10-01: 「handoff跟鬧鐘還是要先
+    # 上」; the older 快速早燒不需 handoff was about fast EARLY burn at low pct). ADR 20261001-065500.
     _rp = _verdict(78, 10, r5=_bnow2 + 12 * 60)
     assert _rp["verdict"] == "GO" and _rp["relaxed_stop"] is False and "NET" not in _rp["text"], _rp
+    assert _rp["relaxed_pace"] is True and _rp["relaxed_driver"] == "5h", _rp
+    assert "HANDOFF.md" in _rp["text"] and "⛔" not in _rp["text"], _rp["text"]
+    # ...and a PACE that is NOT relaxed, or a plain GO, is not a relaxed PACE.
+    assert _verdict(78, 10)["relaxed_pace"] is False, "far from the reset nothing is relaxed"
+    assert _verdict(10, 10, r5=_bnow2 + 12 * 60)["relaxed_pace"] is False, "a plain GO"
+    # ⛔ THE PACE FALLBACK NAMES A WINDOW ONLY WHEN THE WORD IS GO. 5h far STOP + 7d relaxed PACE:
+    # the word is STOP on the 5h, and the resume must stay on the 5h reset (driver), not the 7d.
+    _fs = _verdict(90, 95, r7=_bnow2 + 30 * 60)
+    assert _fs["verdict"] == "STOP" and _fs["driver"] == "5h", _fs
+    assert _fs["relaxed_pace"] is False and _fs["relaxed_driver"] is None, _fs
+    # A 7d relaxed PACE alone names the 7d; both relaxed PACE -> the nearer 5h.
+    _p7 = _verdict(10, 95, r7=_bnow2 + 30 * 60)
+    assert _p7["verdict"] == "GO" and _p7["relaxed_pace"] and _p7["relaxed_driver"] == "7d", _p7
+    _pp = _verdict(78, 95, r5=_bnow2 + 12 * 60, r7=_bnow2 + 30 * 60)
+    assert _pp["verdict"] == "GO" and _pp["relaxed_driver"] == "5h", _pp
+    # A relaxed STOP beside a relaxed PACE is the NET zone: its text, not the relaxed-PACE one.
+    _pn = _verdict(88, 95, r5=_bnow2 + 12 * 60, r7=_bnow2 + 30 * 60)
+    assert _pn["relaxed_stop"] and _pn["relaxed_pace"] and _pn["relaxed_driver"] == "5h", _pn
+    assert "NET" in _pn["text"] and "Relaxed near the reset" not in _pn["text"], _pn["text"]
     # ⛔ 7d SELF-SCALES ITS HORIZON from the whole-window rate - NO horizon constant. The
     # owner's approved case: 98% left, 30 min from the 7d reset -> GO. The same 98% three days
     # out -> STOP. A 0.0097%/min 7d rate only threatens the last 2% within hours of reset.

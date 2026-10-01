@@ -187,9 +187,15 @@ the agent, in capitals, to print `PACE at N% - winding down` and to name what it
 Sessions obeyed. The owner ruled on 2026-09-17 that PACE means no new batch; 0.60.1 fixed the
 hook, which now says `PACE at N% - no new batch`.
 
+⭐ **NEAR THE RESET, A RELAXED WORD IS STILL NOT A HANDOVER — just keep the handoff current.** A
+PACE or STOP relaxed to GO near the reset means keep working (at a relaxed PACE, dispatching too),
+with a stand-alone HANDOFF.md kept current so the alarm can be armed before the cap can cut you
+(owner, 2026-10-01; 0.67.0). An alarm you did not need is simply cancelled.
+
 Once HANDOFF.md is on disk, the gate arms the resume itself when your turn ends at PACE/STOP
-(0.58.0); `resume.py --status` shows it, and if it shows none, arm it yourself — an unarmed
-handoff is a handoff nothing will ever read.
+(0.58.0), and in the relaxed bands near the reset also the moment it is written (0.66.0 / 0.67.0);
+`resume.py --status` shows it, and if it shows none, arm it yourself — an unarmed handoff is a
+handoff nothing will ever read.
 
 ## 18. The working-style checklist
 

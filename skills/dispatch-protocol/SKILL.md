@@ -151,6 +151,13 @@ means start no new batch and nothing more. N answers exactly one question: **doe
 am about to START fit inside N?** It fits → start it. It does not → start a smaller one. That
 is the whole of it. **At GO you keep working, however small N is.**
 
+⭐ **One carve-out near the reset, and it is not a hand-over.** A PACE or STOP can be RELAXED to GO
+when the window resets soon and the budget should last (the verdict line says `Relaxed near the
+reset` or `NET`). You keep working there - and at a relaxed PACE you may still dispatch - but keep a
+stand-alone `HANDOFF.md` current: the gate arms your resume from it FIRST (owner, 2026-10-01; 0.67.0).
+An alarm that rings after you survived the reset stands itself down if this session fired a hook
+after the reset; one you no longer want is cancelled with `resume.py --cancel --session <your id>`.
+
 ⚠ **N SHOUTS LOUDEST WHERE IT IS LEAST TRUSTWORTHY.** The rate is anchored at the window's own
 open, so a young window makes any spend look steep. Measured 2026-09-14: at **10% used, 10
 minutes in**, the line fired with `SPENT in ~90 min`; the **same 10%, 45 minutes in**, printed

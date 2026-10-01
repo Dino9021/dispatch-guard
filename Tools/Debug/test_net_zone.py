@@ -17,7 +17,10 @@ by the cap still has a fresh heartbeat. The pins:
      armed from PostToolUse;
   3. no note claims a resume the session does not have;
   4. WALL-HIT is found after the reset from the history, logged once, announced once per session,
-     and ignores another account's rows.
+     and ignores another account's rows;
+  5. (0.67, ADR 20261001-065500) the relaxed-PACE band arms first - tool path, HANDOFF write, turn
+     end - keeps the alarm at GO, says so once per window without reading as a wind-down, never
+     refuses a dispatch, and aims the resume at the relaxed window only when the word is GO.
 
 ⚠ Nothing is registered with a real scheduler: `arm_from_handoff` / `schedule` / `subprocess.run`
 are stubbed wherever they would reach one.
@@ -328,6 +331,374 @@ def case_wall_hit(gate):
     print("ok - WALL-HIT is found from the history after the reset, logged once, told once each")
 
 
+def write_usage(sdir, pct, reset, pct7=None, reset7=None):
+    """token_usage.json with a FIXED reset, so two readings can share one window."""
+    d = {"ts": int(time.time() * 1000), "five_hour": {"used_percentage": pct, "resets_at": reset}}
+    if pct7 is not None:
+        d["seven_day"] = {"used_percentage": pct7, "resets_at": reset7}
+    with open(os.path.join(sdir, "token_usage.json"), "w", encoding="utf-8") as f:
+        json.dump(d, f)
+
+
+def case_relaxed_pace_arms_first(gate, resume):
+    """⭐ 0.67 - THE RELAXED-PACE BAND ARMS, KEEPS AND TELLS (ADR 20261001-065500).
+
+    2026-10-01: a session wrote its HANDOFF.md at 86% with 23 min to the reset; the band read as
+    plain GO, nothing armed, and the window then jumped to 95%. Owner: 「handoff跟鬧鐘還是要先上」.
+    """
+    usage = gate.usage
+    calls = []
+    saved = gate.arm_from_handoff
+
+    def fake_arm(root, sdir, cfg, sid, v=None):
+        # like the real maybe_auto_arm: the spawn mark is what own_resume() reads as "arming"
+        calls.append(sid)
+        touch(gate.state_path(sdir, sid, gate.ARM_MARK), time.time())
+        return "armed"
+    gate.arm_from_handoff = fake_arm
+    try:
+        with scratch_dir("rlx-note") as sdir:
+            now, reset = net_dir(gate, sdir, pct=85, minutes=20)
+            for cheap in (True, False):
+                v = usage.verdict(sdir, usage.config(sdir), cheap=cheap)
+                assert v["verdict"] == "GO" and v["relaxed_pace"] and not v["relaxed_stop"], v
+            note = gate.wind_down_note({"session_id": SID}, sdir, sdir, {}, now=now)
+            assert calls == [SID], "the first relaxed-PACE note did not try to arm: %r" % calls
+            assert note and "not a wind-down" in note and "HANDOFF.md" in note, note
+            assert "being armed" in note and "--cancel --session %s" % SID in note, (
+                "the note printed while the arm is in flight lacks the cancel command: %r" % note)
+            assert "⛔" not in note and "NET" not in note and "STOP" not in note, (
+                "the relaxed-PACE note reads like a wind-down or a net zone: %r" % note)
+            assert not os.path.exists(gate.state_path(sdir, SID, "net-seen-%d" % reset)), \
+                "relaxed PACE marked the session as net-zone (WALL-HIT is not extended - T2)"
+            assert not os.path.exists(os.path.join(sdir, "state", "relaxed-%d.json" % reset))
+            assert gate.wind_down_note({"session_id": SID}, sdir, sdir, {}, now=now + 60) is None, \
+                "the relaxed-PACE note repeated inside one window with the same resume state"
+            assert calls == [SID], "the tool path re-armed inside one window: %r" % calls
+            # the record lands: "arming" -> "armed" is the same key, so no second note
+            os.makedirs(os.path.join(sdir, "resume"), exist_ok=True)
+            with open(os.path.join(sdir, "resume", gate.safe_session(SID) + ".json"), "w",
+                      encoding="utf-8") as f:
+                json.dump({"at": reset + 180, "session_id": SID}, f)
+            assert gate.wind_down_note({"session_id": SID}, sdir, sdir, {}, now=now + 120) is None
+        with scratch_dir("rlx-armed") as sdir:
+            # already armed when the band starts: the note says for when, and how to cancel
+            now, reset = net_dir(gate, sdir, pct=85, minutes=20)
+            os.makedirs(os.path.join(sdir, "resume"), exist_ok=True)
+            with open(os.path.join(sdir, "resume", gate.safe_session(SID) + ".json"), "w",
+                      encoding="utf-8") as f:
+                json.dump({"at": reset + 180, "session_id": SID}, f)
+            del calls[:]
+            note = gate.wind_down_note({"session_id": SID}, sdir, sdir, {}, now=now)
+            assert calls == [], "a session with a live resume was armed again: %r" % calls
+            assert note and "armed for" in note and "--cancel --session %s" % SID in note, note
+        with scratch_dir("rlx-flicker") as sdir:
+            # ⚠ A PACE <-> relaxed-PACE flicker inside ONE window must not re-print either note.
+            now, reset = net_dir(gate, sdir, pct=85, minutes=25)
+            out = []
+            for pct in (85, 89, 85, 89):           # 85 relaxes 25 min out, 89 does not
+                write_usage(sdir, pct, reset)
+                out.append(gate.wind_down_note({"session_id": SID}, sdir, sdir, {}, now=now))
+            assert out[0] and "not a wind-down" in out[0], out
+            assert out[1] and "usage is at PACE" in out[1], out
+            assert out[2] is None and out[3] is None, ("a PACE / relaxed-PACE flicker re-printed "
+                                                       "the notes: %r" % out)
+        with scratch_dir("rlx-subagent") as sdir:
+            now, reset = net_dir(gate, sdir, pct=85, minutes=20)
+            del calls[:]
+            got = gate.wind_down_note({"session_id": SID, "agent_id": "agent-7"}, sdir, sdir, {},
+                                      now=now)
+            assert got is None and calls == [], ("a SUB-AGENT at relaxed PACE was told, or armed "
+                                                 "its parent's resume: %r %r" % (got, calls))
+        with scratch_dir("rlx-and-net") as sdir:
+            # ⚠ PRECEDENCE: a relaxed STOP in one window and a relaxed PACE in the other is the NET
+            # zone - its note still reaches a sub-agent (it says "start NO new sub-agent").
+            now, reset = net_dir(gate, sdir, pct=90, minutes=20)
+            write_usage(sdir, 90, reset, pct7=95, reset7=int(now + 30 * 60))
+            v = usage.verdict(sdir, usage.config(sdir), cheap=True)
+            assert v["relaxed_stop"] and v["relaxed_pace"], v
+            got = gate.wind_down_note({"session_id": SID, "agent_id": "agent-7"}, sdir, sdir, {},
+                                      now=now)
+            assert got and "NET zone" in got, "relaxed PACE hid the NET note: %r" % got
+        with scratch_dir("rlx-write") as sdir:
+            now, reset = net_dir(gate, sdir, pct=85, minutes=20)
+            del calls[:]
+            gate.arm_on_handoff_write(sdir, sdir, {}, SID)
+            assert calls == [SID], "a HANDOFF.md written at relaxed PACE was not armed: %r" % calls
+        with scratch_dir("rlx-plain-pace") as sdir:
+            net_dir(gate, sdir, pct=85, minutes=180)          # a PACE far from the reset
+            del calls[:]
+            gate.arm_on_handoff_write(sdir, sdir, {}, SID)
+            assert calls == [], "a HANDOFF.md written at a plain PACE armed on the write: %r" % calls
+    finally:
+        gate.arm_from_handoff = saved
+
+    # ⭐ THE STOP-HOOK / PROMPT ARM (arm_from_handoff -> arm_trigger) and its ARMED line (D7)
+    armed = []
+    saved_auto = gate.maybe_auto_arm
+    gate.maybe_auto_arm = lambda root, sdir, cfg, folder, *a, **k: (armed.append(folder), True)[1]
+    try:
+        with scratch_dir("rlx-stop-hook") as sdir:
+            net_dir(gate, sdir, pct=85, minutes=20)
+            folder = "20261001-000000-rlx"
+            os.makedirs(os.path.join(sdir, "Memory", "tasks", folder))
+            time.sleep(0.05)
+            with open(os.path.join(sdir, "Memory", "tasks", folder, "HANDOFF.md"), "w",
+                      encoding="utf-8") as f:
+                f.write("# handoff\n" + "the next step is written here in full. " * 12)
+            with open(gate.state_path(sdir, SID, gate.HANDOFF_SEEN), "w", encoding="utf-8") as f:
+                f.write(folder + "\n")
+            line = gate.arm_from_handoff(sdir, sdir, {"task_root": "Memory/tasks"}, SID)
+            assert armed == [folder], "the turn's end at relaxed PACE did not arm: %r" % armed
+            assert line and "a PACE relaxed near the reset" in line, line
+            assert "--cancel --session %s" % SID in line, line
+    finally:
+        gate.maybe_auto_arm = saved_auto
+
+    # ⭐ A GO THAT IS A RELAXED PACE KEEPS THE ALARM - through the REAL verdict, not a typed dict.
+    import types
+    cancelled = []
+    fake = types.ModuleType("resume")
+    fake.record_path = resume.record_path
+    fake.do_cancel = lambda sdir, quiet=False, session_id=None: (cancelled.append(session_id), 0)[1]
+    saved_mod = sys.modules.get("resume")
+    sys.modules["resume"] = fake
+    try:
+        with scratch_dir("rlx-keep") as sdir:
+            now, reset = net_dir(gate, sdir, pct=85, minutes=20)
+            os.makedirs(os.path.join(sdir, "resume"), exist_ok=True)
+            with open(os.path.join(sdir, "resume", gate.safe_session(SID) + ".json"), "w",
+                      encoding="utf-8") as f:
+                json.dump({"at": reset + 180, "session_id": SID}, f)
+            v = usage.verdict(sdir, usage.config(sdir))
+            assert gate.stand_down_resume(sdir, sdir, v, SID) == "" and cancelled == [], (
+                "a GO at relaxed PACE cancelled the alarm it had armed first: %r" % cancelled)
+            write_usage(sdir, 3, reset)                        # the window reopened early
+            v = usage.verdict(sdir, usage.config(sdir))
+            gate.stand_down_resume(sdir, sdir, v, SID)
+            assert cancelled == [SID], "a plain GO no longer cancels the alarm: %r" % cancelled
+    finally:
+        if saved_mod is not None:
+            sys.modules["resume"] = saved_mod
+        else:
+            sys.modules.pop("resume", None)
+
+    # ⛔ THE RESUME TARGET (D2): a relaxed 7d PACE names the 7d reset only when the word is GO.
+    with scratch_dir("rlx-target") as sdir:
+        now = time.time()
+        r5, r7 = int(now + 180 * 60), int(now + 30 * 60)
+        write_usage(sdir, 95, r5, pct7=95, reset7=r7)          # 5h far STOP + 7d relaxed PACE
+        assert resume.reset_time(sdir, usage.config(sdir)) == (r5, "5h"), \
+            "a 7d relaxed PACE pulled a 5h STOP's resume to the 7d reset"
+        write_usage(sdir, 10, r5, pct7=95, reset7=r7)          # the 7d relaxed PACE alone
+        assert resume.reset_time(sdir, usage.config(sdir)) == (r7, "7d")
+    print("ok - relaxed PACE arms first, keeps the alarm at GO, tells once, and aims at its window")
+
+
+def case_relaxed_pace_edges(gate):
+    """The branches code review A mutated and found unpinned (agent-02-code-review-a.md, N1 + N5)."""
+    usage = gate.usage
+    calls = []
+    saved = gate.arm_from_handoff
+    # an arm that does NOT start (no handoff yet): no spawn mark, so the state stays "none"
+    gate.arm_from_handoff = lambda root, sdir, cfg, sid, v=None: (calls.append(sid), None)[1]
+    try:
+        with scratch_dir("rlx-key") as sdir:
+            now, reset = net_dir(gate, sdir, pct=85, minutes=20)
+            n1 = gate.wind_down_note({"session_id": SID}, sdir, sdir, {}, now=now)
+            assert n1 and "no resume yet" in n1, n1
+            # the resume state changes -> the note speaks again (the key carries it)
+            os.makedirs(os.path.join(sdir, "resume"), exist_ok=True)
+            with open(os.path.join(sdir, "resume", gate.safe_session(SID) + ".json"), "w",
+                      encoding="utf-8") as f:
+                json.dump({"at": reset + 180, "session_id": SID}, f)
+            n2 = gate.wind_down_note({"session_id": SID}, sdir, sdir, {}, now=now + 60)
+            assert n2 and "armed for" in n2, "none -> armed did not speak again: %r" % n2
+            # a NEW window -> it speaks again (the key carries the reset)
+            write_usage(sdir, 85, reset + 60)
+            n3 = gate.wind_down_note({"session_id": SID}, sdir, sdir, {}, now=now + 120)
+            assert n3 and "not a wind-down" in n3, "a new window's relaxed PACE was silent: %r" % n3
+        with scratch_dir("rlx-then-net") as sdir:
+            # N1: a failed attempt at relaxed PACE must not use up the NET zone's attempt
+            now, reset = net_dir(gate, sdir, pct=85, minutes=20)
+            del calls[:]
+            gate.wind_down_note({"session_id": SID}, sdir, sdir, {}, now=now)
+            write_usage(sdir, 90, reset)
+            gate.wind_down_note({"session_id": SID}, sdir, sdir, {}, now=now + 60)
+            assert calls == [SID, SID], ("the NET zone lost its tool-path arm to the relaxed-PACE "
+                                         "attempt of the same window: %r" % calls)
+        with scratch_dir("rlx-7d") as sdir:
+            now, _r = net_dir(gate, sdir, pct=10, minutes=180)
+            write_usage(sdir, 10, int(now + 180 * 60), pct7=95, reset7=int(now + 30 * 60))
+            n = gate.wind_down_note({"session_id": SID}, sdir, sdir, {}, now=now)
+            assert n and "7d at 95%" in n and time.strftime(
+                "%H:%M", time.localtime(int(now + 30 * 60))) in n, (
+                "a 7d relaxed PACE note shows the wrong window: %r" % n)
+        with scratch_dir("rlx-7d-then-5h-stop") as sdir:
+            # ⛔ review B, B1: armed for the 7d reset at a 7d relaxed PACE, then the 5h reaches a far
+            # STOP. The 7d alarm would wake into the 5h STOP and give up - it must be re-aimed.
+            now, _r = net_dir(gate, sdir, pct=10, minutes=180)
+            r5, r7 = int(now + 180 * 60), int(now + 30 * 60)
+            write_usage(sdir, 10, r5, pct7=95, reset7=r7)
+            os.makedirs(os.path.join(sdir, "resume"), exist_ok=True)
+            with open(os.path.join(sdir, "resume", gate.safe_session(SID) + ".json"), "w",
+                      encoding="utf-8") as f:
+                json.dump({"at": r7 + 180, "armed_for_reset": r7, "session_id": SID}, f)
+            del calls[:]
+            n = gate.wind_down_note({"session_id": SID}, sdir, sdir, {}, now=now)
+            gate.arm_on_handoff_write(sdir, sdir, {}, SID)
+            assert calls == [] and n and "armed for" in n, (
+                "a resume aimed at the relaxed 7d reset was re-armed at that same band: %r %r"
+                % (calls, n))
+            write_usage(sdir, 95, r5, pct7=95, reset7=r7)
+            n = gate.wind_down_note({"session_id": SID}, sdir, sdir, {}, now=now + 60)
+            assert calls == [SID], ("the tool path kept a resume aimed at the 7d reset when the 5h "
+                                    "STOP needs the 5h one: %r" % calls)
+            assert n and "usage is at STOP" in n and "is armed" not in n, (
+                "the STOP note claimed the 7d-aimed alarm covers this window: %r" % n)
+            del calls[:]
+            gate.arm_on_handoff_write(sdir, sdir, {}, SID)
+            assert calls == [SID], ("a HANDOFF.md written at the 5h STOP was not armed because a "
+                                    "resume for ANOTHER reset exists: %r" % calls)
+        with scratch_dir("re-aim-in-flight") as sdir:
+            # fix review F1: once the re-aim has started, the next tool call must not say "NO resume"
+            now, _r = net_dir(gate, sdir, pct=10, minutes=180)
+            r5, r7 = int(now + 180 * 60), int(now + 30 * 60)
+            write_usage(sdir, 95, r5, pct7=95, reset7=r7)
+            os.makedirs(os.path.join(sdir, "resume"), exist_ok=True)
+            with open(os.path.join(sdir, "resume", gate.safe_session(SID) + ".json"), "w",
+                      encoding="utf-8") as f:
+                json.dump({"at": r7 + 180, "armed_for_reset": r7, "armed_at": now - 600,
+                           "session_id": SID}, f)
+            touch(gate.state_path(sdir, SID, gate.ARM_MARK), now - 600)    # the OLD arm's mark
+
+            def spawn(root, sdir_, cfg, sid, v=None):
+                calls.append(sid)
+                touch(gate.state_path(sdir_, sid, gate.ARM_MARK), time.time())
+                return "armed"
+            gate.arm_from_handoff = spawn
+            del calls[:]
+            n1 = gate.wind_down_note({"session_id": SID}, sdir, sdir, {}, now=time.time())
+            n2 = gate.wind_down_note({"session_id": SID}, sdir, sdir, {}, now=time.time())
+            assert calls == [SID] and n1 and "being armed" in n1, (calls, n1)
+            assert n2 is None, ("the call after a re-aim started said the session has no resume: %r"
+                                % n2)
+            gate.arm_from_handoff = lambda root, sdir, cfg, sid, v=None: (calls.append(sid), None)[1]
+        with scratch_dir("re-aim-old-mark") as sdir:
+            # ...but the OLD arm's own fresh mark is not a re-aim in flight: it must still try
+            now, _r = net_dir(gate, sdir, pct=10, minutes=180)
+            r5, r7 = int(now + 180 * 60), int(now + 30 * 60)
+            write_usage(sdir, 95, r5, pct7=95, reset7=r7)
+            os.makedirs(os.path.join(sdir, "resume"), exist_ok=True)
+            with open(os.path.join(sdir, "resume", gate.safe_session(SID) + ".json"), "w",
+                      encoding="utf-8") as f:
+                json.dump({"at": r7 + 180, "armed_for_reset": r7, "armed_at": now - 30,
+                           "session_id": SID}, f)
+            touch(gate.state_path(sdir, SID, gate.ARM_MARK), now - 31)     # spawned, then recorded
+            del calls[:]
+            gate.wind_down_note({"session_id": SID}, sdir, sdir, {}, now=now)
+            assert calls == [SID], ("the old arm's spawn mark was taken for a re-aim in flight, so "
+                                    "nothing re-aimed: %r" % calls)
+        with scratch_dir("rlx-auto-off") as sdir:
+            now, reset = net_dir(gate, sdir, pct=85, minutes=20)
+            n = gate.wind_down_note({"session_id": SID}, sdir, sdir, {"auto_arm_resume": False},
+                                    now=now)
+            assert n and "auto_arm_resume is off" in n and "--arm --task" in n, n
+    finally:
+        gate.arm_from_handoff = saved
+
+    # the ARMED line names a relaxed STOP too
+    saved_auto = gate.maybe_auto_arm
+    gate.maybe_auto_arm = lambda *a, **k: True
+    try:
+        with scratch_dir("net-armed-label") as sdir:
+            net_dir(gate, sdir, pct=90, minutes=20)
+            folder = "20261001-000000-net"
+            os.makedirs(os.path.join(sdir, "Memory", "tasks", folder))
+            time.sleep(0.05)
+            with open(os.path.join(sdir, "Memory", "tasks", folder, "HANDOFF.md"), "w",
+                      encoding="utf-8") as f:
+                f.write("# handoff\n" + "the next step is written here in full. " * 12)
+            with open(gate.state_path(sdir, SID, gate.HANDOFF_SEEN), "w", encoding="utf-8") as f:
+                f.write(folder + "\n")
+            line = gate.arm_from_handoff(sdir, sdir, {"task_root": "Memory/tasks"}, SID)
+            assert line and "a STOP relaxed near the reset" in line, line
+    finally:
+        gate.maybe_auto_arm = saved_auto
+
+    # the AUTO-ARM log line carries the band - the real maybe_auto_arm, with Popen stubbed so
+    # nothing reaches a scheduler
+    import subprocess as _sp
+    spawned = []
+    saved_popen = _sp.Popen
+    _sp.Popen = lambda argv, **kw: spawned.append(argv)
+    try:
+        with scratch_dir("rlx-band-log") as sdir:
+            now, reset = net_dir(gate, sdir, pct=85, minutes=20)
+            folder = "20261001-000000-band"
+            os.makedirs(os.path.join(sdir, "Memory", "tasks", folder))
+            with open(os.path.join(sdir, "Memory", "tasks", folder, "HANDOFF.md"), "w",
+                      encoding="utf-8") as f:
+                f.write("# handoff\n" + "the next step is written here in full. " * 12)
+            assert gate.maybe_auto_arm(sdir, sdir, {"task_root": "Memory/tasks"}, folder,
+                                       now - 60, SID) is True
+            log = open(os.path.join(sdir, ".claude", "dispatch_gate.log"), encoding="utf-8").read()
+            assert "band=relaxed-pace" in log and len(spawned) == 1, (log[-300:], spawned)
+            assert "--session" in spawned[0], spawned
+    finally:
+        _sp.Popen = saved_popen
+    print("ok - relaxed PACE re-speaks on a state or window change, keeps the NET zone's arm, "
+          "names its window, and logs its band")
+
+
+def case_relaxed_pace_dispatch_is_allowed_for_real():
+    """⚠ Relaxed PACE is NOT a dispatch refusal and needs no handoff to dispatch (ADR T2)."""
+    import subprocess
+    gate_py = repo_path("hooks", "dispatch_gate.py")
+    with scratch_dir("rlx-dispatch") as work:
+        sdir, repo = os.path.join(work, "state-root"), os.path.join(work, "repo")
+        os.makedirs(os.path.join(sdir, "state"))
+        os.makedirs(os.path.join(repo, ".git"))
+        task = os.path.join(repo, "Memory", "tasks", "20260101-000000-t")
+        os.makedirs(task)
+        now = time.time()
+        write_usage(sdir, 85, int(now + 20 * 60))
+        # ⛔ AUTO-ARM OFF, as in the net-zone case: never register a real scheduled task.
+        with open(os.path.join(sdir, "config.json"), "w", encoding="utf-8") as f:
+            json.dump({"auto_arm_resume": False}, f)
+        env = dict(os.environ, CLAUDE_DISPATCH_DIR=sdir)
+        base = {"session_id": SID, "cwd": repo}
+
+        def fire(payload):
+            p = subprocess.run([sys.executable, gate_py], input=json.dumps(payload).encode("utf-8"),
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=120)
+            out = p.stdout.decode("utf-8", "replace").strip()
+            return json.loads(out) if out else None
+
+        fire(dict(base, hook_event_name="SessionStart"))
+        time.sleep(1.1)
+        with open(os.path.join(task, "prompts.md"), "w", encoding="utf-8") as f:
+            f.write("# plan\n## sub-task 1\nthe full prompt\n")
+        for skill in ("dispatch-protocol", "unattended-work"):
+            with open(os.path.join(sdir, "state", "%s.skill-seen-%s" % (SID, skill)), "w",
+                      encoding="utf-8") as f:
+                f.write(skill)
+        got = fire(dict(base, hook_event_name="PreToolUse", tool_name="Agent", tool_use_id="t1",
+                        tool_input={"subagent_type": "general-purpose", "description": "x",
+                                    "prompt": "Work in %s and report." % task}))
+        log = ""
+        for p in (os.path.join(sdir, "dispatch_gate.log"),
+                  os.path.join(repo, ".claude", "dispatch_gate.log")):
+            if os.path.exists(p):
+                log += open(p, encoding="utf-8").read()
+    assert got is not None, "the gate printed nothing for a relaxed-PACE dispatch. Log: %s" % log[-600:]
+    hso = got.get("hookSpecificOutput", {})
+    assert hso.get("permissionDecision") != "deny", ("a relaxed-PACE dispatch was refused: %r"
+                                                     % got)
+    assert "GATE-ERROR" not in log and "DENY(" not in log, log[-600:]
+    print("ok - a relaxed-PACE dispatch is allowed by the real hook, with no handoff required")
+
+
 def main():
     fresh_scratch()
     os.environ["CLAUDE_DISPATCH_DIR"] = os.path.join(fresh_scratch(), "state-dir-for-the-log")
@@ -337,6 +708,9 @@ def main():
     case_notes_never_claim_a_missing_resume(gate)
     case_net_zone_refuses_a_dispatch_for_real()
     case_wall_hit(gate)
+    case_relaxed_pace_arms_first(gate, resume)
+    case_relaxed_pace_edges(gate)
+    case_relaxed_pace_dispatch_is_allowed_for_real()
     print("net zone OK")
     return 0
 

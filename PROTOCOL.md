@@ -153,8 +153,11 @@ says `TAKEN OVER` (0.66.0; "active in the last 30 minutes" before that cancelled
 armed near a reset, and before 0.60.0 ANY active session stood every alarm down). In the NET
 zone (a STOP relaxed near the reset) the gate arms each session's resume from its own HANDOFF.md
 the first time it tells it, and its note says whether that session has one - write HANDOFF.md
-when it says you have none. On `SessionStart`/`UserPromptSubmit` the gate cancels an armed alarm when the
-verdict is back to GO/PACE (early reset, or a changed account) and says so — repeat that
+when it says you have none. Since 0.67.0 the same arming applies to a PACE relaxed near the reset:
+dispatch stays allowed, the note says once per window that it is not a wind-down and how to cancel
+this session's alarm, and a GO that is only a relaxed PACE (or a relaxed STOP) keeps the alarm.
+On `SessionStart`/`UserPromptSubmit` the gate cancels an armed alarm when the verdict is back to
+a plain GO (early reset, or a changed account) and says so — repeat that
 line to the user. If the account changed while an alarm is armed, its time is meaningless:
 have the user run `resume.py --cancel --session <that session's id>` (`resume.py --status` shows `⛔ STALE` and prints
 the exact command; a bare `--cancel` clears EVERY session's alarm). Arming runs the
