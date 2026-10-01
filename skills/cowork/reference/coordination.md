@@ -221,6 +221,17 @@ check-in file named by session id becomes an orphan the moment its holder restar
 name that survives is the role the owner assigned** - so the role is the key, and everything the
 runtime hands out is a volatile field the holder rewrites whenever it restarts.
 
+⛔ **A WAKE IS A RESTART (0.68.0, the owner's observation 2026-10-01).** Woken sessions did not
+reliably re-check-in: the rule said "on every restart", and a session that was woken - by its own
+alarm, by the owner after an idle stretch, after a resume, a `/clear` or a context compaction -
+did not count itself as restarted. It is: while it slept its runtime name and `[ref]` may have
+changed, a headless resume runs under a NEW session id, and a compaction loses the memory of the
+board. So the first act after ANY wake is: re-read the board, then rewrite your own check-in
+(runtime name, `[ref]`, session id, `last confirmed`) before other work. ⭐ The dispatch-guard hook
+says so at the wake when a peer shares the repository or this session has used this skill (log
+line `WAKE-CHECKIN-NUDGE`). ⚠ A headless resume that finds nothing left for its task and stops
+does NOT check in - it would overwrite the role's check-in with an id that is about to vanish.
+
 ```
 <shared dir>/checkin/<role>.md              e.g. checkin/S4.md
   role / code name : S4                     (assigned by the owner - the stable key)

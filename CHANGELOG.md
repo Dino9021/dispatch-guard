@@ -33,6 +33,39 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.68.0
+
+擁有者 2026-10-01 的四點：「鬧鐘不是就該叫醒 session，然後 session 醒來後將叫醒該 session 的鬧鐘全部關掉?」、「被鬧鐘叫醒後應該去讀
+handoff 或檢查未完成項目，如果真的沒有，就停下來就好」、0.67 沒做的三項「要加」，以及「重新被叫醒的 session（無論是鬧鐘或被使用者
+叫醒）不一定會先檢查、登記協力板自己的 session id」。ADR：`Memory/tasks/20261001-085000-wake-the-session-check-then-stop/ADR.md`。
+
+- **鬧鐘叫醒 session 自己。** OS 排程（路線 B）只能另開一個無頭 session，所以上鬧鐘時 session 幾乎從沒被請去排路線 A：工具路徑、寫
+  HANDOFF 時上的鬧鐘什麼都沒說，回合結束時上的只有人看得到。現在每一則給模型看的上鬧鐘提示（STOP／NET／放寬 PACE 的提示、上鬧鐘那一行、
+  STOP 拒絕派工、手動 `--arm`）都附上一行：請 session 排一個一次性 CronCreate 喚醒，**給確切的 cron**——重置之後、OS 排程之前
+  （預設重置 +1 分、取整分鐘，cron 在那一分鐘的 :00 秒觸發也一定在重置之後；避開 :00／:30，因為 CronCreate 在那兩個時刻最多提早 90 秒；帶日期與月份，7d 重置不會被當成今天）——以及喚醒提示。
+  它一醒（以 GO 送進來的輸入），gate 就取消這個 session 的 OS 排程；鬧鐘一直是每個 session 各自一個。寫 HANDOFF 時上的鬧鐘，
+  也在同一次 PostToolUse 告訴模型和畫面（併進那次唯一的輸出，不提早 return）。
+- **醒來先檢查，沒事就停。** 路線 A 的喚醒提示、無頭續跑的兩種提示，都改成先檢查**這個任務**：HANDOFF 的 Next step 對照上鬧鐘後動到
+  任務資料夾或它點名的檔案的 commit、資料夾裡的 RESULT.md／progress.md；什麼都沒剩（或 HANDOFF 說剩下的在等擁有者或別的 session），
+  就在 Result 寫一行、停下來——不做別的事、不去協力板或待辦清單找事做。2026-10-01 07:03 的無頭續跑就是發現沒事做之後，
+  又花了 8 分鐘做自己挑的檢查、還改了一份 README。
+- **醒來先報到（cowork）。** 規則 2 說「每次重開都要重寫報到檔」，但「重開」從沒包含「被叫醒」；hook 唯一的 cowork 強制在 skill 載入過
+  之後就不再出聲。現在被自己的鬧鐘叫醒、閒置超過 `wake_gap_min`（30）分鐘後收到輸入、resume／`/clear`／內容壓縮之後，只要同一個 repo
+  還有活著的 session、或這個 session 用過 cowork，gate 就請它**先**重讀協力板、用這個 session id 重寫自己的報到檔（log：
+  `WAKE-CHECKIN-NUDGE`）。只提醒、不拒絕（報到檔路徑是專案自己的，而且醒來後第一筆寫入通常就是報到檔）。無頭續跑只有要繼續做時才報到
+  ——要停的不去用一個馬上消失的 id 蓋掉角色的報到檔。cowork 規則 2（中英）與 `reference/coordination.md` 2.8 寫明「被叫醒也算重開」。
+- **0.67 沒做的三項：** 放寬 PACE 時派工要先有當前的 HANDOFF.md（拒絕訊息寫出「a PACE relaxed near the reset」，不是只寫 GO）；
+  放寬 PACE／NET 區時使用者輸入也上鬧鐘（不要求回覆確認行）；撞牆告知（WALL-HIT）也涵蓋放寬 PACE 那一段。
+- **測試不再改到使用者真的 shim。** session 開始時 gate 會修 statusline，而 `install.py` 寫死真正的 state 目錄、把 shim 指向
+  「匯入它的那一份程式」——所以每個驅動真 SessionStart 的測試（`test_guards`、`test_net_zone`、`test_slot_lifecycle`）都把
+  `~/.claude/dispatch-guard/run.sh`／`run.cmd` 改指到正在測的 repo，本機的排程續跑與 statusline 就跑未提交的程式（2026-10-01 實測）。
+  現在 gate 只在自己的 state 目錄就是 install 的那一個時才修 statusline；`test_all` 多一項「real shim kept」（內容加 mtime 比對——
+  另一個 session 開始時會把 shim 改回去，只比內容會誤判沒事，第一次突變就是這樣漏掉的）。⚠ 設了 `$CLAUDE_DISPATCH_DIR` 的人不再
+  自動修 statusline（`install.py` 本來就不認這個變數）。
+- 刻意不做：回合結束的 Stop hook 仍然不擋——在那裡上的鬧鐘只有人看得到，所以那一個不會被請去排路線 A（記在 PENDING）。
+- 測試：`test_net_zone` 新增兩個案例、改寫兩個（放寬 PACE 派工改為「沒有 HANDOFF 擋、有就放」，WALL-HIT 記號改為要寫）；
+  新的 37 個突變（含三輪審查後補的）全數抓到，0.67 的 30 個在新程式上照樣全數抓到，shim 防護的突變被「real shim kept」抓到；`test_all` 18/18；ADR 與補遺各審一輪、程式審兩輪、修正再審一輪。
+
 ## 0.67.1
 
 - 收窄 0.67.0 的「對準別的重置的鬧鐘不算數」：**合併結論是 PACE 時不重新瞄準**。那一格只會是「一個視窗是放寬的 STOP、另一個是遠的
@@ -2960,6 +2993,54 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.68.0
+
+The owner's four points of 2026-10-01: "shouldn't the alarm wake the session, and the woken session then turn off the
+alarms that woke it?"; "a session woken by its alarm should read its handoff or check what is unfinished, and if there
+really is nothing, just stop"; "add them" (the three items 0.67 left out); and "a re-woken session - by the alarm or by
+the user - does not always check and re-register its session id on the coordination board". ADR:
+`Memory/tasks/20261001-085000-wake-the-session-check-then-stop/ADR.md`.
+
+- **The alarm wakes the session itself.** The OS task (route B) can only start a new headless session, and at arming
+  the session was almost never asked for route A: the tool-path and HANDOFF-write arms said nothing, the turn-end arm
+  reached only the person. Every arm text the model reads (the STOP / NET / relaxed-PACE notes, the ARMED line, the STOP
+  dispatch refusal, a hand-run `--arm`) now asks it to schedule a one-shot CronCreate wake with **the exact cron** -
+  after the reset and before the OS task (reset + 1 min by default, whole minutes so its :00 second is after the reset; moved off :00 / :30, where CronCreate fires up to 90 s
+  early; day and month pinned, so a 7d reset is not read as today) - and the wake prompt. When it fires (a prompt at GO)
+  the gate cancels this session's OS task; alarms are, as since 0.60, one per session. The HANDOFF-write arm is now told
+  to the model and the screen on that same PostToolUse, composed into its one print (no early return).
+- **A woken run checks first and stops when nothing is left.** The route-A wake prompt and both headless prompts now
+  check THIS task first: the HANDOFF's Next step against the commits since arming that touch the task folder or the files
+  it names, and that folder's RESULT.md / progress.md; if nothing is left (or the HANDOFF says the rest waits on the
+  owner or another session) it writes one line in its Result and stops - no other work, no looking in boards or pending
+  lists. The 07:03 headless run of 2026-10-01 found nothing to do and then spent 8 minutes on checks it picked itself and
+  edited a README.
+- **A woken session checks in first (cowork).** Rule 2 said "rewrite the check-in on every restart", and a wake never
+  counted as one; the hook's only cowork enforcement goes quiet once the skill was loaded. Now a wake by its own alarm, a
+  prompt after `wake_gap_min` (30) idle minutes, or a resume / `/clear` / compaction - with a live peer in the repository
+  or after this session used cowork - gets a line asking it to re-read the board and rewrite its own check-in with this
+  session id FIRST (log: `WAKE-CHECKIN-NUDGE`). A reminder, not a refusal (the check-in path is the project's, and the
+  first write after a wake is usually the check-in itself). A headless run checks in only when it is going to continue,
+  so one that stops does not overwrite the role's check-in with an id about to vanish. Cowork rule 2 (en + zh-TW) and
+  `reference/coordination.md` 2.8 now say a wake is a restart.
+- **The three items 0.67 left out:** a dispatch at relaxed PACE needs a current HANDOFF.md (the refusal names "a PACE
+  relaxed near the reset", not a bare GO); a prompt in the relaxed PACE / NET bands arms too (no acknowledgement line);
+  WALL-HIT covers the relaxed-PACE band.
+- **Tests no longer rewrite the user's real shim.** The gate's SessionStart statusline repair goes through `install.py`,
+  which hard-codes the real state dir and points the shim at the copy that imported it - so every check driving a real
+  SessionStart (`test_guards`, `test_net_zone`, `test_slot_lifecycle`) re-pointed `~/.claude/dispatch-guard/run.sh` /
+  `run.cmd` at the checkout under test, and the machine's scheduled resumes and statusline ran uncommitted code (measured
+  2026-10-01). The gate now repairs the statusline only when its own state dir IS install's; `test_all` gains "real shim
+  kept" (bytes AND mtime - another session's start puts the shim back, so bytes alone read clean; the first mutation of
+  the guard survived exactly that way). ⚠ With `$CLAUDE_DISPATCH_DIR` set the automatic statusline repair no longer runs
+  (install.py never honoured that variable).
+- Deliberately not done: the Stop hook still never blocks the turn's end - an alarm armed only there reaches the person,
+  not the model, so route A is not requested for it (in PENDING).
+- Tests: two new `test_net_zone` cases and two rewritten (a relaxed-PACE dispatch is now refused without a HANDOFF and
+  allowed with one; the WALL-HIT markers are now written); 37 new mutations (including those added after the three review rounds) all killed, 0.67's 30
+  still all killed on the new code, the shim guard's mutation killed by "real shim kept"; `test_all` 18/18; the ADR and its
+  addendum reviewed once each, two code reviews and a fix review.
 
 ## 0.67.1
 

@@ -35,7 +35,9 @@ If you read nothing else, these are the ones whose absence caused real damage.
    too; a resumed session gets a new session id. So the first act of any cowork session is to
    write the check-in file of its ROLE (`checkin/S4.md`, in a fixed shared directory) holding
    its current runtime name, `[ref]` and session id as volatile fields it rewrites on every
-   restart; and, when the owner assigns a code name, to answer "received - my code name is S4".
+   restart - and **a wake is a restart** (its own alarm, the owner after an idle stretch, a
+   resume, `/clear`, a compaction: `reference/coordination.md` 2.8); and, when the owner assigns
+   a code name, to answer "received - my code name is S4".
    Code names are plain letters and digits - never `@` (the messaging tool's team syntax) - and
    are never used as a send address: to reach a role, read its check-in file, find that name in
    the live list, send to it. A roster is history, not an address book.

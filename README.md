@@ -1187,6 +1187,12 @@ python hooks/usage.py --verdict --json   # 給程式讀的格式
 的當下、回合結束、每視窗第一次工具呼叫、派工時，gate 都替這個 session 上鬧鐘，GO 也不取消。提示每視窗一次，明講「這不是收尾」，
 並附上取消這個 session 鬧鐘的指令（`resume.py --cancel --session <id>`）——撐過重置、重置後觸發過 hook 的 session，鬧鐘會自己讓路；
 重置前就做完離開的，用那一行取消。
+⭐ 0.68.0 起：放寬 PACE 時派工也要先有當前的 HANDOFF.md；使用者輸入時也會上鬧鐘；撞牆告知也涵蓋這一段。
+**鬧鐘叫醒的是 session 自己**：OS 排程只能另開一個無頭 session，所以每一則給模型看的上鬧鐘提示都請 session 自己排一個一次性的
+CronCreate 喚醒（給確切的 cron，在重置之後、OS 排程之前）；它一醒，gate 就取消這個 session 的 OS 排程。
+**醒來先檢查**：不論是自己醒還是無頭續跑，都先重讀 HANDOFF、比對這個任務還有什麼沒做；真的沒有，寫一行就停，不去找別的事做。
+**醒來先報到**：同一個 repo 還有別的 session 活著（或這個 session 用過 cowork）時，被鬧鐘叫醒、閒置超過 `wake_gap_min`（30）
+分鐘後的輸入、resume／`/clear`／內容壓縮之後，gate 都會提醒它先重讀協力板、用這個 session id 重寫自己的報到檔。
 視窗在放寬之後、重置之前撞到上限時，gate 記一行 `WALL-HIT`，重置後，那個視窗裡在 NET 區工作過的每個 session，下一次輸入時會被告知一次
 （被上限切斷的回合在畫面上只是安靜地結束，當事的 session 自己不會知道）。
 結論還處理了三件單看數字會判斷錯的事：重置時間的計算、週用量的假警報、以及燒完速度的推估。
@@ -2898,7 +2904,15 @@ the turn ends, on the window's first tool call and on a dispatch, and a GO does 
 comes once per window, says plainly that it is not a wind-down, and carries the cancel command for that
 session's alarm (`resume.py --cancel --session <id>`) - a session that survives the reset and fires a
 hook after it has its alarm stand itself down; one that finishes before the reset and leaves cancels it
-with that line. When the window hits the cap after a relaxation and before its reset, the gate logs a
+with that line. ⭐ Since 0.68.0 a dispatch at relaxed PACE needs a current HANDOFF.md, a prompt arms there
+too, and WALL-HIT covers that band. **The alarm wakes the session itself**: the OS task can only start a
+new headless session, so every arm line the model reads asks the session to schedule its own one-shot CronCreate wake
+(the exact cron, after the reset and before the OS task); when it fires the gate cancels the OS task.
+**A woken run checks first**: in-session or headless, it re-reads its HANDOFF, checks what is still open
+for that task, and if nothing is left says so in one line and stops - no looking for other work.
+**A woken session checks in first**: with a live peer in the repository (or cowork used), a wake by
+alarm, a prompt after `wake_gap_min` (30) idle minutes, or a resume / `/clear` / compaction gets a line
+asking it to re-read the board and rewrite its own check-in with this session id. When the window hits the cap after a relaxation and before its reset, the gate logs a
 `WALL-HIT` and tells each session that worked in the net zone of that window once, at its next prompt after the reset (a turn the cap cuts just
 ends quietly on screen - the session itself does not know). Three things the verdict handles that a
 raw reading gets wrong: reset arithmetic, weekly false alarms, and burn projection.

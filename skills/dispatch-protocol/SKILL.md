@@ -153,10 +153,17 @@ is the whole of it. **At GO you keep working, however small N is.**
 
 ⭐ **One carve-out near the reset, and it is not a hand-over.** A PACE or STOP can be RELAXED to GO
 when the window resets soon and the budget should last (the verdict line says `Relaxed near the
-reset` or `NET`). You keep working there - and at a relaxed PACE you may still dispatch - but keep a
-stand-alone `HANDOFF.md` current: the gate arms your resume from it FIRST (owner, 2026-10-01; 0.67.0).
-An alarm that rings after you survived the reset stands itself down if this session fired a hook
-after the reset; one you no longer want is cancelled with `resume.py --cancel --session <your id>`.
+reset` or `NET`). You keep working there - and at a relaxed PACE you may still dispatch, once a current
+`HANDOFF.md` exists (0.68.0 refuses a dispatch without one) - and the gate arms your resume from that
+file FIRST (owner, 2026-10-01; 0.67.0). An alarm that rings after you survived the reset stands itself
+down if this session fired a hook after the reset; one you no longer want is cancelled with
+`resume.py --cancel --session <your id>`.
+
+⭐ **The alarm should wake THIS session (0.68.0).** The OS alarm can only start a NEW headless run; what
+wakes you is the one-shot CronCreate wake the gate's arm line asks you to schedule - with the exact cron,
+after the reset and before the OS alarm. When it fires, the gate cancels your OS alarm. A woken run -
+yours or the headless one - re-reads its HANDOFF.md, checks what is still unfinished for THAT task, and
+if nothing is left says so in one line and stops: no looking for other work.
 
 ⚠ **N SHOUTS LOUDEST WHERE IT IS LEAST TRUSTWORTHY.** The rate is anchored at the window's own
 open, so a young window makes any spend look steep. Measured 2026-09-14: at **10% used, 10

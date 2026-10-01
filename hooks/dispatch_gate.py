@@ -180,6 +180,9 @@ DEFAULTS = {
     # cmd_guards.PEER_ALIVE_MIN for the two fail-open directions. Coerced like the other
     # numeric keys: a bad value is logged and replaced by this default, never a crash.
     "peer_alive_min": cmd_guards.PEER_ALIVE_MIN,
+    # ⭐ A PROMPT AFTER THIS MANY IDLE MINUTES IS A WAKE (0.68, ADR 20261001-085000 D8): a woken
+    # session with a live peer is asked to re-check-in on the cowork board. See wake_reason().
+    "wake_gap_min": 30,
 }
 
 # ⭐ ONE CONFIG READER, TWO FAMILIES. Merging the guard switches into DEFAULTS gives them
@@ -849,13 +852,37 @@ def maybe_install_vscode_task(root, cfg, sdir=None):
         return " ⚠ " + broke, broke
 
 
-def maybe_adopt_statusline(cfg):
+def touches_real_state(sdir):
+    """May this gate touch install.py's paths (the real shim, ~/.claude/settings.json)? Never raises.
+
+    ⛔ install.py hard-codes ~/.claude/dispatch-guard and writes its shim there pointed at the
+    copy that IMPORTED it (`write_shim`). The statusline repairs below reach it from SessionStart,
+    so every test driving a real SessionStart against a temporary state dir re-pointed the
+    USER'S shim at the checkout under test - measured 2026-10-01: test_guards, test_net_zone and
+    test_slot_lifecycle each rewrote it, and the scheduled resumes and the statusline then ran
+    uncommitted code. ⇒ Only when this gate's state dir IS install's. ⚠ A user who set
+    $CLAUDE_DISPATCH_DIR loses the automatic statusline repair; install.py never honoured that
+    variable anyway (usage.state_dir's docstring).
+    """
+    if sdir is None:
+        return True
+    try:
+        sys.path.insert(0, os.path.dirname(HERE))
+        import install
+        same = (os.path.normcase(os.path.realpath(sdir))
+                == os.path.normcase(os.path.realpath(install.STATE_DIR)))
+    except Exception:
+        return False
+    return same
+
+
+def maybe_adopt_statusline(cfg, sdir=None):
     """Take an EMPTY statusline slot, so the CLI shows the line with nothing typed.
 
     ⛔ Only when the slot is empty. See install.adopt_statusline_if_empty() for why that
     boundary is the whole of the safety here.
     """
-    if not cfg.get("auto_statusline"):
+    if not cfg.get("auto_statusline") or not touches_real_state(sdir):
         return None, None
     try:
         sys.path.insert(0, os.path.dirname(HERE))
@@ -879,7 +906,7 @@ def maybe_adopt_statusline(cfg):
             "your next turn. `/dispatch-guard:uninstall` takes it back out.")
 
 
-def maybe_repoint_statusline():
+def maybe_repoint_statusline(sdir=None):
     """Repair a statusline left aimed at a version `claude plugin update` moved on from.
 
     ⛔ WHY IT IS SAFE TO DO WITHOUT ASKING, when writing .vscode/tasks.json is not. This
@@ -889,6 +916,8 @@ def maybe_repoint_statusline():
 
     ⚠ Cheap: one file read, and it returns immediately when the path is already right.
     """
+    if not touches_real_state(sdir):
+        return None, None
     try:
         sys.path.insert(0, os.path.dirname(HERE))
         import install                                  # the plugin root, beside hooks/
@@ -1767,7 +1796,10 @@ def handoff_refusal(root, sdir, cfg, folder, started, log_to=None):
     # ⭐ THE NET ZONE COUNTS AS PAST-SOFT. A relaxed STOP reads GO, but a new dispatch there
     # still needs a fresh handoff - the window can hit the cap mid-dispatch, and the net's
     # promise is that the handoff is current. `relaxed_stop` catches it whatever the word.
-    if v["verdict"] not in ("PACE", "STOP") and not v.get("relaxed_stop"):
+    # ⭐ AND THE RELAXED-PACE BAND (0.68, owner 2026-10-01 「要加」): the handoff and the alarm go
+    # on first there too, so a dispatch waits for a current HANDOFF.md. ADR 20261001-085000 D4.
+    if (v["verdict"] not in ("PACE", "STOP") and not v.get("relaxed_stop")
+            and not v.get("relaxed_pace")):
         return None
     state, path = handoff_state(root, cfg, folder, started)
     if state in ("ok", "unknown"):
@@ -1792,7 +1824,7 @@ def handoff_refusal(root, sdir, cfg, folder, started, log_to=None):
             "and then the next window is spent rediscovering what this one was doing. "
             "⭐ Set `require_handoff_past_soft: false` to dispatch without one - the resume "
             "then wakes with a reconstruction prompt instead, which costs tokens."
-            % (v["verdict"], why, path))
+            % (relax_band_label(v), why, path))
 
 
 # ⭐ THE BANNER THAT SAYS A HUMAN DID NOT WRITE THIS. Measured 2026-09-01: a 390-byte stub
@@ -1955,7 +1987,9 @@ def wind_down_note(payload, root, sdir, cfg, now=None):
         return None
     if word == "STOP" or relaxed_stop or relaxed_pace:
         reset = window_reset(sdir, v)
-        if relaxed_stop and reset:
+        # ⭐ 0.68: the relaxed-PACE band too, so WALL-HIT covers it (owner 「要加」, ADR
+        # 20261001-085000 D6); the marker keeps its `net-seen` name for upgrade compatibility.
+        if (relaxed_stop or relaxed_pace) and reset:
             note_relaxed(sdir, reset, "7d" if v.get("relaxed_driver") == "7d" else "5h")
             # ⭐ THIS session worked in the net zone of this window - only such a session hears the
             # WALL-HIT afterwards (wall_hit_note); an idle one, a later one, a headless resume do not.
@@ -2036,6 +2070,10 @@ def wind_down_note(payload, root, sdir, cfg, now=None):
     # every session; on 2026-09-29 three of the four sessions told so had none. item 3.
     armed_line = resume_state_line(arm_state, arm_rec, now,
                                    cfg.get("auto_arm_resume", DEFAULTS["auto_arm_resume"]))
+    # ⭐ AND ASK FOR THE WAKE THAT WAKES THIS SESSION (route A, 0.68): the OS alarm only starts a
+    # new headless run. Appended - the resume sentence above is pinned as it is.
+    if arm_state in ("armed", "arming"):
+        armed_line += route_a_line(sdir, v, arm_rec, reset)
     if level_key.startswith("NET"):
         return net_facts_line(v, reset, now, armed_line, arm_state, arm_rec)
     return ("dispatch-guard: usage is at STOP - this window is nearly spent and the next "
@@ -2088,9 +2126,11 @@ def relaxed_pace_note(root, sdir, cfg, sid, v, reset, now, arm_state, arm_rec):
     if arm_state == "armed":
         at = arm_rec["at"]
         fmt = "%H:%M" if time.localtime(at)[:3] == time.localtime(now)[:3] else "%m-%d %H:%M"
-        state = "Your resume is armed for %s. %s" % (time.strftime(fmt, time.localtime(at)), cancel)
+        state = ("Your resume is armed for %s. %s%s" % (time.strftime(fmt, time.localtime(at)),
+                                                         cancel, route_a_line(sdir, v, arm_rec, reset)))
     elif arm_state == "arming":
-        state = "Your resume is being armed from your HANDOFF.md. %s" % cancel
+        state = ("Your resume is being armed from your HANDOFF.md. %s%s"
+                 % (cancel, route_a_line(sdir, v, arm_rec, reset)))
     elif not cfg.get("auto_arm_resume", DEFAULTS["auto_arm_resume"]):
         state = ("You have no resume, and auto_arm_resume is off: after writing HANDOFF.md, run "
                  "`%s --arm --task <folder>`." % runnable("resume.py"))
@@ -2098,9 +2138,9 @@ def relaxed_pace_note(root, sdir, cfg, sid, v, reset, now, arm_state, arm_rec):
         state = ("You have no resume yet; the gate arms one as soon as it sees a HANDOFF.md "
                  "written in your task folder.")
     return ("dispatch-guard: %s at %s%%, resets %s (%s) - a PACE is relaxed because the rest of "
-            "the budget should last. This is not a wind-down: keep working, and dispatching is "
-            "allowed. Keep a stand-alone HANDOFF.md current in your task folder so the gate can "
-            "arm your resume first. %s"
+            "the budget should last. This is not a wind-down: keep working. Keep a stand-alone "
+            "HANDOFF.md current in your task folder so the gate can arm your resume first - a "
+            "dispatch needs it too (0.68). %s"
             % ("7d" if seven else "5h", round(pct) if isinstance(pct, (int, float)) else "?",
                clock, left, state))
 
@@ -2192,17 +2232,19 @@ def arm_on_handoff_write(root, sdir, cfg, session_id):
         v = usage.verdict(sdir, usage.config(sdir), cheap=True)
         # ⚠ Not at a plain PACE: there the turn's end arms (on_stop), as since 0.58.0.
         if not (v["verdict"] == "STOP" or v.get("relaxed_stop") or v.get("relaxed_pace")):
-            return False
+            return ""
         state, rec = own_resume(sdir, session_id)
         # ⛔ a live resume for ANOTHER reset does not count (0.67 review B, B1) - except at a combined
         # PACE, for the reason in wind_down_note (0.67.1)
         if state == "arming" or (state == "armed" and (v["verdict"] == "PACE"
                                                        or not aims_elsewhere(sdir, v, rec))):
-            return False
-        return bool(arm_from_handoff(root, sdir, cfg, session_id, v))
+            return ""
+        # ⭐ 0.68: the ARMED line itself, so the PostToolUse that saw the write can tell the model
+        # (with route A) - it used to arm in silence. ADR 20261001-085000 D2.
+        return arm_from_handoff(root, sdir, cfg, session_id, v) or ""
     except Exception as exc:
         log(root, "TOOL-ARM-FAILED %r" % (exc,))
-        return False
+        return ""
 
 
 def resume_state_line(arm_state, arm_rec, now, auto=True):
@@ -2384,7 +2426,8 @@ def wall_hit_note(sdir, session_id, now=None):
             with open(seen, "w", encoding="utf-8") as f:
                 f.write(str(now))
             out.append(" \u26d4 TELL THE USER: the usage window hit the cap at %s, %d min before "
-                       "its %s reset, after the gate had relaxed a STOP; a turn that stopped "
+                       "its %s reset, after the gate had relaxed a PACE or STOP near the reset; "
+                       "a turn that stopped "
                        "around then was cut by the cap - check that its last step finished."
                        % (time.strftime("%H:%M", time.localtime(hit)),
                           round((reset - hit) / 60.0),
@@ -2645,15 +2688,184 @@ def arm_from_handoff(root, sdir, cfg, session_id, v=None):
     # `--arm`; this path arms detached, so until 0.65.3 no agent that was auto-armed ever saw it
     # (both write-ups of the 2026-09-27 incident say so). Here the model reads it on a prompt;
     # on Stop only the person does, because the turn is already over.
+    # ⭐ 0.68: the route-A sentence carries the exact cron and the check-first wake prompt
+    # (ADR 20261001-085000 D1/D3) instead of "a one-shot CronCreate wake for then".
+    hpath = os.path.join(scan_root, cfg["task_root"].replace("/", os.sep), folder, HANDOFF)
     return (" ⭐ dispatch-guard: a resume was ARMED for `%s` (the HANDOFF.md written this "
             "session) because the usage window is closing (%s); it wakes a few minutes after "
-            "%s and continues from that handoff. It is the BACKUP route: if this session stays "
-            "open, ALSO schedule a one-shot CronCreate wake for then before ending the turn. If "
-            "the OS scheduler cannot start it, the next session is told. Cancel it with "
-            "`%s --cancel --session %s` if you do not want that (that cancels this session's "
-            "alarm only)."
+            "%s and continues from that handoff in a NEW headless session. It is the BACKUP "
+            "route. If the OS scheduler cannot start it, the next session is told. Cancel it "
+            "with `%s --cancel --session %s` if you do not want that (that cancels this "
+            "session's alarm only).%s"
             % (folder, relax_band_label(v), v.get("resets_clock", "the reset"),
-               runnable("resume.py"), session_id))
+               runnable("resume.py"), session_id,
+               # ⚠ LAST: for_screen() cuts here, and the cancel command is the person's (review B N1)
+               route_a_line(sdir, v, {"handoff": hpath})))
+
+
+def _epoch(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and x > 0
+
+
+def wake_time(sdir, v, rec=None, reset=None):
+    """(epoch, cron) for THIS session's own one-shot wake (route A), or None. Never raises.
+
+    ⭐ THE ALARM SHOULD WAKE THE SESSION ITSELF (owner, 2026-10-01). The OS alarm (route B) cannot -
+    it starts a NEW headless `claude -p`; only a CronCreate job the session schedules for itself
+    can, and that wake arrives as a prompt at GO, where stand_down_resume() cancels this session's
+    OS alarm. ⇒ The wake must land AFTER the reset and BEFORE the OS alarm: max(reset + 1 min,
+    OS alarm - 2 min), one minute later if that is :00 or :30 (CronCreate fires a one-shot there
+    up to 90 s early - its own tool description), and None if no such minute exists (a
+    `resume_offset_min` under 2). The cron carries day and month, so a 7d reset is not "today".
+    ADR 20261001-085000 D1.
+    """
+    try:
+        rec = rec if isinstance(rec, dict) else {}
+        sys.path.insert(0, HERE)
+        import resume as _resume
+        r = rec.get("armed_for_reset")
+        if not _epoch(r):
+            try:
+                r = _resume.reset_time(sdir, usage.config(sdir), v)[0]
+            except Exception:
+                r = None
+        if not _epoch(r):
+            r = reset
+        if not _epoch(r):
+            return None
+        b = rec.get("at")
+        if not _epoch(b):
+            b = r + _resume.rcfg(sdir)["resume_offset_min"] * 60
+        t = max(r + 60, b - 120)
+        t = (int(t) + 59) // 60 * 60     # a cron fires at :00 of its minute - that, not t, must be after the reset
+        if time.localtime(t).tm_min in (0, 30):
+            t += 60
+        # ⚠ against the OS task's MINUTE (schtasks fires at its floored minute), and with 2 min of
+        # lead: a one-shot cron scheduled after its minute passed waits a YEAR (fix review, 0.68).
+        if t >= b // 60 * 60 or t <= time.time() + 120:
+            return None              # no minute left, or a stale / too-near wake
+        lt = time.localtime(t)
+        return t, "%d %d %d %d *" % (lt.tm_min, lt.tm_hour, lt.tm_mday, lt.tm_mon)
+    except Exception:
+        return None
+
+
+def wake_prompt(handoff=None):
+    """What a woken session is told - check first, stop if nothing is left (owner, 2026-10-01).
+
+    ⛔ MEASURED 2026-10-01 07:03: a headless resume found its handoff's next step already done and
+    no new work - and then spent 8 minutes on checks it chose itself and edited a README. The owner:
+    「被鬧鐘叫醒後應該去讀 handoff 或檢查未完成項目，如果真的沒有，就停下來就好」. ADR 20261001-085000 D3.
+    ⚠ No double quote inside: the route-A line quotes this text whole.
+    """
+    # ⚠ THE ONE THING BEFORE THE CHECK (ADR 20261001-085000 D8, its review B1): this session stays
+    # open, so its own cowork check-in is rewritten first - the stop rule applies after it.
+    return ("dispatch-guard wake: the usage window has reset. If this project keeps a shared "
+            "coordination board (cowork), first re-read it and rewrite your own check-in with this "
+            "session's id. Then re-read %s and check, for this task "
+            "only, what is still unfinished - its Next step against the commits since it was "
+            "written that touch its task folder or the files it names, and that folder's "
+            "RESULT.md / progress.md. Continue what is open. If nothing is left, or the handoff "
+            "says the rest waits on the owner or on another session, add one line saying so to "
+            "its Result section and stop - no other work, no looking for work elsewhere."
+            % (handoff or "your HANDOFF.md"))
+
+
+ROUTE_A_LEAD = " If this session stays open, also schedule ONE in-session wake"
+
+
+def for_screen(text):
+    """The person's copy of an arm line: without the route-A instructions, which are the MODEL'S
+    (review A of 0.68: ~1000 characters of CronCreate syntax on the screen, and at Stop only the
+    person reads it at all)."""
+    return str(text or "").split(ROUTE_A_LEAD)[0].strip()
+
+
+def route_a_line(sdir, v, rec=None, reset=None):
+    """The sentence asking THIS session to schedule its own wake, or "" (ADR 20261001-085000 D1)."""
+    w = wake_time(sdir, v, rec, reset)
+    if not w:
+        return ""
+    t, cron = w
+    return (ROUTE_A_LEAD + " so the alarm wakes "
+            "THIS session: CronCreate (ToolSearch \"select:CronCreate\") with cron \"%s\" (%s), "
+            "recurring false, prompt \"%s\" - skip it if you already scheduled one for this reset. "
+            "When it fires, the gate cancels this session's OS alarm."
+            % (cron, time.strftime("%m-%d %H:%M", time.localtime(t)),
+               wake_prompt((rec or {}).get("handoff") if isinstance(rec, dict) else None)))
+
+
+WAKE_MARK = "dispatch-guard wake:"     # the first words of every route-A wake prompt (wake_prompt)
+
+
+def wake_reason(payload, cfg, now=None):
+    """Why this event WAKES the session, or None (ADR 20261001-085000 D8).
+
+    A route-A wake (its prompt carries WAKE_MARK); a prompt after this session's previous hook is
+    older than `wake_gap_min` - read from `.alive` BEFORE main()'s heartbeat rewrote it, passed in
+    as `_dg_prev_alive` (missing = unknown = no gap wake); a SessionStart from resume / clear /
+    compact, after which the context that remembered the board may be gone.
+    """
+    now = now if now is not None else time.time()
+    ev = payload.get("hook_event_name")
+    if ev == "SessionStart":
+        return {"resume": "resumed", "clear": "after /clear",
+                "compact": "after a context compaction"}.get(payload.get("source"))
+    if ev != "UserPromptSubmit":
+        return None
+    if WAKE_MARK in str(payload.get("prompt") or ""):
+        return "by its alarm"
+    prev = payload.get("_dg_prev_alive")
+    gap = _positive_number(cfg.get("wake_gap_min")) or DEFAULTS["wake_gap_min"]
+    if _epoch(prev) and now - prev >= gap * 60:
+        return "after %d idle minutes" % int((now - prev) // 60)
+    return None
+
+
+def cowork_wake_note(payload, root, sdir, cfg, now=None):
+    """(context, screen) asking a WOKEN session to re-check-in on the cowork board, or ("", None).
+
+    ⛔ THE RULE EXISTED AND NOTHING SAID IT AT THE MOMENT IT APPLIES (owner, 2026-10-01: a woken
+    session does not always re-check / re-register its session id on the board). cowork rule 2
+    rewrites the check-in "on every restart" - and a wake is one: the runtime name and [ref] change
+    while a session sleeps, and a headless resume or a compaction loses the memory of the board.
+    The hook's only cowork enforcement (cmd_guards.cowork_first) is silent once the skill was
+    loaded, so a woken session was never reminded. ⇒ One line at the wake, when the repository has
+    a live peer or this session has worked under cowork. A reminder, not a refusal: the check-in
+    path is the project's, and the first write after a wake is usually that check-in itself.
+    ADR 20261001-085000 D8. Never raises.
+    """
+    try:
+        why = wake_reason(payload, cfg, now)
+        if not why:
+            return "", None
+        sid = payload.get("session_id")
+        if not sid:
+            return "", None          # no id to write into a check-in
+        ctx = guard_ctx(root, sdir, sid, cfg)
+        peers = cmd_guards.peer_sessions(ctx)
+        seen = cmd_guards.skill_seen(ctx, "cowork")
+        if not peers and not seen:
+            return "", None
+        log(root, "WAKE-CHECKIN-NUDGE why=%s peers=%d cowork=%s"
+            % (why.replace(" ", "-"), len(peers), "seen" if seen else "not-seen"))
+        who = (" while %d other session%s work%s in this repository"
+               % (len(peers), "" if len(peers) == 1 else "s", "s" if len(peers) == 1 else "")
+               if peers else "")
+        load = ("" if seen else " Load `dispatch-guard:cowork` first - this session has not.")
+        text = (" dispatch-guard: this session was just woken (%s)%s. If this project keeps a "
+                "shared coordination board with check-in files (cowork), do this BEFORE any other "
+                "work: re-read the board, then rewrite YOUR role's check-in with this session's id "
+                "`%s`, its current runtime name and [ref] - they change while a session sleeps, "
+                "and a peer that sends to the old name reaches somebody else (cowork rule 2; "
+                "reference/coordination.md 2.8).%s" % (why, who, sid, load))
+        screen = ("session woken (%s)%s - asked to re-check-in on the shared board first."
+                  % (why, (" with %d live peer%s" % (len(peers), "" if len(peers) == 1 else "s"))
+                   if peers else ""))
+        return text, screen
+    except Exception as exc:
+        log(root, "WAKE-CHECKIN-FAILED %r" % (exc,))
+        return "", None
 
 
 def relax_band_label(v):
@@ -2679,7 +2891,7 @@ def on_stop(payload, root, sdir, cfg):
     except Exception as exc:
         log(root, "AUTO-ARM-FAILED %r" % (exc,))
     if line:
-        print(json.dumps({"systemMessage": line.strip()}, ensure_ascii=False))
+        print(json.dumps({"systemMessage": for_screen(line)}, ensure_ascii=False))
 
 
 def approved_slots(root, cfg, cutoff, folder, log_to=None):
@@ -3234,8 +3446,10 @@ def on_session_start(payload, root, sdir, cfg):
     # first version scraped a "TELL THE USER:" marker out of the prose, which would have
     # dropped the screen line silently the first time somebody reworded a note.
     pairs = [maybe_install_vscode_task(root, cfg, sdir),
-             maybe_repoint_statusline(),
-             maybe_adopt_statusline(cfg)]
+             maybe_repoint_statusline(sdir),
+             maybe_adopt_statusline(cfg, sdir),
+             # ⭐ resumed / cleared / compacted: re-check-in on the cowork board (0.68, D8)
+             cowork_wake_note(payload, root, sdir, cfg)]
     notes = [failed_resume_note(sdir),
              stand_down_resume(root, sdir, v, payload.get("session_id"))]
     notes += [c or "" for c, _s in pairs]
@@ -3330,13 +3544,26 @@ def on_user_prompt(payload, root, sdir, cfg):
     except Exception as exc:
         log(root, "WALL-HIT-CHECK-FAILED %r" % (exc,))
     note = mine + (stand_down_resume(root, sdir, v, sid) or "")
+    # ⭐ WOKEN? Then the cowork check-in comes first (0.68, ADR 20261001-085000 D8) - to the
+    # model in full (`wk`), to the screen in one short line (`ws`), in every branch below.
+    wake_ctx, wake_screen = cowork_wake_note(payload, root, sdir, cfg)
+    wk = wake_ctx or ""
+    ws = (" dispatch-guard: " + wake_screen) if wake_screen else ""
     if v["verdict"] not in ("PACE", "STOP"):
-        if note:
+        # ⭐ THE RELAXED BANDS ARM HERE TOO (0.68, owner 2026-10-01 「要加」): a GO that is only a
+        # relaxed PACE/STOP is a closing window. No acknowledgement line - it is not a wind-down -
+        # and a plain GO still only stands down (above). ADR 20261001-085000 D5.
+        if v.get("relaxed_stop") or v.get("relaxed_pace"):
+            try:
+                note += arm_from_handoff(root, sdir, cfg, sid, v) or ""
+            except Exception as exc:
+                log(root, "AUTO-ARM-FAILED %r" % (exc,))
+        if note or wk:
             # ⭐ ON THE SCREEN TOO. A cancelled alarm is a fact the PERSON needs - "nothing
             # will wake later" - and the round-2 review of 0.58.0 measured this branch putting
             # it into additionalContext only, where only the model could read it.
             context_note(payload.get("hook_event_name", "UserPromptSubmit"),
-                         "[usage]" + note, systemMessage=note.strip())
+                         "[usage]" + note + wk, systemMessage=(for_screen(note) + ws).strip())
         return
     # ⭐ ARM HERE TOO, on every PACE/STOP prompt and BEFORE the once-per-level return: a handoff
     # written after the warning still gets its resume on the next prompt, and the arm runs after
@@ -3350,10 +3577,10 @@ def on_user_prompt(payload, root, sdir, cfg):
     try:
         with open(mark, encoding="utf-8") as f:
             if f.read().strip() == v["verdict"]:
-                if armed_line or note:
+                if armed_line or note or wk:
                     context_note(payload.get("hook_event_name", "UserPromptSubmit"),
-                                 "[usage]" + note + armed_line,
-                                 systemMessage=(note + armed_line).strip())
+                                 "[usage]" + note + armed_line + wk,
+                                 systemMessage=(for_screen(note + armed_line) + ws).strip())
                 return
     except OSError:
         pass
@@ -3420,11 +3647,11 @@ def on_user_prompt(payload, root, sdir, cfg):
             "if that line does not appear, it did not act on it."
             % (v["verdict"], window, pct, seen_why, ack_line))
     context_note(payload.get("hook_event_name", "UserPromptSubmit"),
-                 "[usage] " + v["text"] + extra + ack + note + armed_line,
-                 systemMessage=seen + note + armed_line)
+                 "[usage] " + v["text"] + extra + ack + note + armed_line + wk,
+                 systemMessage=seen + " " + for_screen(note + armed_line) + ws)
 
 
-def _wake_hint(v):
+def _wake_hint(v, sdir=None):
     """Route (A): wake THIS session when the window turns over, keeping all its context.
 
     ⭐ Better than a scheduled task when the session survives - the work continues with
@@ -3457,11 +3684,16 @@ def _wake_hint(v):
     """
     mins = v.get("remain_min")
     when = ("about %d minutes out" % (mins + 1)) if isinstance(mins, int) else "after the reset"
+    # ⭐ 0.68: the exact cron, before the OS alarm, and the check-first wake prompt (ADR
+    # 20261001-085000 D1/D3) - "about N minutes out" left the minute, and the stop rule, to chance.
+    w = wake_time(sdir, v) if sdir else None
+    if w:
+        when = "with cron \"%s\" (%s)" % (w[1], time.strftime("%m-%d %H:%M", time.localtime(w[0])))
     return (" ⭐ (A) IF THIS SESSION WILL STAY OPEN, this is the better route because it keeps "
             "all your context: schedule a one-shot wake %s (CronCreate via ToolSearch "
-            "\"select:CronCreate\", recurring:false) and end the turn - when it fires, carry "
-            "on from here. ⚠ A background sleep cannot substitute: the harness caps a command "
-            "at ten minutes, which never reaches the reset from here." % when)
+            "\"select:CronCreate\", recurring:false) with the prompt \"%s\", and end the turn. "
+            "⚠ A background sleep cannot substitute: the harness caps a command at ten minutes, "
+            "which never reaches the reset from here." % (when, wake_prompt()))
 
 
 def on_pre_agent(payload, root, sdir, cfg, wind=None):
@@ -3501,7 +3733,7 @@ def on_pre_agent(payload, root, sdir, cfg, wind=None):
                         "%s/<task>/HANDOFF.md so it stands completely alone, then run "
                         "`%s --arm --task <task>` - that registers a one-shot OS task and "
                         "survives closing everything. Then end the turn."
-                 % (v["text"], _wake_hint(v), cfg["task_root"],
+                 % (v["text"], _wake_hint(v, sdir), cfg["task_root"],
                     runnable("resume.py")),
                  # ⭐ ON THE SCREEN TOO. This is the strongest thing the plugin ever does -
                  # a tool call refused outright - and until now a person could not tell it
@@ -3720,6 +3952,12 @@ def main():
     event = payload.get("hook_event_name")
     tool = payload.get("tool_name")
     sid = payload.get("session_id")
+    # ⭐ THIS SESSION'S PREVIOUS HOOK, read BEFORE the heartbeat rewrites it: a prompt after a long
+    # gap is a wake, and the cowork check-in reminder needs to know (ADR 20261001-085000 D8).
+    try:
+        payload["_dg_prev_alive"] = os.path.getmtime(state_path(sdir, sid, "alive"))
+    except (OSError, TypeError, ValueError):
+        pass
     heartbeat(sdir, sid)
     # ⭐ Before any branch, because this is what keeps the numbers moving for every route -
     # CLI, extension, sub-agent, every depth. It forks at most once per fetch_seconds.
@@ -3741,6 +3979,7 @@ def main():
         return on_stop(payload, root, sdir, cfg)
     # ⭐ WHO WROTE WHICH HANDOFF.md - recorded here, before the Bash branch below returns, so a
     # Write, an Edit and a Bash redirect are all seen. Never decides anything; never returns.
+    post_note = ""
     if event == "PostToolUse":
         try:
             if (note_handoff_write(sdir, cfg, sid, tool, payload.get("tool_input") or {})
@@ -3748,7 +3987,9 @@ def main():
                 # ⭐ at STOP / in the net zone a fresh HANDOFF.md is armed the moment it lands.
                 # ⚠ Not from a SUB-AGENT: its payload carries the PARENT's session id, so its
                 # handoff would arm the parent's resume for the sub-agent's folder (review B N1).
-                arm_on_handoff_write(root, sdir, cfg, sid)
+                # ⭐ 0.68: what it says is CARRIED into this event's one print below (`wind`) -
+                # never printed here: a return here would skip after_command / the slot release.
+                post_note = arm_on_handoff_write(root, sdir, cfg, sid) or ""
         except Exception as exc:
             log(root, "HANDOFF-NOTE-FAILED %r" % (exc,))
 
@@ -3804,11 +4045,16 @@ def main():
     # the harness routes those elsewhere - so a session looping on failures would never hear
     # it. ⚠ It never carries a permission decision; see context_note().
     wind = None
+    post_screen = None
     if event == "PreToolUse":
         try:
             wind = wind_down_note(payload, root, sdir, cfg)
         except Exception as exc:
             log(root, "WIND-DOWN-FAILED %r" % (exc,))
+    elif post_note:
+        # ⭐ the HANDOFF-write arm's ARMED line (0.68, ADR 20261001-085000 D2): to the model through
+        # `wind`, and to the person's screen - composed into this event's ONE print.
+        wind, post_screen = str(post_note).strip(), for_screen(post_note)
 
     if tool in cmd_guards.SHELL_TOOLS and event in ("PreToolUse", "PostToolUse"):
         try:
@@ -3826,8 +4072,8 @@ def main():
                 return emit_with(event, None, wind)
             else:
                 text = cmd_guards.after_command(payload, ctx)
-                if text:
-                    return context_note(event, text)
+                if text or wind:
+                    return emit_with(event, text, wind, systemMessage=post_screen)
         except Exception as exc:
             log(root, "CMD-GUARDS-FAILED %r" % (exc,))
         return
@@ -3859,7 +4105,7 @@ def main():
     if tool != "Agent":
         # ⛔ THIS RETURN IS WHERE THE INCIDENT WENT. Every Read and every Write of that
         # session arrived here and left again. The gate saw all of them and said nothing.
-        return emit_with(event, None, wind)
+        return emit_with(event, None, wind, systemMessage=post_screen)
     if event == "PreToolUse":
         # ⚠ PASSED IN, never recomputed here: wind_down_note() consumes a once-per-level
         # marker, so asking twice would answer once and swallow the note.

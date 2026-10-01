@@ -188,9 +188,11 @@ Sessions obeyed. The owner ruled on 2026-09-17 that PACE means no new batch; 0.6
 hook, which now says `PACE at N% - no new batch`.
 
 ⭐ **NEAR THE RESET, A RELAXED WORD IS STILL NOT A HANDOVER — just keep the handoff current.** A
-PACE or STOP relaxed to GO near the reset means keep working (at a relaxed PACE, dispatching too),
-with a stand-alone HANDOFF.md kept current so the alarm can be armed before the cap can cut you
-(owner, 2026-10-01; 0.67.0). An alarm you did not need is simply cancelled.
+PACE or STOP relaxed to GO near the reset means keep working (at a relaxed PACE, dispatching too -
+once a current HANDOFF.md exists, 0.68.0), with that HANDOFF.md kept current so the alarm can be armed
+before the cap can cut you (owner, 2026-10-01; 0.67.0). An alarm you did not need is simply cancelled.
+When an alarm wakes you, re-read the handoff, check what is still unfinished for that task, and if
+nothing is left say so in one line and stop (0.68.0).
 
 Once HANDOFF.md is on disk, the gate arms the resume itself when your turn ends at PACE/STOP
 (0.58.0), and in the relaxed bands near the reset also the moment it is written (0.66.0 / 0.67.0);

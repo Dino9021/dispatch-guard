@@ -957,7 +957,7 @@ def schedule(when, dry_run, session_id=None, headless=False, sdir=None):
         return cmd, exc
 
 
-def print_route_a_reminder(when):
+def print_route_a_reminder(when, sdir=None, reset=None, handoff=None):
     """⛔ THE OS TASK IS THE BACKUP. Say so, every single time, right after arming it.
 
     Two routes exist and only ONE of them has a command. This file arms the OS task;
@@ -975,13 +975,24 @@ def print_route_a_reminder(when):
     conversation already on their screen, so they can walk away and come back to it
     rather than to a headless run's summary.
     """
-    stamp_ = time.strftime("%H:%M", when)
+    # ⭐ 0.68: the exact minute - after the reset, BEFORE this OS task - and the check-first wake
+    # prompt (ADR 20261001-085000 D1/D3); "about HH:MM" was the OS task's own time.
+    at = time.mktime(when)
+    reset = reset if reset else at - (rcfg(sdir)["resume_offset_min"] if sdir else 3) * 60
+    w = dispatch_gate.wake_time(sdir or "", None, {"at": at, "armed_for_reset": reset})
     print()
     print("⭐ NOW ARM ROUTE (A) AS WELL - the OS task above is the BACKUP, not the plan.")
-    print("   (A) keeps THIS session and everything loaded in it. Schedule a one-shot wake")
-    print("   for about %s with CronCreate (ToolSearch \"select:CronCreate\"," % stamp_)
-    print("   recurring:false), then END THE TURN. When it fires you carry on in this same")
-    print("   conversation, on screen, with nothing to reconstruct.")
+    print("   (A) keeps THIS session and everything loaded in it. Schedule a one-shot wake with")
+    if w:
+        print("   CronCreate (ToolSearch \"select:CronCreate\"), cron \"%s\" (%s), recurring:false,"
+              % (w[1], time.strftime("%m-%d %H:%M", time.localtime(w[0]))))
+    else:
+        # ⚠ never a time at or before the reset - the wake prompt says the window HAS reset (review B N2)
+        print("   CronCreate (ToolSearch \"select:CronCreate\") for the first minute AFTER the reset"
+              " (no minute fits between the reset and this OS task), recurring:false,")
+    print("   prompt: \"%s\"" % dispatch_gate.wake_prompt(handoff))
+    print("   Then END THE TURN. When it fires you carry on in this same conversation, on")
+    print("   screen, with nothing to reconstruct - and the gate cancels the OS task.")
     print("   ⭐ They do not collide: the OS task stands down only if THIS session was active")
     print("   AFTER the reset (the wake counts), so the work runs once either way.")
     print("   ⚠ (A) dies with the session, which is exactly why (B) above is armed too.")
@@ -1126,7 +1137,7 @@ def do_arm(argv, sdir, cfg):
     if dry:
         print()
         print("--dry-run: nothing was registered.")
-        print_route_a_reminder(when)
+        print_route_a_reminder(when, sdir, armed_reset, path)
         return 0
 
     ok = hasattr(result, "returncode") and result.returncode == 0
@@ -1162,7 +1173,7 @@ def do_arm(argv, sdir, cfg):
                                      or repr(result))[:200]), sid, folder)
     print()
     if ok:
-        print_route_a_reminder(when)
+        print_route_a_reminder(when, sdir, armed_reset, path)
     print()
     print("⚠ Armed is not the same as will-work. The launch check covers the launcher, Python")
     print("  and `claude` on the scheduler's PATH today; whether the machine is awake, the user")
@@ -1384,19 +1395,45 @@ def do_run(sdir, cfg, session_id=None):
             "⭐ WRITE %s AS YOUR FIRST ACTION, before continuing, and keep it current as you "
             "go. That file is the only thing that survives the next cut-off, and this prompt "
             "exists because it did not exist last time.\n\n"
-            "Then continue the work. Append a '## Result %s' section to that file describing "
+            "⛔ THEN CHECK BEFORE YOU CONTINUE (owner, 2026-10-01): if progress.md, git and the "
+            "task folder show THIS task's work DONE (committed or recorded as done), or that what "
+            "is left waits on the owner or on another session, say so in the file you just wrote "
+            "and STOP - no other work, no looking for work in boards or pending lists. An empty or "
+            "missing record is NOT done: the previous session was cut off mid-work.\n\n"
+            "Otherwise continue the work - first, if this project keeps a shared coordination "
+            "board (cowork), rewrite your role's check-in with YOUR session id. Append a "
+            "'## Result %s' section to that file describing "
             "what you did and anything still open, and SAY IN IT that this run started from "
             "reconstruction rather than from a handoff. Do not re-verify usage limits before "
             "starting - the stored numbers read stale-high until a statusline renders.%s"
             % (os.path.join(task_dir, "progress.md"), repo, repo, task_dir,
                path or os.path.join(task_dir, HANDOFF), when, identity))
     else:
-        prompt = ("The usage window has reset, so treat usage as fresh. Read %s and continue "
-                  "that work, following its instructions exactly.%s%s Append a '## Result %s' "
-                  "section to %s describing what you did and anything still open. "
-                  "Do not re-verify usage limits before starting - the stored numbers read "
-                  "stale-high until a statusline renders."
-                  % (path, extra, identity, when, path))
+        # ⛔ CHECK FIRST, STOP IF NOTHING IS LEFT (owner, 2026-10-01: 「被鬧鐘叫醒後應該去讀 handoff 或
+        # 檢查未完成項目，如果真的沒有，就停下來就好」). Measured that morning: a resume found its next
+        # step already done and no new work, then spent 8 minutes on checks it picked itself and
+        # edited a README. Scoped to THIS task - commits touching its folder, its own RESULT.md /
+        # progress.md - because a repo-wide log reads another session's work as "done", and the
+        # 07:03 run went looking in other boards. ADR 20261001-085000 D3.
+        armed_at = state.get("armed_at")
+        # ⚠ no quote in the value: an npm `claude.cmd` re-parses its arguments through cmd.exe
+        since = (" --since=%s" % time.strftime("%Y-%m-%dT%H:%M", time.localtime(armed_at))
+                 if isinstance(armed_at, (int, float)) and not isinstance(armed_at, bool)
+                 else "")
+        prompt = ("The usage window has reset, so treat usage as fresh. Read %s. ⛔ FIRST CHECK "
+                  "WHETHER ITS WORK IS STILL UNFINISHED, for this task only: compare its Next step "
+                  "with the commits since it was written that touch %s or the files it names "
+                  "(`git -C %s log --oneline%s -- <those paths>`) and with that folder's RESULT.md "
+                  "and progress.md. If nothing is left - all done, or the handoff itself says the "
+                  "rest waits on the owner or on another session - append a short '## Result %s' "
+                  "to it saying so and STOP: no other work, no looking for work in boards or "
+                  "pending lists, no other edits. Otherwise continue that work, following its "
+                  "instructions exactly - and if this project keeps a shared coordination board "
+                  "(cowork), first rewrite your role's check-in with YOUR session id (a run that "
+                  "stops does not).%s%s Append a '## Result %s' section to %s describing "
+                  "what you did and anything still open. Do not re-verify usage limits before "
+                  "starting - the stored numbers read stale-high until a statusline renders."
+                  % (path, task_dir, repo, since, when, extra, identity, when, path))
     log_line("RUN starting for %s (attempt %d)" % (path, attempts))
     # ⚠ RESOLVED, NOT NAMED. On Windows a bare "claude" is found only as `claude.exe`
     # (CreateProcess adds `.exe` and nothing else); an npm install is `claude.cmd`, which

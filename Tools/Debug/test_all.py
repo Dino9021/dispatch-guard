@@ -94,6 +94,30 @@ def _resume_tasks():
     return set(re.findall(r'"\\(ClaudeDispatchGuardResume[^"\\]*)"', text))
 
 
+def _real_shims():
+    """{path: bytes} of the USER'S launchers in ~/.claude/dispatch-guard (absent -> None).
+
+    ⛔ Measured 2026-10-01: three checks re-pointed the real shim at this checkout through the
+    gate's SessionStart statusline repair (install.py hard-codes the real state dir), so the
+    machine's scheduled resumes and statusline ran uncommitted code. Bytes AND mtime before ==
+    after, or the run fails - the same shape as `_resume_tasks`.
+    ⚠ The mtime is what makes it hold: a live session's SessionStart (the installed copy) puts the
+    shim BACK within minutes, so bytes alone read "unchanged" after a rewrite - measured, the first
+    mutation of this guard survived that way. shim.write never rewrites identical content, so any
+    mtime change is a real rewrite (a plugin update during the run would be one too).
+    """
+    d = os.path.join(os.path.expanduser("~"), ".claude", "dispatch-guard")
+    out = {}
+    for n in ("run.sh", "run.cmd"):
+        p = os.path.join(d, n)
+        try:
+            with open(p, "rb") as f:
+                out[n] = (f.read(), os.stat(p).st_mtime_ns)
+        except OSError:
+            out[n] = None
+    return out
+
+
 def main():
     # ⛔ THE RUNNER'S OWN CONSOLE, and it matters most when something FAILS. The children are
     # already read as UTF-8, but printing their ⭐ and ⚠ back out through a legacy codepage
@@ -109,6 +133,7 @@ def main():
     # instead of each wiping the last one's files.
     fresh_scratch()
     tasks_before = _resume_tasks()
+    shims_before = _real_shims()
     failed = []
     for name, argv in CHECKS:
         # ⚠ cwd is the REPOSITORY, not this folder: the hook selftests resolve sibling
@@ -155,6 +180,15 @@ def main():
                                "which): %s\n" % (len(left), ", ".join(left))))))
     else:
         print("%-16s %s" % ("no tasks left", "not checked (no Windows scheduler to ask)"))
+    total += 1
+    moved = sorted(n for n, b in _real_shims().items() if b != shims_before.get(n))
+    print("%-16s %s" % ("real shim kept", "FAIL" if moved else "PASS"))
+    if moved:
+        failed.append(("real shim kept", [os.path.join(DEBUG_DIR, "test_all.py")],
+                       subprocess.CompletedProcess([], 1, stdout="", stderr=(
+                           "the run rewrote the USER'S %s in ~/.claude/dispatch-guard - a check "
+                           "reached the real state dir. Put it back with the installed copy's "
+                           "`python <plugin>/hooks/shim.py`.\n" % ", ".join(moved)))))
     for name, argv, r in failed:
         print("\n---- %s ----\n%s%s" % (name, r.stdout[-2000:], r.stderr[-2000:]))
         # ⭐ POINT AT WHAT IT WROTE. Every file a check produces is kept after the run, on

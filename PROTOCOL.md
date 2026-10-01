@@ -154,8 +154,14 @@ armed near a reset, and before 0.60.0 ANY active session stood every alarm down)
 zone (a STOP relaxed near the reset) the gate arms each session's resume from its own HANDOFF.md
 the first time it tells it, and its note says whether that session has one - write HANDOFF.md
 when it says you have none. Since 0.67.0 the same arming applies to a PACE relaxed near the reset:
-dispatch stays allowed, the note says once per window that it is not a wind-down and how to cancel
-this session's alarm, and a GO that is only a relaxed PACE (or a relaxed STOP) keeps the alarm.
+a dispatch needs a current HANDOFF.md (0.68.0), the note says once per window that it is not a
+wind-down and how to cancel this session's alarm, and a GO that is only a relaxed PACE (or a relaxed
+STOP) keeps the alarm. Since 0.68.0 every arm text the model reads asks it to schedule its OWN one-shot
+CronCreate wake (the exact cron, after the reset and before the OS alarm) - the OS alarm only starts a
+new headless run - and every woken run checks first: nothing left for its task, one line, stop. A
+session woken by its alarm, by a prompt after `wake_gap_min` (30) idle minutes, or after a resume /
+clear / compaction is told, when a peer shares the repository or it used cowork, to re-check-in on the
+cowork board first.
 On `SessionStart`/`UserPromptSubmit` the gate cancels an armed alarm when the verdict is back to
 a plain GO (early reset, or a changed account) and says so — repeat that
 line to the user. If the account changed while an alarm is armed, its time is meaningless:
