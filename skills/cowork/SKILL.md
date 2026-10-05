@@ -34,9 +34,10 @@ If you read nothing else, these are the ones whose absence caused real damage.
    recycled name is delivered, silently, to someone else); the `[ref]` beside a name changes
    too; a resumed session gets a new session id. So the first act of any cowork session is to
    write the check-in file of its ROLE (`checkin/S4.md`, in a fixed shared directory) holding
-   its current runtime name, `[ref]` and session id as volatile fields it rewrites on every
-   restart - and **a wake is a restart** (its own alarm, the owner after an idle stretch, a
-   resume, `/clear`, a compaction: `reference/coordination.md` 2.8); and, when the owner assigns
+   its current runtime name, `[ref]` and session id as volatile fields it checks on every
+   restart and rewrites when one changed - and **a wake is a restart** (its own alarm, the owner
+   after an idle stretch, a resume, `/clear`, a compaction: `reference/coordination.md` 2.8; a
+   current check-in is left alone, since every rewrite wakes the peers); and, when the owner assigns
    a code name, to answer "received - my code name is S4".
    Code names are plain letters and digits - never `@` (the messaging tool's team syntax) - and
    are never used as a send address: to reach a role, read its check-in file, find that name in
@@ -145,7 +146,8 @@ merely mentions the comment - does not count. For such a file the hook refuses:
 Allowed: creating the file; `>>`, `tee -a`, `Add-Content`; an `Edit` whose `old_string` is the
 file's last *entry* (long enough to occur once, ending at the file's end) and whose
 `new_string` starts with it; copying the file *out*. ⚠ A copy inherits the
-marker - snapshot to a new name, and never copy back onto the record. ⚠ A program that rewrites
+marker - snapshot to a new name, never copy back onto the record, and never snapshot into a tree
+that gets committed: the guard then refuses to move or delete your copy too (measured). ⚠ A program that rewrites
 the file in place (`python fix.py board.md`), or removing the directory that holds it, is not
 seen; the guard reads shell operators and file-tool inputs, not what a program does.
 
@@ -195,6 +197,7 @@ A catalogue, so the next session names the shape instead of rediscovering it.
 | Asleep while waiting | "Waiting for the other side" ends a turn, and nothing ever wakes the session | Arm a wake-up before ending the turn: `notify_when_idle` (same machine) or the folder watcher (across machines) |
 | Wake storm | Every waiter posts "woke, nothing for me" on each wake, and each post wakes every other waiter | A wake with nothing for you writes nothing; watchers ignore your own and the observer's files |
 | Moved channel | Work moves to a new board; the party watching the old one is never woken | Announce the move in the OLD place and keep watching it until everyone acknowledges there |
+| Split channel | Two parties each create a channel in a different folder of one share, each watches only its own, and each answers where the other is not looking - "they have not replied" | Look for a board before creating one; watch the share ROOT, whole tree; two boards = the one at the root wins |
 | Late joiner | A rule pasted into the open windows mid-run never reaches whoever joins later | Write every mid-run rule into the channel's standing file the moment it is adopted |
 | Removed after arrival | A perfect copy, then the destination's antivirus quarantines files minutes later | Set exclusions before copying evidence or samples; re-count the files minutes later |
 | Collected is not read | The answer was filed somewhere nobody opened | Before asking anyone, search the record for it |
@@ -211,6 +214,9 @@ A catalogue, so the next session names the shape instead of rediscovering it.
 | Blind to the ignored region | A structured search returns a clean, believable set - minus every ignored file | Ignore rules off for a migration scan, against a path the manifest names as a known hit |
 | Silent text corruption | A generated message loses separators, gains invisible control characters, or arrives double-encoded (CJK turned into accented Latin letters) | File-writing tool, never a shell heredoc; scan by codepoint for control characters AND the double-encoding signature; read back every quote |
 | Control never ran | A clean count printed, then the positive control crashed after it | A clean result whose control did not print is UNCONFIRMED, not clean |
+| Separate control | A dead pattern beside a control run with different flags, both "clean" | Run the control through the same invocation as the measurement (`cross-machine.md` 4.5) |
+| Sampled verdict | "Do not copy" decided from the first sixty lines of a thirty-thousand-file list | Classify every entry; before the source is deleted, re-audit it whole (`cross-machine.md` 3.5, 3.8) |
+| Delete through a link | The tree being deleted is a junction, and the recursive delete empties the target | Read the folder's link type first; remove a link with `rmdir`, never recursively (`cross-machine.md` 3.8) |
 
 ---
 
@@ -224,7 +230,7 @@ A catalogue, so the next session names the shape instead of rediscovering it.
 | `reference/ownership-and-production.md` | share one working tree; change a live system; publish anything outward |
 | `reference/longrunning.md` | hand over; run out of budget; start something that runs for hours or days |
 | `reference/cross-machine.md` | coordinate with a session on ANOTHER MACHINE; move a project to new hardware; work with two checkouts of one repository; use a shared file as the channel; wait for a peer (1.8) |
-| `tools/watch-folder.ps1` | wait on peers you can reach only through files - run it in the background, it exits (and wakes you) when the channel folder changes |
+| `tools/watch-folder.ps1` | wait on peers you can reach only through files - run it in the background on the channel ROOT, it exits (and wakes you) when anything in the whole tree under it changes |
 
 Where a rule already lives in `unattended-work` or `dispatch-protocol`, these files point at it
 and add only what several sessions change about it.

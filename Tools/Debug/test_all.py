@@ -66,6 +66,9 @@ CHECKS = [
     # LOADED for two firings; a parser that silently matched nothing would report "0 firings"
     # for ever and the owner's collect-first decision would rest on an empty page.
     ("cowork nag report", [os.path.join(DEBUG_DIR, "cowork_nag_report.py"), "--selftest"]),
+    # ⚠ Runs the cowork folder watcher for real. Through 0.69.0 it listed only the top folder,
+    # and two sessions answered each other in subfolders neither watcher could see.
+    ("watch folder", [os.path.join(DEBUG_DIR, "test_watch_folder.py")]),
 ]
 
 # ⚠ Per check, not for the whole run. The slowest of these takes seconds; anything near this

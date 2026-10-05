@@ -33,6 +33,35 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.69.1
+
+擁有者 2026-10-05，看著一場進行中的兩台機器遷移：「兩方一開始都沒有監控子路徑，導致雙方都在各自的子路徑寫資訊給對方，但對方都沒看到」。
+
+- **`watch-folder.ps1` 改看整棵樹。** 0.69.0 以前只列最上層資料夾，偏偏 skill 自己規定報到檔放在 `checkin/` —— 它根本看不到任何報到。
+  實測：一方把通道建在子資料夾、只看那裡；另一方建在共用資料夾根目錄、只看根目錄；雙方都在幾分鐘內回了話，卻有十二分鐘誰也沒看到誰，
+  其中一方還跟擁有者說「對方還沒回」。任何 `.claude` 資料夾一律略過（在通道裡啟動的 session 每次呼叫工具都會寫 log 進去）；`-Ignore`
+  的項目現在是相對路徑或資料夾，不分大小寫、`/` 或 `\` 都行（原本只寫根目錄檔名的用法照舊）；第一行印出版本、「(whole tree)」與檔案數；
+  列舉錯誤照印，不吞掉。
+- **cowork，找通道：** 建板子前先（整棵樹）找有沒有現成的；建在根目錄、監看根目錄；出現兩塊板子時，離根目錄近的那塊勝出，另一方也要收回
+  它留下的指路檔（`cross-machine.md` 1.3、`coordination.md` 3.9）。「讀板子」改成遞迴列出整個通道資料夾（1.1、1.5、`coordination.md`
+  3.14）。目的端的 session 改在中立資料夾啟動，不在通道裡（2.3c —— 這行原本建議在通道裡）。新增失敗型態：「通道分裂」。
+- **內容沒變的報到檔不要重寫。** `checkin/` 現在會被監看，「每次醒來都重寫報到檔」會讓每次重寫叫醒每個同伴、同伴重寫又叫醒你。
+  `coordination.md` 2.8、規則 2、hook 的喚醒提醒與鬧鐘的喚醒提示都改成：先核對，有欄位變了才重寫。⚠ 這縮小了
+  ADR 20261001-085000 D8 的範圍，沒有經過 ADR 審查 —— 已在該 ADR 記為 Addendum B。
+- **監看工具，經過實際執行的反駁之後：** 磁碟根目錄（`W:\`）被修剪成 `W:` —— 那是 W: 上的**目前目錄** —— 於是無聲地看錯地方
+  （第一版草稿的回歸；改用 `GetRelativePath`、不再修剪）；某一輪列不出來的子資料夾，會被報成裡面的檔案被刪了（改成只略過那一輪的
+  那個資料夾 —— 實測「整輪跳過」會漏掉真正的變動）；中文檔名變亂碼（改 UTF-8 輸出）；`./x`、`.\x`、`x//y` 與資料夾底下的絕對路徑
+  印成「已忽略」卻什麼都沒擋（已正規化）；列不出來的根目錄會盲跑 55 分鐘（改成 exit 2；**空的**根目錄照常啟動）。
+- **cowork，來自這次工作其餘的錯誤**（共整理 24 項；擁有者：「整理過程中發生的錯誤」）：時間戳由附加的那條指令產生，因為「承諾讀時鐘」
+  失守兩次（1.7）；搬過來的金鑰會繼承資料夾權限（2.1）；物件是自己的，「讀不到」不等於「要提權」（2.5）；停用的排程仍會顯示下次執行
+  時間（3.4）；每一筆都要分類，不能只看 `head -60`，大小也不是分類（3.5）；舊路徑的每一種寫法、用中括號樣式、補掃後來加進清單的檔
+  （3.6）；新增 3.8「來源要刪之前」—— 整棵重新盤點、看樹外的東西、確認它不是 junction；新增 4.5「工具用錯一點點，數字卻很可信」——
+  對照要走同一條指令；觀察者自己的工具也會騙人（`coordination.md` 3.18）；append-only 板子絕不快照進會 commit 的目錄。新增失敗型態：
+  「對照另起爐灶」、「抽樣定生死」、「透過連結刪到目標」。
+- 測試：新增 `Tools/Debug/test_watch_folder.py`（已加入 `test_all`），`-Folder` 結尾帶分隔符號實際跑監看工具 —— `.claude`、以 `./OWN.md`
+  與換了大小寫和反斜線寫法忽略的自己的檔、換了大小寫寫法的被排除資料夾都不能叫醒它；兩層深的**隱藏**檔一定要叫醒、並寫出檔名。八個突變
+  全數抓到；反駁者的磁碟根、UNC、前綴、子資料夾拒讀、根目錄拒讀、空根目錄案例都對最終版重跑過。
+
 ## 0.69.0
 
 擁有者 2026-10-01：「我希望鬧鐘乙去叫醒沒有以無人職守模式工作的情況下因為用量窗口而停下來的 session 繼續任務」、「我不希望 session
@@ -3014,6 +3043,52 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.69.1
+
+Owner, 2026-10-05, watching a live two-machine migration: both sessions wrote to each other in
+subfolders of the shared channel, and neither saw the other.
+
+- **`watch-folder.ps1` watches the whole tree.** Through 0.69.0 it listed only the top folder, while
+  the skill's own layout puts check-ins in `checkin/`, so it could never see one. Measured: one side
+  built its channel in a subfolder and watched only that; the other built it at the share root and
+  watched only the root; each answered within minutes and neither saw the other for twelve; one told
+  the owner the other "has not replied". Any `.claude` folder is skipped (a session started in the
+  channel logs there on every tool call); an `-Ignore` entry is now a relative path or a folder,
+  case-insensitive, `/` or `\` (a bare root file name works as before); the first output line names
+  the version, "(whole tree)" and the file count; enumeration errors are printed, not silenced.
+- **cowork, finding the channel:** look for a board (whole tree) before creating one; create at the
+  root and watch the root; two boards = the one nearer the root wins, and the other side retracts its
+  signposts too (`cross-machine.md` 1.3, `coordination.md` 3.9). "Read the board" now says list the
+  whole channel folder recursively (1.1, 1.5, `coordination.md` 3.14). The destination agent starts
+  in a neutral folder, not in the channel (2.3c - this line used to recommend the channel). New failure
+  shape: *Split channel*.
+- **A current check-in is left alone.** With `checkin/` now watched, "rewrite your check-in after
+  every wake" made every rewrite wake every peer, whose rewrite woke you back. `coordination.md` 2.8,
+  rule 2, the hook's wake nudge and the alarm's wake prompt now say: check it, rewrite only when a field
+  changed. ⚠ This narrows ADR 20261001-085000 D8 without an ADR review - recorded there as Addendum B.
+- **The watcher, after an executing refuter.** A drive-root folder (`W:\`) was trimmed to `W:` - the
+  CURRENT directory on W: - so it silently watched the wrong place (regression of the first draft; now
+  `GetRelativePath`, no trimming); a subfolder that failed to list in one poll was reported as its files
+  being deleted (now dropped for that poll only - skipping the whole poll was measured to miss real
+  changes); CJK names came out as mojibake (UTF-8 output); `./x`, `.\x`, `x//y` and an absolute entry under
+  the folder were printed as ignored but matched nothing (normalised); a root that cannot be listed ran
+  blind for 55 minutes (now exit 2; an EMPTY root still starts).
+- **cowork, from the rest of the job's errors** (24 catalogued; owner: "整理過程中發生的錯誤"): stamps
+  built by the append command, because a promise to read the clock failed twice (1.7); a key that arrives
+  inherits its folder's grants (2.1); "cannot read" is not "needs elevation" when you own the object (2.5);
+  a disabled scheduled task still shows a next run time (3.4); classify every entry, never a `head -60`
+  sample, and a size is not a class (3.5); every spelling of an old path, a bracket expression, a re-scan of
+  late additions (3.6); new 3.8 *before the source is deleted* - re-audit it whole, look outside it, check it
+  is not a junction; new 4.5 *a believable number from a tool used slightly wrong* - the control runs
+  through the same invocation; an observer's own instruments lie too (`coordination.md` 3.18); never
+  snapshot an append-only board into a committed tree. New failure shapes: *Separate control*, *Sampled
+  verdict*, *Delete through a link*.
+- Tests: new `Tools/Debug/test_watch_folder.py` (in `test_all`) runs the watcher with `-Folder` ending in a
+  separator - `.claude`, own files ignored as `./OWN.md` and with another case and a backslash, and an
+  ignored folder written in another case must not wake it; a HIDDEN file two folders deep must, by name.
+  Eight mutations, all killed; the refuter's drive-root, UNC, prefix, denied-folder, denied-root and
+  empty-root cases re-run against the final script.
 
 ## 0.69.0
 

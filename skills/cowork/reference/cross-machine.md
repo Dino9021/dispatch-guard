@@ -30,9 +30,10 @@ append-only file for claims, turns and short status — the same record `coordin
 describes — and it is usable across machines only once both sides have PROVED they can write
 it (1.2). **Content**, and any message with substance, goes in **one author-named file per
 writer** in the same shared directory (`coordination.md` 2.7, and 1.5 below); nobody writes
-into another party's file. "Read the board" therefore means: read the shared file, then scan
-the directory for new or grown author files. When a side cannot write the board, it does not
-go silent — it falls back to its own file (1.5).
+into another party's file. "Read the board" therefore means: read the shared file, then list
+the WHOLE channel folder, recursively, for new or grown files — check-ins live in `checkin/`,
+and a peer's message may sit in a folder you did not expect (1.3). When a side cannot write the
+board, it does not go silent — it falls back to its own file (1.5).
 
 ### 1.2 ⛔ MEASURE THAT YOU CAN WRITE TO THE BOARD BEFORE YOU DEPEND ON IT
 
@@ -71,6 +72,22 @@ only share opened is the target tree itself, "outside the tree" does not exist -
 dedicated subfolder the copy is explicitly told to exclude, and verify after the copy that it is
 still there and unchanged; or have the owner open a separate share for the channel. Decide the
 channel's location BEFORE the move, with the owner, whenever the reachable paths are restricted.
+A share opened FOR the channel is not the target tree: use its root, no subfolder. A subfolder
+you do use gets a one-line pointer file at the root naming it - the root is where the other side
+looks first.
+
+⛔ **Look for a channel before you create one, and when two exist the one at the root wins.**
+Measured: two sessions, one per machine, built a channel within about a minute of each other in
+the same share - one in a subfolder it chose (following the paragraph above, which named only the
+subfolder), one at the root - and each watched only its own. Both answered within minutes; neither
+saw the other for twelve; one told the owner the other "has not replied". One look before creating
+would not have been enough: that side HAD listed the root, a minute before the other wrote there.
+⇒ Before creating, list the shared location recursively and join any board already in it.
+⇒ Create at the root, and point your watcher at the root, whole tree (1.8) - never at the folder
+you expect the answer in. ⇒ Keep listing the whole tree until every party has written on ONE
+board. ⇒ Two boards: the one nearer the root wins without negotiation (same depth: the earlier
+first entry). The other side announces the move in its own location and retracts every signpost
+it left pointing there (`coordination.md` 3.9).
 
 ### 1.4 A channel has two directions and you must measure them separately
 
@@ -103,9 +120,10 @@ write-test (1.2). Content and messages of substance: one author-named file per w
 section per message, never an edit to anyone else's file.
 
 ⇒ **When a side cannot write the board, it speaks through its own file** — created by itself,
-so its permissions are its own — and the protocol must say that readers **scan the directory
-for new or grown author files**, not only `cat` the board. A reader that watches one fixed
-name never sees the message that had to go elsewhere.
+so its permissions are its own — and the protocol must say that readers **list the whole
+channel folder, recursively, for new or grown files**, not only `cat` the board. A reader that
+watches one fixed name never sees the message that had to go elsewhere — nor does one that
+watches one folder.
 
 ⇒ **Topology does not change this.** 1:1, 1:N, N:1 and N:N all reduce to "one board for
 claims, every writer owns its content file, an aggregator reads everyone's and writes only its
@@ -150,6 +168,14 @@ is known; every later stamp is a full minute read from the clock and names which
 never an estimate like `11:3x`. Measured: placeholder stamps made two messages impossible to
 order, and one stamp named a minute that had not yet happened.
 
+⛔ **A promise to read the clock does not hold - build the stamp instead.** Measured on a later job:
+five estimated stamps from two sessions, three of them written AFTER their author had promised to read
+the clock for every stamp, the worst nine minutes in the future - and on an append-only board a future
+stamp puts entries out of order for good. ⇒ Produce the stamp in the same command that appends the
+entry: the text carries a placeholder, the append substitutes the clock. ⚠ Use a placeholder that
+occurs nowhere else in the text - measured, the substitution also rewrote the sentence that explained
+the placeholder (4.4's shape).
+
 ### 1.8 ⛔ Waiting for a peer is not stopping - arm a wake-up before you end your turn
 
 A session acts only inside a turn. Between turns it runs nothing, and **nothing wakes it when a
@@ -164,11 +190,15 @@ was waiting; nobody was watching; the owner was the only thing moving.
   subscription) - one notice arrives when it next goes idle. No polling.
 - **Peer on another machine, or reachable only through files:** run the shipped watcher in the
   background - `pwsh -NoProfile -WindowStyle Hidden -File <plugin>/skills/cowork/tools/watch-folder.ps1
-  -Folder <channel> -Ignore "<your file>,<observer file>"` (Bash `run_in_background`). `-WindowStyle Hidden`
-  keeps a console window from popping up on the owner's desktop, where a stray click on its close button
-  would kill the watcher silently; output and exit code are still captured. It exits when any file in the
-  folder changes, and its exit wakes you. Re-arm it after every wake; it also exits after 55 minutes
-  with no change - re-arm then too.
+  -Folder <channel root> -Ignore "<your file>,checkin/<your role>.md,<observer file>"` (Bash
+  `run_in_background`). `-WindowStyle Hidden` keeps a console window from popping up on the owner's
+  desktop, where a stray click on its close button would kill the watcher silently; output and exit code
+  are still captured. It watches the WHOLE TREE under the folder and skips any `.claude` folder; an
+  `-Ignore` entry is a relative path or a folder. It exits when any file changes, and its exit wakes you.
+  Re-arm it after every wake; it also exits after 55 minutes with no change - re-arm then too.
+  ⛔ Through 0.69.0 it listed only the top folder - so it never saw a check-in, and two sessions that
+  each said "watcher armed, recursive" were both watching one folder (1.3). Its first output line names
+  its version, "(whole tree)" and the file count: **read that line before telling anyone what you watch.**
 - Post **one** line on the board: `[time, clock][you] WAITING for <who> to <what>. watcher armed.`
 
 Measured after adoption: one side finished, and the other side's watcher woke it and it acted
@@ -180,7 +210,9 @@ every party posted "woke, nothing for me, re-armed" on every wake, and each such
 other watcher. Measured with nine parties: four or five such lines every two minutes, all
 content-free. ⇒ Post to the board only to claim, to report a real change of state, to hand over,
 or to ask. Your earlier WAITING line stays current; re-arm silently. Watchers ignore your own
-file and any observer's file.
+files - content AND check-in - and any observer's file. A check-in is rewritten only when a field
+in it changed (`coordination.md` 2.8): with the whole tree watched, a needless rewrite wakes every
+peer, and a peer that rewrites its own wakes you back.
 
 ⚠ **Waiting on the OWNER is different** - the owner speaks in your window, so stopping cleanly is
 right there, with a line saying what you wait for. A watcher is for peers. (`unattended-work`
@@ -204,6 +236,11 @@ writable — so the instrument worked and the tree was the problem. That is a fi
 check that would have reframed the whole session.
 
 ⇒ Then report the result on the board as a number, not as "looks fine".
+
+⚠ **A private key that arrives inherits its new folder's grants.** Measured: a key copied into the
+user's key folder carried the parent's read grant for every local user, and the SSH client refused it
+as an unprotected key file. Reset each key's ACL to the one account, and re-read it, before the first
+connection.
 
 ### 2.2 A read-only tree does not look like a permissions problem, it looks like five bugs
 
@@ -261,8 +298,13 @@ Measured: the destination session was started with its working directory in the 
 its own tooling wrote a log into that tree on every tool call - so the target was no longer empty
 before the copy, a mirror-mode copy would have deleted that file, and the agent then reasoned about
 an obstacle that existed only because of where it had been started. ⇒ Start the destination agent
-in the channel folder or any neutral folder; move in after the last copy. Anything a session start
-creates is destination-only content the copy must be told about.
+in a neutral folder - neither the copy target nor the channel - and move in after the last copy.
+Anything a session start creates is destination-only content the copy must be told about.
+⚠ Not the channel either (this line used to recommend it): measured, a session started in the channel
+folder put its tool-call log and its task folders there, the other side had to be told which folders
+were not messages, and with the whole tree watched (1.8) that log would wake every peer on every tool
+call. Already running there: name those folders in the channel's standing text and pass them to every
+watcher's `-Ignore` (`.claude` is skipped by the watcher itself).
 
 ### 2.4 Retry distinguishes a lock from a permission denial; the message does not
 
@@ -282,6 +324,11 @@ apply to network logons can leave a session with **no self-repair path at all** 
 grant itself access even over a loopback administrative share. Plan for the grant to come
 from the other side or from the owner, and find that out in the first minutes, not the
 fortieth.
+
+⚠ **But read the OWNER before calling a refusal an elevation problem.** Measured: a directory that
+every listing refused was owned by the session's own account; reading its ACL worked where listing
+failed, and the owner of an object may always rewrite that object's ACL - one unprivileged grant
+opened it. "Cannot read" and "needs elevation" are two different claims.
 
 ### 2.6 The source is not the authority. Diff both ways and look for the superset
 
@@ -346,6 +393,11 @@ a quarter; the gap was noticed only when a newly started monitoring role found i
 plan names which recurring work stops at the freeze, where and when it restarts, and who watches in
 between.
 
+⚠ **Verify a disabled task by its state, not by its next run time.** Measured: after a disable, the
+scheduler still reported a next run time for the disabled task - and none for an enabled one. Read the
+state (`Get-ScheduledTask` State, or `schtasks /query /v` "Scheduled Task State"), with a task you know
+is enabled as the control.
+
 ### 3.5 Carry the two lists, not one
 
 "Everything needed is in the work area" hides a split: what version control carries, and what
@@ -357,6 +409,20 @@ not.** Verify the second column's arrival by hash and **never print its contents
 column is where the credentials are. Note another session's uncommitted files explicitly so
 the destination knows not to touch them.
 
+⛔ **Classify every entry, never a sample - and a size is not a class.** Measured: an inventory of
+about thirty thousand ignored files was piped through `head -60`, and the "do not copy" verdicts written
+from those sixty were wrong three times (hand-captured evidence, original design documents, a
+tutorial) - each would have been destroyed with the source tree. A 140 MB folder judged "build output"
+was one downloadable third-party tool beside 3 MB of irreplaceable evidence. ⇒ Classify the whole list,
+by folder AND by content type. The "does not travel" column becomes a deletion list the moment the
+source is to be removed (3.8).
+
+⭐ **What worked for the credentials, measured on that job:** transport encryption switched on for the
+share BEFORE any key travelled; keys in their own folder with inheritance removed, checked on the
+FILES, not the folder (4.5); removed from the share as soon as the destination had proved them by
+connecting; then the whole share swept BY CONTENT for private-key headers, with a positive control on a
+key that still existed elsewhere.
+
 ### 3.6 Hard-coded absolute paths are first-class migration items
 
 Paths change across machines. A script with an absolute path fails on the far side; a
@@ -366,6 +432,15 @@ Paths change across machines. A script with an absolute path fails on the far si
 change"** and **"historical, do not touch"**. Prefer replacing an absolute path with an
 environment-relative one — that survives the *next* move too.
 
+⇒ **One path has several spellings, and the scan needs every one:** `C:\`, `C:/`, the JSON-escaped
+`C:\\`, a POSIX shell's `/c/`, the account's profile folder, and derived names such as a per-project
+folder slug. Measured: a scan missed three executed config files because they held the JSON-escaped
+form. A bracket expression (`C:[\/]+<dir>`) matches the first three; an alternation written with
+`\|` in an extended regex matches NOTHING (4.5). Probe the pattern with one known file per spelling.
+⇒ Classify per FILE: a scan view that set a whole folder aside as "history" missed an executed script
+inside it. ⇒ Re-run the scan over every file added to the manifest after the scan ran - measured, a
+late addition was the one executed hit nobody had scanned.
+
 ### 3.7 Re-verify the project's own tooling, not just the build
 
 A different machine means a different console encoding, a different default locale, different
@@ -374,6 +449,24 @@ and tests pass.
 
 ⇒ After a machine change, run the project's own checks too, and force explicit UTF-8 for
 anything that emits non-ASCII. See 4.3 for why the crash is more dangerous than it looks.
+
+### 3.8 Before the source is deleted, the "does not travel" column is a deletion list
+
+When the owner decides the source tree goes, every "do not copy" verdict becomes permanent. Measured:
+the re-audit that this decision forced found the three wrong verdicts of 3.5; nothing else would have.
+
+⇒ Re-audit the whole source from scratch - not the manifest - until every entry is one of: on the
+remote (asked of the SERVER, tags included, not of the local store), staged and verified, or named as
+abandoned and regenerable. A directory you could not read is a hole in that count, not an entry in it
+(2.5).
+⇒ Look outside the tree for what belongs to it: per-project agent memory and transcripts, scheduled
+tasks that point into it, certificate-store items, notes in a sibling folder. Measured: the project's
+own notes named a sibling file outside the project folder, holding a secret, that no list had carried.
+⇒ ⛔ **Check what the tree IS before anyone deletes it.** Raised on that job from the project's own
+notes (not yet measured when this was written): the source path had once been a junction to a tree on
+another host. If it still is one, a recursive delete can remove the TARGET's contents. Read the folder's
+link type or reparse point, and its parent's, with a plain folder as the control; if it is a link,
+remove only the link (`rmdir` without `/s`).
 
 ---
 
@@ -448,6 +541,22 @@ it, or the record itself trips the check for ever.
 ⚠ And a false positive is not grounds for distrusting the instrument. The same tool
 misreported and correctly reported inside one minute. Read every hit and judge it.
 
+### 4.5 A believable number from a tool used slightly wrong
+
+Measured on one job, one session, three times in two hours, and none of them raised an error: (1) in an
+extended regex `\|` is a literal pipe, so an alternation meant as "backslash or slash" matched nothing -
+and the control beside it, run without `-E`, was dead the same way; (2) `du -ch <list> | tail -1`, after
+`xargs` had split the list, printed the LAST batch's subtotal as the total (83 MB for 119 MiB); (3) a
+codepoint check indexed `[0]` into what it took for an array and measured one character of a string,
+reporting "0 control characters". A fourth, same session: protection claimed for files from a check run
+on their FOLDER, after the files had been copied in.
+
+⇒ **Run the control through the SAME invocation as the measurement** - same flags, same pipeline, same
+object. A control built separately proves the separate thing. ⇒ Reconcile a total two independent ways
+(the copier's count against a fresh count of the destination; a summed `stat` against the tool's total).
+⇒ Measure the object the claim is about, not its parent. ⇒ Every one of these was caught by a control or
+by the peer re-measuring (rule 8) - never by the number looking wrong.
+
 ---
 
 ## The checklist, in order
@@ -455,7 +564,8 @@ misreported and correctly reported inside one minute. Read every hit and judge i
 Before any cross-machine work:
 
 1. A shared directory outside any tree the task touches, holding ONE append-only board for
-   claims and turns plus one author-named content file per writer (1.5).
+   claims and turns plus one author-named content file per writer (1.5). Looked for before it is
+   created, created at the root, watched whole-tree; two boards = the root one wins (1.3).
 2. Each side appends a dated channel-test line to the board AND creates its own dated
    channel-test file; **neither proceeds until both sides can see both.** A side that cannot
    write the board says so in its own file, and from then on speaks there.
@@ -480,7 +590,15 @@ Throughout:
 13. Board messages written with the file tool, then scanned for control characters AND for the
     double-encoding signature (4.2).
 14. Migration scans run with ignore rules off, against a named known-hit control.
-15. Waiting on a peer: a wake-up armed, ONE WAITING line, silent re-arms (1.8). Re-read the board before
-    posting WAITING or saying who is present (`coordination.md` 3.14).
+15. Waiting on a peer: a wake-up armed on the channel ROOT, whole tree, your own files and check-in
+    ignored; ONE WAITING line, silent re-arms (1.8). List the whole tree before posting WAITING or
+    saying who is present or who has (not) answered (`coordination.md` 3.14).
 16. Moving the channel: announce it in the OLD place and keep watching there until all acknowledge
     (`coordination.md` 3.9). Rules adopted mid-run go into the channel's standing file (`coordination.md` 3.15).
+17. Board stamps produced by the append command, never typed (1.7). Controls run through the same
+    invocation as the measurement (4.5).
+
+Before the source is deleted:
+
+18. Re-audit the whole source, every entry classified; look outside the tree for what belongs to it;
+    check the tree is not a link to somewhere else (3.8).

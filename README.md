@@ -1192,7 +1192,8 @@ python hooks/usage.py --verdict --json   # 給程式讀的格式
 CronCreate 喚醒（給確切的 cron，在重置之後、OS 排程之前）；它一醒，gate 就取消這個 session 的 OS 排程。
 **醒來先檢查**：不論是自己醒還是被鬧鐘叫醒，都先重讀 HANDOFF、比對這個任務還有什麼沒做；真的沒有，寫一行就停，不去找別的事做。
 **醒來先報到**：同一個 repo 還有別的 session 活著（或這個 session 用過 cowork）時，被鬧鐘叫醒、閒置超過 `wake_gap_min`（30）
-分鐘後的輸入、resume／`/clear`／內容壓縮之後，gate 都會提醒它先重讀協力板、用這個 session id 重寫自己的報到檔。
+分鐘後的輸入、resume／`/clear`／內容壓縮之後，gate 都會提醒它先重讀協力板、核對自己的報到檔，session id 等欄位有變才重寫
+（0.69.1：沒變就不寫 —— 每重寫一次都會叫醒監看通道的同伴）。
 ⭐ 0.69.0 起，**OS 鬧鐘叫醒的是原本的視窗，不在背景做事**：鬧鐘響時，送一則喚醒訊息進上鬧鐘的那個視窗（用上鬧鐘時記下的本機傳訊
 地址，送訊的 `claude -p` 只能用 SendMessage），它在原本的對話裡醒來接著做。視窗已關、訊息沒被處理、或鬧鐘沒有視窗可叫時，只在下次
 開 session 時告訴你，不在背景跑（`resume_headless: 1` 可找回舊行為）。
@@ -2915,7 +2916,8 @@ new headless session, so every arm line the model reads asks the session to sche
 for that task, and if nothing is left says so in one line and stops - no looking for other work.
 **A woken session checks in first**: with a live peer in the repository (or cowork used), a wake by
 alarm, a prompt after `wake_gap_min` (30) idle minutes, or a resume / `/clear` / compaction gets a line
-asking it to re-read the board and rewrite its own check-in with this session id. ⭐ Since 0.69.0 **the
+asking it to re-read the board and rewrite its own check-in with this session id if a field in it changed
+(0.69.1: a current check-in is left alone - every rewrite wakes the peers watching the channel). ⭐ Since 0.69.0 **the
 OS alarm wakes the original window and does no work in the background**: it sends one wake message to the
 window that armed it (by the local messaging address recorded at arm time, from a `claude -p` that has no
 tool but SendMessage), which carries on in its own conversation. A closed window, a wake not acted on, or

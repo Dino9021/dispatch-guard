@@ -2767,8 +2767,9 @@ def wake_prompt(handoff=None):
     # ⚠ THE ONE THING BEFORE THE CHECK (ADR 20261001-085000 D8, its review B1): this session stays
     # open, so its own cowork check-in is rewritten first - the stop rule applies after it.
     return ("dispatch-guard wake: the usage window has reset. If this project keeps a shared "
-            "coordination board (cowork), first re-read it and rewrite your own check-in with this "
-            "session's id. Then re-read %s and check, for this task "
+            "coordination board (cowork), first re-read it and make sure your own check-in carries "
+            "this session's id, runtime name and [ref] - rewrite it only if one of them changed. "
+            "Then re-read %s and check, for this task "
             "only, what is still unfinished - its Next step against the commits since it was "
             "written that touch its task folder or the files it names, and that folder's "
             "RESULT.md / progress.md. Continue what is open. If nothing is left, or the handoff "
@@ -2862,8 +2863,10 @@ def cowork_wake_note(payload, root, sdir, cfg, now=None):
         text = (" dispatch-guard: this session was just woken (%s)%s. If this project keeps a "
                 "shared coordination board with check-in files (cowork), do this BEFORE any other "
                 "work: re-read the board, then rewrite YOUR role's check-in with this session's id "
-                "`%s`, its current runtime name and [ref] - they change while a session sleeps, "
-                "and a peer that sends to the old name reaches somebody else (cowork rule 2; "
+                "`%s`, its current runtime name and [ref] if any of them differ from what it holds "
+                "- they change while a session sleeps, and a peer that sends to the old name "
+                "reaches somebody else. A check-in that is already current is left alone: every "
+                "rewrite wakes the peers watching the channel (cowork rule 2; "
                 "reference/coordination.md 2.8).%s" % (why, who, sid, load))
         screen = ("session woken (%s)%s - asked to re-check-in on the shared board first."
                   % (why, (" with %d live peer%s" % (len(peers), "" if len(peers) == 1 else "s"))

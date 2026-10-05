@@ -226,8 +226,12 @@ reliably re-check-in: the rule said "on every restart", and a session that was w
 alarm, by the owner after an idle stretch, after a resume, a `/clear` or a context compaction -
 did not count itself as restarted. It is: while it slept its runtime name and `[ref]` may have
 changed, a headless resume runs under a NEW session id, and a compaction loses the memory of the
-board. So the first act after ANY wake is: re-read the board, then rewrite your own check-in
-(runtime name, `[ref]`, session id, `last confirmed`) before other work. ⭐ The dispatch-guard hook
+board. So the first act after ANY wake is: re-read the board, then check your own check-in against
+your current runtime name, `[ref]` and session id - and rewrite it (with `last confirmed`) if any of
+them changed, before other work. ⛔ **A check-in that is already current is left alone** (0.69.1):
+once watchers see the whole channel tree, `checkin/` included, every rewrite wakes every peer, and a
+peer that rewrites its own in turn wakes you back - a ping-pong with no content (`cross-machine.md`
+1.8). A watcher you armed yourself exiting is not a restart either: nothing about you changed. ⭐ The dispatch-guard hook
 says so at the wake when a peer shares the repository or this session has used this skill (log
 line `WAKE-CHECKIN-NUDGE`). ⚠ A headless resume that finds nothing left for its task and stops
 does NOT check in - it would overwrite the role's check-in with an id that is about to vanish.
@@ -240,7 +244,7 @@ does NOT check in - it would overwrite the role's check-in with an id that is ab
   session id       : <current id>           (volatile; changes on resume)
   machine / repo   : <where it runs>
   checked in       : YYYY-MM-DD HH:MM       (from the clock, never estimated)
-  last confirmed   : YYYY-MM-DD HH:MM       (refresh before each consequential action, and on every restart)
+  last confirmed   : YYYY-MM-DD HH:MM       (refresh before each consequential action, and whenever you rewrite the file)
 ```
 
 **Why a file per session and not one shared roster file.** A check-in has to be EDITABLE -
@@ -408,6 +412,13 @@ folder only. It could read the new board; nothing woke it to. ⇒ Announce a mov
 location**, keep the old location watched until every party has acknowledged the move there, and
 move (or add) the watcher with it. Reachable is not watched.
 
+⚠ **Nobody has to move a channel for there to be two.** Measured across machines: two parties
+created a channel at the same time in different folders of one share, each watched only its own,
+and each answered the other where the other was not looking (`cross-machine.md` 1.3: look before
+creating, watch the whole tree, the root wins). The losing side announced the move in its own folder,
+as above - and left standing a signpost at the root that still sent readers into the dead folder. ⇒
+Every pointer to the old location counts as the old location: retract it in the same step.
+
 
 ### 3.10 When you split a section, leave a pointer where it used to be whole
 
@@ -507,6 +518,10 @@ superseded on the same board.
 re-read the record's last entries since your previous read. A presence claim is an absence
 claim in disguise - rule 11 applies.
 
+⚠ **Across machines the record is the whole channel folder, listed recursively** - not the one file
+or folder you expect the answer in. Measured: "the other side has not replied" was told to the owner
+while the reply had sat one folder up for twelve minutes (`cross-machine.md` 1.3).
+
 ### 3.15 A rule adopted mid-run goes into the channel's standing file at once
 
 Rules the owner adds while work is running are usually delivered by pasting them into the
@@ -553,3 +568,10 @@ rules written into its brief:
   read it, they correct what it records, and "it did not happen again" can no longer be
   credited to the skill. And the observer batches its writes: every write wakes every watcher
   that does not ignore the observer's file.
+- **The observer's own instruments lie too, and nobody re-measures the observer.** Measured: an
+  observer printed a CJK quote through a legacy-code-page console, read mojibake, and told the owner
+  the quote was destroyed; by codepoint it was intact. A byte slice of UTF-8 (`cut -c`) does the same.
+  Settle by codepoint before saying anything. And an observer running a long FOREGROUND sub-task
+  cannot re-arm its watcher meanwhile (measured: 45 minutes) - read the board's backlog afterwards,
+  not the last wake. Keep the observer's copies of the board outside any committed tree: they carry
+  the parties' machine identifiers.
