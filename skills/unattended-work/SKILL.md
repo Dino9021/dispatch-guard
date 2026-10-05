@@ -1,6 +1,6 @@
 ---
 name: unattended-work
-description: Use at the START of any task that will run longer than a few steps, and again before dispatching a review wave, when you hesitate or disagree with an adviser, when deciding whether to interrupt the owner, and before stopping. Covers the implement-refute-fix-refute wave, two-reviewer review, the debate ladder, when NOT to ask, the stall test, the exit bar, the stopping report, and clean handover.
+description: Use at the START of any task that will run longer than a few steps, and whenever the request says unattended, 無人職守, 無人值守 or 做完再叫我 (any case or form). Use it again before dispatching a review wave, when you hesitate or disagree with an adviser, when deciding whether to interrupt the owner, and before stopping. Covers the implement-refute-fix-refute wave, two-reviewer review, the debate ladder, when NOT to ask, the stall test, the exit bar, the stopping report, and clean handover.
 ---
 
 # Unattended work

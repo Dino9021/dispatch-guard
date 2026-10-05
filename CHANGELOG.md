@@ -33,6 +33,16 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.69.2
+
+擁有者 2026-10-06：「cowork 幫我加入 session 自己叫的詞，只要看到 cowork、Teamwork、Cooperate、Collaborate、分工合作 就自己叫」、
+「unattended-work 幫我加入 session 自己叫的詞: 無人職守、unattended、做完再叫我」。
+
+- **`cowork` 的 description 加上觸發字：** 請求裡出現 cowork、teamwork、cooperate、collaborate 或「分工合作」（不分大小寫與詞形）就載入，
+  即使眼前只有一個 session。原本那句「看情境，絕不看字眼」改成「這幾個字之外，看情境，不看字眼」—— 否則兩句互相矛盾。
+- **`unattended-work` 的 description 加上觸發字：** unattended、「無人職守」、「無人值守」（常見寫法，一併加上）、「做完再叫我」。
+- README 的「什麼時候該載入它」兩種語言同步。description 長度：cowork 1005 字元（上限 1024）、unattended-work 483；frontmatter 檢查通過。
+
 ## 0.69.1
 
 擁有者 2026-10-05，看著一場進行中的兩台機器遷移：「兩方一開始都沒有監控子路徑，導致雙方都在各自的子路徑寫資訊給對方，但對方都沒看到」。
@@ -3043,6 +3053,20 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.69.2
+
+Owner, 2026-10-06: add words that make a session load `cowork` by itself - cowork, Teamwork, Cooperate,
+Collaborate, 分工合作 - and `unattended-work` - 無人職守, unattended, 做完再叫我.
+
+- **`cowork` description: trigger words.** Load it whenever the request says cowork, teamwork, cooperate,
+  collaborate or 分工合作 (any case or form), even with one session in sight. "The trigger is the SITUATION,
+  never the wording" became "beyond those words, the situation, not the wording" - the two would otherwise
+  contradict each other.
+- **`unattended-work` description: trigger words.** unattended, 無人職守, 無人值守 (the common spelling,
+  added alongside), 做完再叫我.
+- README "When to load it" updated in both languages. Description lengths: cowork 1005 characters (limit
+  1024), unattended-work 483; the frontmatter check passes.
 
 ## 0.69.1
 

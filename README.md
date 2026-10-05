@@ -687,7 +687,8 @@ claude plugin install dispatch-guard@dispatch-guard --config announce_unattended
 問題經單一窗口、問的時候不用代名詞、宣告東西不見之前先用內容搜、講清楚「沒答案」是哪一種……
 還有一張 31 列的**失效形狀目錄**，讓下一個 session 叫得出形狀的名字。
 
-⭐ **什麼時候該載入它：看情境，不看字眼（0.64.0）。** 同一個 repo 不只一個 session（同時或接續）、
+⭐ **什麼時候該載入它：看到 cowork、teamwork、cooperate、collaborate、分工合作 這幾個字就載入（0.69.2）；
+其餘看情境，不看字眼（0.64.0）。** 同一個 repo 不只一個 session（同時或接續）、
 不只一台機器、跨 repo、跨專案、或主人把同一件事轉述給好幾個 session —— 問題聽起來只是在複製檔案、用
 git、權限都一樣。**第 13 條**是跨機器的底線：依賴一條管道之前先證明**寫得進去**、兩個方向分開量；跨機
 複製後第一個檢查是「我能不能寫」，不是雜湊。它來自第一次跨機搬家：溝通板一邊讀得到寫不進去，另一邊
@@ -2380,7 +2381,8 @@ through one session, never a pronoun when you ask, search by content before decl
 missing, say which kind of "no answer" you have … and a 31-row **catalogue of failure shapes**,
 so the next session can name the shape instead of rediscovering it.
 
-⭐ **When to load it: the situation, never the wording (0.64.0).** More than one session on the
+⭐ **When to load it: whenever the request says cowork, teamwork, cooperate, collaborate or 分工合作
+(0.69.2); beyond those words, the situation, not the wording (0.64.0).** More than one session on the
 same repository (concurrent or one after another), more than one machine, work spanning
 repositories or projects, or an owner relaying one thing to several sessions — even when the
 question sounds like plain file copying, git or permissions. **Rule 13** is the cross-machine
