@@ -83,7 +83,7 @@ that session. Do not report it as active.
 3. **Dispatching before the plan is on disk** (`prompts*.md` newer than session start).
 4. **Any mass-spawn tool.** No approval path.
 5. **Dispatching when usage says STOP.**
-6. **A model above `max_model_price`** — see the table above. Do not raise the limit; it is
+6. **A model above `max_model_price`** — see the model section above. Do not raise the limit; it is
    the owner's setting.
 
 Three ways agents talk themselves past rule 1 — none is an exception: "it is only a
@@ -135,9 +135,17 @@ missing.
 ## Usage: act on the word, never the numbers
 
 Run `<plugin>/hooks/usage.py --verdict` before a wave. **GO** = dispatch freely. **PACE** =
-finish what is in flight, no new wave. **STOP** = wrap up, write `HANDOFF.md`, arm a resume
-(both routes the gate prints), end the turn. **NO-DATA** = report usage as UNKNOWN, never a
-number. Never compute headroom from raw percentages.
+finish what is in flight and start no new batch. The hook's line reads `PACE at <pct>% - no new
+batch`, and batch there means a new wave or a new heavy block, sequential ones included — not
+only the owner-approved concurrent group that the approval paragraph under rule 1 calls batches
+of N. In flight means a sub-task already running, or the remaining prompts of a wave that was on
+disk before the PACE line first appeared; a sub-task planned after that line is a new batch,
+whatever it is called. A dispatch that completes work in flight is still allowed, and from PACE
+onward (relaxed bands included) the gate lets it through only when a current `HANDOFF.md` is in
+the task folder (`require_handoff_past_soft`, since 0.35.0; relaxed bands since 0.68.0).
+**STOP** = wrap up, write or update `HANDOFF.md`, arm a resume (both routes the gate prints),
+end the turn. **NO-DATA** = report usage as UNKNOWN, never a number. Never compute headroom
+from raw percentages.
 
 ⭐ **The line sometimes ADDS when the window empties at the recent rate.** At GO it reads
 `ℹ At the current rate the 5h window would be SPENT in ~N min - M min BEFORE it resets. That
@@ -145,11 +153,13 @@ figure only sizes the NEXT block; GO stands.` Only at PACE/STOP does it read `�
 ~N min … Plan for the gap, not for the reset.` And while the window is younger than
 `burn_note_min_age_min` (30 minutes) it says nothing at all — see below for why (0.63.2).
 
-⛔ **N NEVER WINDS YOU DOWN.** Handing over, writing `HANDOFF.md` and arming a resume are
-triggered by the word **STOP**, and by nothing else — not by N, and not by PACE either, which
-means start no new batch and nothing more. N answers exactly one question: **does the block I
-am about to START fit inside N?** It fits → start it. It does not → start a smaller one. That
-is the whole of it. **At GO you keep working, however small N is.**
+⛔ **N NEVER WINDS YOU DOWN.** Handing over — wrapping up and ending the turn so the resume
+takes over; the alarm the gate arms by itself at a PACE turn end is not that — is triggered by
+the word **STOP**, and by nothing else: not by N, and not by PACE either, which means start no
+new batch and nothing more. (`HANDOFF.md` itself comes before STOP: from PACE onward a dispatch
+needs it on disk, see above.) N answers exactly one question: **does the block I am about to
+START fit inside N?** It fits → start it. It does not → start a smaller one. That is the whole
+of it. **At GO you keep working, however small N is.**
 
 ⭐ **One carve-out near the reset, and it is not a hand-over.** A PACE or STOP can be RELAXED to GO
 when the window resets soon and the budget should last (the verdict line says `Relaxed near the
@@ -179,8 +189,9 @@ enforce. Do not compute N yourself either; read the number the line prints.
 
 ## HANDOFF.md after a STOP
 
-The only thing the next run gets (a transcript re-read costs ~95k tokens/MB with zero
-cache; a 3 KB handoff ~800). Seven sections: **WHO YOU ARE** · Goal (standalone) · Done
+Written from PACE onward — the gate requires a current one before any dispatch there — and
+read after the STOP: the only thing the next run gets (a transcript re-read costs ~95k
+tokens/MB with zero cache; a 3 KB handoff ~800). Seven sections: **WHO YOU ARE** · Goal (standalone) · Done
 (with every output path) · Next step (nothing left to decide) · Tried and failed (with
 reasons) · Decided (not to be re-litigated) · Every path, command and branch. No backward
 references; never "continue the previous work".

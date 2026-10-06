@@ -24,9 +24,10 @@ Everything below is the manual form, for a plain terminal.
                                      file (--remove to take it out again)
     python install.py --vscode-task  the old per-PROJECT form, for one repository only
                                      (--remove to take it out again)
-    python install.py --all --uninstall  ⭐ remove BOTH halves: the statusline and this
-                                 project's `Claude Usage Watcher` task. It then lists what
-                                 it did not touch. Add --check to see it change nothing.
+    python install.py --all --uninstall  ⭐ remove BOTH halves: the statusline and the
+                                 `Claude Usage Watcher` task (user tasks file, plus a legacy
+                                 per-project copy). It then lists what it did not touch.
+                                 Add --check to see it change nothing.
     python install.py --uninstall    the statusline only
 
 ⛔ WHY AN INSTALLER EXISTS FOR A ONE-LINE EDIT
@@ -995,8 +996,8 @@ def status():
 def _watch_command(repo):
     """(command, args) for the task. ⛔ The shim, so no version number is ever committed.
 
-    ⚠ `.vscode/tasks.json` is often TRACKED - it is in this repository - so whatever goes in
-    here is read by the next person who clones. It used to be a path under the plugin cache,
+    ⚠ A per-project `.vscode/tasks.json` is often TRACKED, so whatever goes in here is read
+    by the next person who clones. It used to be a path under the plugin cache,
     carrying this machine's home directory AND this machine's plugin version, and it went
     stale at every update. It is the shim now: still an absolute path, still this machine's
     home, but it never goes stale. ⚠ `${workspaceFolder}` cannot address a file outside the
@@ -1515,8 +1516,9 @@ def statusline_install(argv):
         print("  - `task.allowAutomaticTasks` in VS Code user settings, and any")
         print("    .bak-dispatch-guard beside it. Other tasks may rely on that switch now.")
         if "--all" not in argv:
-            print("  - the `Claude Usage Watcher` task in this project. Use --all --uninstall,")
-            print("    or --vscode-task --remove, to take that out too.")
+            print("  - the `Claude Usage Watcher` task in VS Code's user tasks file. Use")
+            print("    --all --uninstall to take that out too (it also sets auto_vscode_task")
+            print("    to false, so the hook does not put it back).")
         return 0
 
     if "--take-statusline" in argv and current and not ours:
@@ -1603,15 +1605,14 @@ def main():
     """One entry point. ⭐ `--all` is the whole manual half in a single command.
 
     ⛔ WHY TWO COMMANDS IS THE FLOOR, and it cannot be one. A plugin has no install-time
-    hook, `statusLine` is not a key a plugin manifest can set, and `.vscode/tasks.json` is
-    per-PROJECT so a plugin could not know which project to write it into. Hooks and skills
-    DO install themselves - `claude plugin install` is all they need. What is left is this
+    hook and `statusLine` is not a key a plugin manifest can set. Hooks and skills DO
+    install themselves - `claude plugin install` is all they need. What is left is this
     script, and --all collapses it to one run.
 
-    ⚠ --all is not the DEFAULT, deliberately. The task half writes `.vscode/tasks.json`
-    into the current project - a file most repositories track - and edits VS Code's user
-    settings. Doing that to somebody who only wanted a statusline is an overreach, so it is
-    opt-in and named.
+    ⚠ --all is not the DEFAULT, deliberately. The task half writes VS Code's user-level
+    `tasks.json` and edits VS Code's user settings (a per-project `.vscode/tasks.json` only
+    with the explicit `--vscode-task` flag). Doing that to somebody who only wanted a
+    statusline is an overreach, so it is opt-in and named.
     """
     argv = sys.argv[1:]
     if "--status" in argv:

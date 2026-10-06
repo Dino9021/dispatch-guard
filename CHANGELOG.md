@@ -33,6 +33,32 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.69.4
+
+擁有者 2026-10-06：「請你幫我檢查本專案發布出去的工具，其中的 skill、提示詞等是否有重複、矛盾、語意不清之類的
+問題」，接著「請你修，開始修之前請派一個 Fable 5.1 幫你再看一次，確認後再修」。
+
+- **只改文字，程式行為不變。** 審查找出六處「文件比程式碼舊」的句子；一個 Fable 5.1 子代理逐項對程式碼反駁後
+  全部確認（並修正兩處：`require_handoff_past_soft` 是 0.35.0 不是 0.68.0；uninstall 的「Task only」要三道指令），
+  修完再送第二個子代理反駁修正本身（任務資料夾 `Memory/tasks/20261006-092201-stale-skill-text/`）。
+- **`dispatch-protocol`：HANDOFF.md 從 PACE 起就要在硬碟上，不是 STOP 才寫。** 舊句子「交接、寫 HANDOFF.md、
+  預約續跑只由 STOP 觸發」是 0.35.0 之前的規則；gate 從 0.35.0 起在 PACE／STOP（0.68.0 起含放寬區）沒有當前的
+  HANDOFF.md 就拒絕派工。PACE 的定義同時講清 hook 印的 `no new batch` 裡「batch」是什麼（新的一波或新的重工作，
+  循序的也算）、「手上的」是什麼（已在跑的，或 PACE 那一行出現前就已落地的那一波剩下的提示詞），以及「交接」不包括
+  gate 在 PACE 回合結束時自己上的鬧鐘。第 6 條拒絕的「見上面那張表」改成「見上面的模型段落」（表早就拿掉了）。
+  中文副本同步這幾句。
+- **`PROTOCOL.md`：** HANDOFF.md 那一列不再說續跑是「全新的 `claude -p`、新 session id」（0.69.0 起鬧鐘叫醒原視窗，
+  只有 `resume_headless: 1` 且沒視窗才是）；價格表那一列不再引用已不存在的「skill 四列對 `model_price()`」檢查
+  （現在是 `case_skill_price_table`：skill 裡不得有價格字面值）。
+- **`/dispatch-guard:install` 與 `/dispatch-guard:uninstall`：** 不再說會把 `.vscode/tasks.json` 寫進本專案 ——
+  `--all` 寫的是 VS Code 使用者層級的 `tasks.json`（README 早已這樣寫）。uninstall 的「Task only」原本只跑
+  `--vscode-task --remove`，那只移除舊版留下的專案內副本、使用者層級的 task 還在，而且 `auto_vscode_task` 沒關的話
+  hook 下個 session 會把它寫回來；現在是三道指令：`--disable-auto-task`、`--vscode-user-task --remove`、
+  `--vscode-task --remove`。`install.py` 的 docstring、用法說明與 `--uninstall` 的輸出同步。
+- **`hooks/unattended.py`：** 給人看的那一行改成「含有 `unattended-work ACTIVE` 的一行」—— skill 印的那一行開頭是 ⭐，
+  「以…開頭」不成立。`hooks/resume.py` 的 handoff 警告改成「無頭續跑才是新 session」。
+- **沒做的：** 審查第二、三節（跨檔重複、可精簡處、三份中文副本整體落後英文）未動，等擁有者裁定。
+
 ## 0.69.3
 
 擁有者 2026-10-06：「就算眼前只有一個 session 也要啟動的原因 cowork 的情境可能是與另一台工作站協作，不一定是同一台工作站上同一個專案
@@ -3062,6 +3088,40 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.69.4
+
+Owner, 2026-10-06: audit the shipped skills and prompts for duplication, contradiction and unclear
+wording; then fix, after a Fable 5.1 sub-agent re-checks each finding.
+
+- **Text only; no behaviour changed.** The audit found six sentences older than the code they describe.
+  A Fable 5.1 sub-agent tried to refute each against the code and confirmed all six, with two corrections
+  (`require_handoff_past_soft` dates from 0.35.0, not 0.68.0; uninstall's `Task only` needs three
+  commands); the fix was then sent to a second sub-agent to refute
+  (`Memory/tasks/20261006-092201-stale-skill-text/`).
+- **`dispatch-protocol`: HANDOFF.md is required from PACE onward, not written at STOP.** "Handing over,
+  writing HANDOFF.md and arming a resume are triggered by STOP and nothing else" predated 0.35.0, since
+  when the gate refuses a dispatch at PACE/STOP (relaxed bands since 0.68.0) without a current
+  HANDOFF.md. The PACE definition now says what the hook's `no new batch` means by batch (a new wave or
+  heavy block, sequential ones included), what "in flight" means (a sub-task already running, or the
+  rest of a wave on disk before the PACE line appeared), and that the alarm the gate arms by itself at a
+  PACE turn end is not a hand-over. Refusal 6's "see the table above" now says "the model section" (the
+  table went long ago). The zh-TW copy carries the same sentences.
+- **`PROTOCOL.md`:** the HANDOFF.md row no longer says a resume is a fresh `claude -p` with a new id
+  (since 0.69.0 the alarm wakes the window that armed it; only `resume_headless: 1` with no window is
+  the fresh run); the price-drift gap row no longer cites a "four rows against `model_price()`" check
+  that no longer exists (it is `case_skill_price_table`: no price literal in the skill).
+- **`/dispatch-guard:install` and `/dispatch-guard:uninstall`:** no longer say `.vscode/tasks.json` is
+  written into the project - `--all` writes VS Code's user-level `tasks.json` (README already said so).
+  Uninstall's `Task only` ran only `--vscode-task --remove`, which removes a legacy per-project copy and
+  leaves the user-level task, and with `auto_vscode_task` still on the hook writes it back next session;
+  it is now three commands: `--disable-auto-task`, `--vscode-user-task --remove`, `--vscode-task
+  --remove`. `install.py`'s docstring, usage text and `--uninstall` output say the same.
+- **`hooks/unattended.py`:** the on-screen line now says "a line containing `unattended-work ACTIVE`" -
+  the skill's line begins with ⭐, so "beginning" was false. `hooks/resume.py`'s handoff warning says a
+  headless resume is the one that wakes a new session.
+- **Not done:** the audit's sections 2 and 3 (cross-file duplication, concision, the zh-TW copies lagging
+  the English as a whole) are untouched, pending the owner's decision.
 
 ## 0.69.3
 

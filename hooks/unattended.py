@@ -43,7 +43,7 @@ REMINDER = (
 # shipped reference. => Two halves: this line proves the hook FIRED, and the skill's own ACTIVE
 # line proves the agent ADOPTED it. Neither one alone answers the question.
 SEEN = ("dispatch-guard: asked this session to load the unattended-work skill. "
-        "Expect it to answer with a line beginning `unattended-work ACTIVE`; if that line "
+        "Expect it to answer with a line containing `unattended-work ACTIVE`; if that line "
         "does not appear, nothing loaded the rules. Turn this off with "
         "announce_unattended_work=false.")
 

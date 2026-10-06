@@ -1605,10 +1605,10 @@ dispatch_gate.py        ← 每次工具呼叫都是新行程，跟上面沒有�
   （換成同家族裡最新的、或是直接繼承主控的），而每一種替換都是成本往**下**走 ——
   成本守衛在那裡沒有東西要保護，硬要拒絕只會誤殺合法的派工。
 - ⭐ **規則寫在 skill 裡，不是只在派工那一刻才擋。**
-  `dispatch-protocol` 帶著那張價格表和 `max_model_price`，所以 agent 在「選擇之前」就讀到 ——
+  `dispatch-protocol` 帶著 `max_model_price` 並說明即時價格表在哪裡；session 的開場內容和
+  gate 注入到每一層子任務提示詞的區塊（第 7 條）帶著當下的價格表，所以 agent 在「選擇之前」就讀到 ——
   ⛔ 一條 agent 只在被拒絕時才遇到的規則，就是一條它會想辦法繞過的規則。
-  gate 注入到每一層子任務提示詞的區塊裡也有同一條（第 7 條）。
-  ⚠ 兩份表可能分岔，所以有一項檢查會斷言 skill 那四列跟程式的判斷函式一致。
+  ⚠ 打進 skill 裡的數字會過期，所以有一項檢查會斷言 skill 裡完全沒有價格字面值。
 - ⭐ **那些數字是已公布的資料，不是我編的。** 它是出貨的模型目錄裡每一筆的
   `pricing` 欄位：`tier_<輸入>_<輸出>`，每百萬 token 美元。
   ⛔ **是「每個模型」計價，不是「每個家族」**，因為一個家族不是一個價格：
@@ -3395,10 +3395,11 @@ Read this before trusting it. Every item is a way it can look like it is working
   DOWN in cost. Nothing for a cost guard to protect, and a refusal there would eventually kill
   legal work.
 - ⭐ **The rule lives in the SKILL, not only in the refusal.** `dispatch-protocol` carries
-  the price table and `max_model_price`, so an agent reads them BEFORE it chooses — ⛔ a rule
-  an agent only ever meets as a refusal is a rule it tries to route around. The block the gate
-  injects into every sub-task prompt carries it too (rule 7). ⚠ Two copies of a number can
-  drift, so a check asserts the skill's four rows against the function that decides.
+  `max_model_price` and says where the live prices are, and the session's opening context and
+  the block the gate injects into every sub-task prompt (rule 7) carry the current table, so an
+  agent reads them BEFORE it chooses — ⛔ a rule an agent only ever meets as a refusal is a rule
+  it tries to route around. ⚠ A number typed into a skill drifts, so a check asserts the skill
+  carries no price literal at all.
 - ⭐ **The numbers are published data, not mine.** They are the `pricing` field on each entry
   of the shipped model catalog: `tier_<input>_<output>`, US dollars per million tokens.
   ⛔ **Priced per MODEL, not per family**, because a family is not one price:

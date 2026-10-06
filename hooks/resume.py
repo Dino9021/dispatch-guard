@@ -714,8 +714,9 @@ def handoff_warnings(path):
     if not re.search(r"next step|next action|下一步|接下來|todo|TODO", text, re.I):
         out.append("no next step is marked - state the exact next action, concretely enough "
                    "to act on without deciding anything first.")
-    # ⛔ WHO THIS SESSION IS. A resume wakes a FRESH `claude -p` with a NEW session id - never
-    # `--resume`, because re-sending a transcript costs ~95k tokens/MB at zero cache read - so
+    # ⛔ WHO THIS SESSION IS. A headless resume (`resume_headless: 1`, no window to wake) is a
+    # FRESH `claude -p` with a NEW session id - never `--resume`, because re-sending a
+    # transcript costs ~95k tokens/MB at zero cache read - so
     # the successor cannot know whose work it is continuing unless this file says. do_run
     # hands it the predecessor's id and tells it to keep the name it finds here; with no name
     # there is nothing to keep. ⚠ Sharpest with several sessions collaborating - a fleet keyed
@@ -726,8 +727,8 @@ def handoff_warnings(path):
     if not re.search(r"session[ _-]?id|session\s*[:：]|我是|call sign|role\s*[:：]|"
                      r"身分|代號|[0-9a-f]{8}-[0-9a-f]{4}", text, re.I):
         out.append("it does not say WHO this session is - name the role or call sign and the "
-                   "session id. The resume wakes a NEW session, and it can only keep a name "
-                   "that this file gives it.")
+                   "session id. A headless resume wakes a NEW session, and it can only keep "
+                   "a name that this file gives it.")
     return out
 
 

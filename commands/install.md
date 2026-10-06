@@ -20,11 +20,12 @@ bash "${CLAUDE_PLUGIN_ROOT}/hooks/run.sh" "${CLAUDE_PLUGIN_ROOT}/install.py" --a
 2. Show that output to the user.
 
 3. ⚠ ASK FIRST, with `AskUserQuestion`, exactly once. This edits their statusline setting
-   and writes `.vscode/tasks.json` into this project, so it is their call. Put the install
-   option first and suffix it `(Recommended)`:
+   and VS Code's user-level `tasks.json` and user settings (nothing is written into the
+   repository), so it is their call. Put the install option first and suffix it
+   `(Recommended)`:
    - `Install both halves (Recommended)` - statusline for the CLI, watcher task for the
      VS Code extension, which renders no statusline
-   - `Statusline only` - no `.vscode/tasks.json` is written
+   - `Statusline only` - no VS Code task is written
    - `Cancel`
 
 4. Run whichever they chose:
