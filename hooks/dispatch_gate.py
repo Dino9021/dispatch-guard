@@ -144,7 +144,8 @@ DEFAULTS = {
     # sessions name constantly - do not count. Why the owner's words and
     # not "the skill was loaded": the gate's own first-dispatch nag loaded that skill in 25 of
     # the 26 sessions that dispatched here in 14 days, so it could not mean absence.
-    "unattended_words": [r"無人職守", r"無人值守", r"做完再叫我", r"\bunattended\b(?![-.]\w)"],
+    "unattended_words": [r"無人職守", r"無人值守", r"無人模式", r"自動模式", r"做完再叫我",
+                         r"\bunattended\b(?![-.]\w)"],
     # The owner's written approval of a dearer model for ONE task folder, expiring with
     # approval_ttl_min - the same shape as PARALLEL-APPROVED. Forms: `model fable`,
     # `MODEL=fable`, `模型 fable`; the dispatched model must price at or below the approved one.
@@ -4664,6 +4665,10 @@ def selftest():
         assert unattended_word("把這三件做完再叫我", wcfg) == "做完再叫我"
         assert unattended_word("Unattended run, call me when done", wcfg).lower() == "unattended"
         assert unattended_word("切到無人值守模式", wcfg) == "無人值守"
+        # ⭐ The two words the owner added to the skill on 2026-10-06 (commit 3c0f0bb); the
+        # test_guards frontmatter check keeps this list a subset of the skill's description.
+        assert unattended_word("進入無人模式", wcfg) == "無人模式"
+        assert unattended_word("用自動模式跑完", wcfg) == "自動模式"
         assert not unattended_word("check the unattended-work skill text", wcfg), \
             "the skill's own name read as a declaration"
         assert not unattended_word("edit hooks/unattended.py and unattended_work.md", wcfg), \

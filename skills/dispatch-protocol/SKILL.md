@@ -46,7 +46,7 @@ Pick the cheapest model that can do the unit. `max_model_price` (default **5**) 
 sub-agent's model may cost in US dollars per million **input** tokens. Above it the gate refuses
 — or, when a person can answer, puts the dispatch to the owner as a permission dialog with the
 price in it (`over_price`, 0.70): in a run the owner declared unattended (their prompt said
-無人職守, 無人值守, 做完再叫我 or unattended) it is refused, because a dialog nobody answers
+無人職守, 無人值守, 無人模式, 自動模式, 做完再叫我 or unattended) it is refused, because a dialog nobody answers
 stalls the run, and a `MODEL-APPROVED` file in the task folder written from the owner's own
 words (`model fable`) lets a named model through without a dialog. So decide here, not after a
 refusal — and never write that file from anything but the owner's words.

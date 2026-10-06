@@ -59,7 +59,7 @@ skill 是模型看了描述之後**自己決定**要不要用；文件是模型*
 | ⛔ 拒絕 `git commit -m` | 訊息寫成檔案，用 `-F <路徑>` |
 | ⛔ 拒絕**把錯誤訊息吞掉**的搜尋 | `2>/dev/null`、`2>$null`、`--no-messages`、grep 的 `-s` |
 | ⛔ **沒載入 `dispatch-protocol` 就拒絕派工** | 每一次都拒絕，直到它被叫過。`require_dispatch_protocol` |
-| ⭐ 你**宣告無人職守**（prompt 含 無人職守／無人值守／做完再叫我／unattended）之後，沒載入 `unattended-work` 就派工，**拒絕一次** | 0.70 起只在你宣告的那種 run 才問；沒宣告的 session 派工時不擋也不唸（SessionStart 的提醒不變）。要變成閘門就開 `require_unattended_work` |
+| ⭐ 你**宣告無人職守**（prompt 含 無人職守／無人值守／無人模式／自動模式／做完再叫我／unattended）之後，沒載入 `unattended-work` 就派工，**拒絕一次** | 0.70 起只在你宣告的那種 run 才問；沒宣告的 session 派工時不擋也不唸（SessionStart 的提醒不變）。要變成閘門就開 `require_unattended_work` |
 | ⚠ `cd <相對路徑> && …` 出警告 | `cd` 失敗時，後面整串安靜地不執行 |
 | ⚠ 有更舊的 commit 沒推，會提醒 | 只提醒，不拒絕 |
 | ⚠ 子 agent 回來了，但**它的提示詞要求的檔案沒有出現** | `guard_agent_report_file`。摘要照樣回來、而且看起來很正常；檔案不存在看起來不正常 |
@@ -678,7 +678,7 @@ claude plugin install dispatch-guard@dispatch-guard --config announce_unattended
 多餘的提醒糟得多 —— 你會以為規則生效了，實際上根本沒有東西去載入它。
 
 ⚠ 關掉之後 `Skill(unattended-work)` 照樣叫得動，只是開場不會有人提醒你；prompt 裡說了
-無人職守／無人值守／做完再叫我／unattended 的 run，gate 還是會在第一次派工前要求載入它，
+無人職守／無人值守／無人模式／自動模式／做完再叫我／unattended 的 run，gate 還是會在第一次派工前要求載入它，
 `require_unattended_work` 也照常（0.70.1 之前這個開關會把那兩個一起關掉）。
 
 
@@ -1733,7 +1733,7 @@ one are byte-identical on screen. Each has its own switch; all default to on.
 | ⛔ refuses `git commit -m` | write the message to a file and use `-F <path>` |
 | ⛔ refuses a search with **its errors silenced** | `2>/dev/null`, `2>$null`, `--no-messages`, and `-s` for grep |
 | ⛔ **refuses every dispatch until `dispatch-protocol` has been invoked** | `require_dispatch_protocol` — that skill is what the gate enforces |
-| ⭐ refuses the **first** dispatch of a run **you declared unattended** (your prompt said 無人職守 / 無人值守 / 做完再叫我 / unattended) when `unattended-work` was never invoked | since 0.70 only in a declared run; an undeclared session is neither refused nor nagged at dispatch (the SessionStart reminder is unchanged). A nag, not a gate. `require_unattended_work` makes it a gate |
+| ⭐ refuses the **first** dispatch of a run **you declared unattended** (your prompt said 無人職守 / 無人值守 / 無人模式 / 自動模式 / 做完再叫我 / unattended) when `unattended-work` was never invoked | since 0.70 only in a declared run; an undeclared session is neither refused nor nagged at dispatch (the SessionStart reminder is unchanged). A nag, not a gate. `require_unattended_work` makes it a gate |
 | ⚠ warns on `cd <relative> && …` | when the `cd` fails, everything after it silently does not run |
 | ⚠ reports unpushed commits older than the one just made | advisory, never a refusal |
 | ⚠ a sub-agent returned, but **the file its prompt demanded never appeared** | `guard_agent_report_file`. The summary still comes back and still looks normal; a missing file does not |
@@ -2372,7 +2372,7 @@ true, and a reminder that **silently stops appearing** is far worse than a redun
 would believe the rules were in force while nothing had loaded them.
 
 ⚠ With it off, `Skill(unattended-work)` still works by hand. Only the SessionStart prompting
-stops: a run whose prompt said 無人職守 / 無人值守 / 做完再叫我 / unattended is still asked to load
+stops: a run whose prompt said 無人職守 / 無人值守 / 無人模式 / 自動模式 / 做完再叫我 / unattended is still asked to load
 the skill before its first dispatch, and `require_unattended_work` still applies (before 0.70.1
 this switch silenced both).
 

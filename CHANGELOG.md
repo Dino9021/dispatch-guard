@@ -33,6 +33,12 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.70.2
+
+- **gate 的 `unattended_words` 預設值補上「無人模式」「自動模式」**，跟上擁有者在 3c0f0bb 加進
+  `unattended-work` skill 觸發詞的兩個詞。兩份清單必須一致：說「無人模式」會載入 skill 卻不寫宣告標記的話，
+  超價派工照樣跳框。test_guards 的 frontmatter 檢查確保 gate 的清單是 skill 描述的子集；selftest 加兩句。
+
 ## 0.70.1
 
 擁有者 2026-10-06：「請把 SessionStart 那個『請載入 unattended-work』的提醒關掉」。
@@ -3142,6 +3148,13 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.70.2
+
+- **The gate's default `unattended_words` gain 無人模式 and 自動模式**, the two words the owner added
+  to the `unattended-work` skill's trigger list in 3c0f0bb. The two lists must agree: a prompt that
+  loads the skill but writes no declaration marker would still get the over-price dialog. The
+  test_guards frontmatter check keeps the gate's list a subset of the skill's; two selftest lines added.
 
 ## 0.70.1
 
