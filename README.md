@@ -122,7 +122,7 @@ flowchart TD
   classDef gate fill:#fde2e1,stroke:#c0392b,stroke-width:2px,color:#000
 ```
 
-⭐ **要驗證這份 repo：`python Tools/Debug/test_all.py`。** 它跑完十一項檢查並回傳一個結束碼。
+⭐ **要驗證這份 repo：`python Tools/Debug/test_all.py`。** 它跑完全部檢查（清單是那支檔案裡的 `CHECKS`）並回傳一個結束碼。
 ⚠ 每一項都只針對「已經真的發生過、而且是安靜的」那種 bug —— 不是為了覆蓋率。
 它們不碰 `~/.claude`、不花 API 額度、也不會建立排程工作。
 ⭐ **產生的每一個檔案都關在 `Tools/Debug/scratch/`**（已 gitignore，而且跑完不刪 ——
@@ -1865,8 +1865,8 @@ flowchart TD
   classDef gate fill:#fde2e1,stroke:#c0392b,stroke-width:2px,color:#000
 ```
 
-⭐ **To verify the repository: `python Tools/Debug/test_all.py`.** It runs all eleven checks
-and returns one exit code. ⚠ Each exists for a bug that actually happened AND was silent — none is
+⭐ **To verify the repository: `python Tools/Debug/test_all.py`.** It runs every check (the list
+is `CHECKS` in that file) and returns one exit code. ⚠ Each exists for a bug that actually happened AND was silent — none is
 there for coverage. They touch no `~/.claude`, spend no API call, and schedule no task.
 ⭐ **Every file they produce goes under `Tools/Debug/scratch/`** — gitignored, and kept after
 the run so a failing check's output is still there. ⛔ A run must leave `git status` clean;

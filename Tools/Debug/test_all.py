@@ -3,8 +3,9 @@
 
     python Tools/Debug/test_all.py
 
-⛔ WHY A RUNNER FOR SEVEN COMMANDS. Because seven commands run by hand is six chances to
-forget one, and this project has already paid for that: the gate's own selftest exercised
+⛔ WHY A RUNNER. Because every command run by hand is one more chance to forget one, and this
+project has already paid for that (the list is `CHECKS` below; no count is written here, since a
+written count went stale twice): the gate's own selftest exercised
 the clock's DECISION function and never called the clock, so a NameError that disabled the
 entire gate shipped through five releases with every check green. The lesson was not "write
 another check" - it was that a check nobody runs is the same as no check.
@@ -69,6 +70,10 @@ CHECKS = [
     # ⚠ Runs the cowork folder watcher for real. Through 0.69.0 it listed only the top folder,
     # and two sessions answered each other in subfolders neither watcher could see.
     ("watch folder", [os.path.join(DEBUG_DIR, "test_watch_folder.py")]),
+    # ⚠ The README's skill flowcharts (0.70.3) are a second description of the hook. This keeps
+    # one chart per skill per language, the zh/en pairs identical in shape, and red meaning a
+    # box that names the hook. It reads README.md only; it cannot render them or judge a label.
+    ("readme charts", [os.path.join(DEBUG_DIR, "test_readme_charts.py")]),
 ]
 
 # ⚠ Per check, not for the whole run. The slowest of these takes seconds; anything near this

@@ -33,6 +33,20 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.70.5
+
+擁有者 2026-10-06：「沒修正的項目請修正」—— 0.70.4 報告裡「沒做的」三項。
+
+- **README 的流程圖現在由 `test_all.py` 檢查**（新檢查 `Tools/Debug/test_readme_charts.py`）：中英兩半各有
+  三張、每張對應一個 skill；每個節點都有連線、id 不是保留字也不以 o/x 開頭；紅框剛好就是標籤點名 hook 或 gate
+  的那些框；中英每一對的節點、連線與紅框完全一致。它先植入三個缺陷（刪掉一條英文連線、拿掉紅框裡的 hook、
+  用保留字當 id），三個都要被抓到才檢查真的 README。它不渲染圖、也判斷不了標籤寫得對不對。
+- **README 不再寫死 test_all 有幾項檢查。** 「跑完十一項檢查」實際是 20 項；改成「跑完全部檢查（清單是那支
+  檔案裡的 `CHECKS`）」，數字不寫就不會過期。`test_all.py` 自己的 docstring 寫「七個指令」，同樣改掉。
+- **PROTOCOL.md §3 補上兩件 gate 有做、表上沒寫的事：** 越過 soft 門檻（PACE、STOP、以及重置前放寬的兩段）
+  沒有當前的 HANDOFF.md 就拒絕派工（`require_handoff_past_soft`）；以及 NET 區（STOP 在重置前放寬成 GO）
+  自己的工作照做、但拒絕派子代理。README 流程圖上這兩個紅框，現在在 §3 都有對應的列。
+
 ## 0.70.4
 
 - **流程圖的紅框改成一條可以檢查的規則。** 0.70.3 依審查意見把幾個「部分由 hook 檢查」的框也塗紅，例如
@@ -3170,6 +3184,25 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.70.5
+
+Owner, 2026-10-06: fix the items left unfixed — the three "not done" items of the 0.70.4 report.
+
+- **`test_all.py` now checks the README flowcharts** (new `Tools/Debug/test_readme_charts.py`):
+  three charts in each half, one per skill; every node has an edge, no id is a reserved word or
+  starts with o/x; the red boxes are exactly those whose label names the hook or the gate; each
+  zh/en pair has identical nodes, edges and red set. It first plants three defects (an English edge
+  dropped, the hook word removed from a red box, a reserved id) and requires each to be reported
+  before it judges the real README. It does not render the charts or judge whether a label is true.
+- **README no longer states how many checks `test_all.py` runs.** "all eleven checks" was 20; it now
+  says "every check (the list is `CHECKS` in that file)" — a count not written cannot go stale.
+  `test_all.py`'s own docstring said "seven commands"; fixed the same way.
+- **PROTOCOL.md §3 gains two things the gate does that its table did not say:** past the soft
+  threshold (PACE, STOP, and both bands relaxed near the reset) a dispatch without a current
+  HANDOFF.md is refused (`require_handoff_past_soft`); and in the NET zone (a STOP relaxed to GO near
+  the reset) the session keeps working but dispatch is refused. Both are red boxes in the README
+  charts, and now both have a §3 row behind them.
 
 ## 0.70.4
 
