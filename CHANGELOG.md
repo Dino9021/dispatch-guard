@@ -33,6 +33,14 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.70.4
+
+- **流程圖的紅框改成一條可以檢查的規則。** 0.70.3 依審查意見把幾個「部分由 hook 檢查」的框也塗紅，例如
+  「每份提示詞要自己站得住」—— 但 hook 只會在唯讀型別被要求建檔時提醒，其餘都是 agent 自律，紅框因此言過其實。
+  現在：紅框裡一定有一句點名 hook 或 gate 的話，那一句就是 hook 會拒絕、提醒或自動完成的事；框裡其餘的字和
+  白框都是 skill 的做法。紅框集合由標籤反推，比對腳本也獨立檢查這條規則（套用前先確認它會失敗）。圖例同步改寫。
+  六張重新渲染通過。
+
 ## 0.70.3
 
 擁有者 2026-10-06：「請在 README.md 中三個 skill 的段落各自加上該 Skill 的運作流程圖，用 mermaid skill」。
@@ -3162,6 +3170,17 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.70.4
+
+- **The diagrams' red boxes follow one checkable rule.** 0.70.3, acting on the review, coloured red
+  some boxes the hook checks only in part — "each prompt stands alone", for instance, where the hook
+  only notes a read-only type told to create a file and the rest is the agent's own discipline — so
+  red overclaimed. Now a red box always contains a sentence naming the hook or the gate, and that
+  sentence is what the hook refuses, notes or carries out; the rest of the box, and every white box,
+  is the skill's practice. The red set is derived from the labels, and the pair-parity script checks
+  the rule independently (it was seen to fail before the change). Legends rewritten to match. All six
+  re-rendered.
 
 ## 0.70.3
 

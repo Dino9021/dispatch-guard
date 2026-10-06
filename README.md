@@ -94,29 +94,29 @@ skill 是模型看了描述之後**自己決定**要不要用；文件是模型*
 誠實列出的缺口、以及續跑怎麼運作。
 ⭐ **這份文件只描述現在的行為。** 什麼時候變的、為什麼變，在 **[CHANGELOG.md](CHANGELOG.md)**。
 
-**`dispatch-protocol` 的運作流程**（紅框是 hook 會檢查的步驟 —— 拒絕、提醒或自動執行；其餘是 skill 的做法，靠 agent 自己遵守）：
+**`dispatch-protocol` 的運作流程**（紅框裡點名 hook 或 gate 的那一句，是 hook 會拒絕、提醒或自動完成的事；框裡其餘的字和白框都是 skill 的做法，靠 agent 自己遵守）：
 
 ```mermaid
 flowchart TD
-  needAgent["要派一個子代理"] --> loadProtocol["載入 dispatch-protocol"]
+  needAgent["要派一個子代理"] --> loadProtocol["載入 dispatch-protocol<br/>沒載入，hook 拒絕每一次派工"]
   loadProtocol --> verdict{"usage.py --verdict"}
-  verdict -->|"STOP（含 NET 區）"| stopRefused["拒絕派工"]
+  verdict -->|"STOP（含 NET 區）"| stopRefused["hook 拒絕派工"]
   stopRefused --> stopWrapUp["一般 STOP：收尾、寫或更新 HANDOFF.md、結束這一輪<br/>NET 區：自己的工作照做，只是不派子代理<br/>續跑鬧鐘由 gate 自動上"]
-  verdict -->|"PACE（含放寬區）"| paceInFlight["手上的做完，不開新的一批"]
-  paceInFlight --> paceHandoff["派工前要有一份當前的 HANDOFF.md"]
+  verdict -->|"PACE（含放寬區）"| paceInFlight["手上的做完，不開新的一批<br/>hook 會提醒，但不擋"]
+  paceInFlight --> paceHandoff["派工前要有一份當前的 HANDOFF.md<br/>沒有就由 hook 拒絕派工"]
   verdict -->|"GO"| planOnDisk
-  paceHandoff --> planOnDisk["任務資料夾 Memory/tasks/YYYYMMDD-HHMMSS-名稱/<br/>計畫和每份提示詞先寫進 prompts*.md"]
-  planOnDisk --> everyPrompt["每份提示詞：自己站得住、指名輸出檔、<br/>要求邊做邊寫、寫明 subagent_type 和它需要的能力"]
+  paceHandoff --> planOnDisk["任務資料夾 Memory/tasks/YYYYMMDD-HHMMSS-名稱/<br/>計畫和每份提示詞先寫進 prompts*.md<br/>沒有比 session 新的計畫，hook 拒絕派工"]
+  planOnDisk --> everyPrompt["每份提示詞：自己站得住、指名輸出檔、<br/>要求邊做邊寫、寫明 subagent_type 和它需要的能力<br/>hook 只在唯讀型別被要求建檔時提醒"]
   everyPrompt --> modelCheck{"模型超過 max_model_price？"}
   modelCheck -->|"沒超過，或省略 model"| singleDispatch
   modelCheck -->|"任務資料夾有 MODEL-APPROVED"| singleDispatch
-  modelCheck -->|"有人在、沒宣告無人職守"| dialogToOwner["其他檢查都過了，才跳確認框問擁有者"]
-  modelCheck -->|"headless、已宣告無人職守，或定不了價的模型"| modelRefused["拒絕"]
-  dialogToOwner -->|"允許"| singleDispatch["一次派一個、前景執行<br/>並行要 PARALLEL-APPROVED 寫明數量"]
+  modelCheck -->|"有人在、沒宣告無人職守"| dialogToOwner["其他檢查都過了，hook 才跳確認框問擁有者"]
+  modelCheck -->|"headless、已宣告無人職守，或定不了價的模型"| modelRefused["hook 拒絕"]
+  dialogToOwner -->|"允許"| singleDispatch["一次派一個、前景執行<br/>並行要 PARALLEL-APPROVED 寫明數量<br/>多派或背景派，hook 拒絕"]
   dialogToOwner -->|"不允許"| modelRefused
   singleDispatch --> prependBlock["gate 把規範區塊加在提示詞前面"]
   prependBlock --> subAgentWork["子代理把自己的單位做完<br/>邊做邊把報告寫進任務資料夾"]
-  subAgentWork --> afterReturn["回來時：釋放槽位、progress.md 記一列<br/>要求的報告檔沒出現就提醒"]
+  subAgentWork --> afterReturn["回來時 gate 釋放槽位、在 progress.md 記一列<br/>要求的報告檔沒出現就提醒"]
   afterReturn -->|"下一個子任務"| verdict
   class loadProtocol,stopRefused,stopWrapUp,paceInFlight,paceHandoff,planOnDisk,everyPrompt,dialogToOwner,modelRefused,singleDispatch,prependBlock,afterReturn gate
   classDef gate fill:#fde2e1,stroke:#c0392b,stroke-width:2px,color:#000
@@ -682,13 +682,13 @@ claude plugin marketplace remove dispatch-guard
 ⚠ **三件事是分開的，故意的。** 一個管「怎麼派」，一個管「怎麼做」，一個管「幾個人一起做」。
 只想要其中一個也可以：skill 是模型自己決定要不要讀的，不讀就不生效。
 
-**`unattended-work` 的運作流程**（§ 是 skill 裡的章節號；紅框是 hook 會檢查的步驟 —— 拒絕、提醒或自動執行，其餘靠 agent 自己遵守）：
+**`unattended-work` 的運作流程**（§ 是 skill 裡的章節號；紅框裡點名 hook 或 gate 的那一句，是 hook 會拒絕、提醒或自動完成的事，其餘靠 agent 自己遵守）：
 
 ```mermaid
 flowchart TD
-  trigger{"長任務，或擁有者說了<br/>無人職守、無人值守、無人模式、自動模式、做完再叫我、unattended"} --> loadUnattended["載入 unattended-work，印出 ACTIVE 那一行<br/>宣告過的 run 沒載入：第一次派工被拒一次"]
-  loadUnattended --> planFirst["§2 計畫和每份提示詞先落到硬碟"]
-  planFirst --> sequential["§1 一次派一個，不背景、不大量生成"]
+  trigger{"長任務，或擁有者說了<br/>無人職守、無人值守、無人模式、自動模式、做完再叫我、unattended"} --> loadUnattended["載入 unattended-work，印出 ACTIVE 那一行<br/>宣告過的 run 沒載入：hook 拒絕第一次派工一次"]
+  loadUnattended --> planFirst["§2 計畫和每份提示詞先落到硬碟<br/>沒有就由 hook 拒絕派工"]
+  planFirst --> sequential["§1 一次派一個，不背景、不大量生成<br/>違反的派工 hook 都拒絕"]
   sequential --> wave["§3 實作 → 會執行的反駁者 → 修正 → 把修正再送去反駁"]
   wave --> reviewers["§4 實質段落之後：兩位不同角度的審查者，一位接一位"]
   reviewers --> adviser{"修正後問 adviser，最多兩輪"}
@@ -697,15 +697,15 @@ flowchart TD
   adviser -->|"同一題第二次仍沒結論"| pend["§7 掛起：整場辯論寫成檔，雙方立場、證據、取決於什麼<br/>標成待決，做下一項"]
   wave -.->|"§8 連兩輪沒有新的確認發現"| pend
   adviser -->|"沒有意見了"| mutationCheck["§9 每個 fail-open 守衛做突變測試<br/>§10 每個宣稱都先執行過"]
-  mutationCheck --> emptyResult["§11 空結果也是宣稱：路徑錨定、<br/>搜尋不得靜音、要有陽性對照"]
-  emptyResult --> commitRules["§12–§13 commit：訊息寫成檔、先查分支、立刻 push<br/>hook 另擋 git add -A"]
+  mutationCheck --> emptyResult["§11 空結果也是宣稱：路徑錨定、要有陽性對照<br/>把錯誤靜音的搜尋，hook 會擋"]
+  emptyResult --> commitRules["§12–§13 commit：訊息寫成檔、先查分支、立刻 push<br/>hook 擋 commit -m、錯的分支、git add -A，提醒沒推的 commit"]
   commitRules --> exitBar{"§14 出場門檻每一行都成立？"}
   exitBar -->|"否，還能修"| wave
   exitBar -->|"是，或在報告裡寫明哪一行不成立"| stopReport["§16 停下來的報告：先講擁有者要做的步驟"]
   wave -.->|"只剩擁有者要親手做的事"| lastItems["§15 排到最後，只剩這種才停<br/>卡在同伴身上：先設喚醒"]
   lastItems -.-> stopReport
-  runningShort["用量 STOP，或 context 快用完"] -.-> handover["§17 交接：獨立的交接文件，STOP 時就是 HANDOFF.md<br/>下一個 session 的提示詞另存成檔<br/>gate 在這一輪結束時自動上續跑鬧鐘"]
-  class loadUnattended,planFirst,sequential,commitRules,handover,emptyResult gate
+  runningShort["用量 STOP，或 context 快用完"] -.-> handover["§17 交接：獨立的交接文件，STOP 時就是 HANDOFF.md<br/>下一個 session 的提示詞另存成檔<br/>用量 STOP 時，gate 在這一輪結束時自動上續跑鬧鐘"]
+  class loadUnattended,planFirst,sequential,emptyResult,commitRules,handover gate
   classDef gate fill:#fde2e1,stroke:#c0392b,stroke-width:2px,color:#000
 ```
 
@@ -753,17 +753,17 @@ git、權限都一樣。**第 13 條**是跨機器的底線：依賴一條管道
 **兩層**：一份只能追加的認領板（兩邊都過了寫入測試才能用）＋內容**一人一檔**；寫不進板子就用自己的檔
 說話；1:1／1:N／N:1 不改變本質。
 
-**`cowork` 的運作流程**（「第 N 條」是十三條規則的編號；紅框是 hook 會檢查的步驟 —— 拒絕、提醒或自動執行，其餘靠 agent 自己遵守）：
+**`cowork` 的運作流程**（「第 N 條」是十三條規則的編號；紅框裡點名 hook 的那一句，是 hook 會拒絕的事，其餘靠 agent 自己遵守）：
 
 ```mermaid
 flowchart TD
-  trigger{"說了 cowork、teamwork、cooperate、collaborate、分工合作<br/>或不只一個 session、機器、repo、專案"} --> loadCowork["載入 cowork<br/>同機有活的 peer 卻沒載入：第一次寫入或 commit 被拒一次"]
+  trigger{"說了 cowork、teamwork、cooperate、collaborate、分工合作<br/>或不只一個 session、機器、repo、專案"} --> loadCowork["載入 cowork<br/>同機有活的 peer 卻沒載入：hook 拒絕第一次寫入或 commit 一次"]
   loadCowork --> crossMachine{"跨機器？"}
   crossMachine -->|"是"| writeTest["第 13 條：兩個方向分別做寫入測試<br/>細節在 reference/cross-machine.md"]
   crossMachine -->|"否"| checkIn
   writeTest --> checkIn["第 2 條：寫自己角色的 check-in 檔<br/>醒來也算重啟，欄位變了才重寫"]
   checkIn --> searchFirst["第 6 條：開始之前先搜共用紀錄"]
-  searchFirst --> claim["第 1、3 條：在只能追加的共用紀錄上認領<br/>只拿沒人拿的，更正也用追加"]
+  searchFirst --> claim["第 1、3 條：在只能追加的共用紀錄上認領<br/>只拿沒人拿的，更正也用追加<br/>改寫宣告為 append-only 的檔，hook 會擋"]
   claim --> authorFile["產出寫進自己的作者檔<br/>一人一檔，細節在 reference/coordination.md 3.1"]
   authorFile --> verifyWrite["第 10 條：位元組比對加結構檢查<br/>第 8、9 條：宣稱先執行過、空結果要有對照<br/>第 11、12 條：說缺席前先用內容搜、說清楚是哪種沒答案"]
   verifyWrite --> landResult["第 7 條：結果放進共用產物才算完成"]
@@ -1837,29 +1837,29 @@ conventions, what the hook actually enforces, the honest gaps, and how resume wo
 ⭐ **This document describes the present only.** When something changed, and why, is in
 **[CHANGELOG.md](CHANGELOG.md)**.
 
-**How `dispatch-protocol` runs** (red boxes are steps the hook checks — a refusal, a note or an automatic action; the rest is the skill's practice, kept by the agent):
+**How `dispatch-protocol` runs** (in a red box, the sentence naming the hook or the gate is what the hook refuses, notes or carries out; the rest of that box, and every white box, is the skill's practice, kept by the agent):
 
 ```mermaid
 flowchart TD
-  needAgent["Need a sub-agent"] --> loadProtocol["Load dispatch-protocol"]
+  needAgent["Need a sub-agent"] --> loadProtocol["Load dispatch-protocol<br/>without it the hook refuses every dispatch"]
   loadProtocol --> verdict{"usage.py --verdict"}
-  verdict -->|"STOP, net zone included"| stopRefused["Dispatch refused"]
+  verdict -->|"STOP, net zone included"| stopRefused["The hook refuses the dispatch"]
   stopRefused --> stopWrapUp["Plain STOP: wrap up, write or update HANDOFF.md, end the turn<br/>net zone: keep doing your own work, dispatch nothing<br/>the gate arms the resume itself"]
-  verdict -->|"PACE, relaxed bands included"| paceInFlight["Finish what is in flight, start no new batch"]
-  paceInFlight --> paceHandoff["A current HANDOFF.md before any dispatch"]
+  verdict -->|"PACE, relaxed bands included"| paceInFlight["Finish what is in flight, start no new batch<br/>the hook notes it, it does not refuse"]
+  paceInFlight --> paceHandoff["A current HANDOFF.md before any dispatch<br/>without one the hook refuses"]
   verdict -->|"GO"| planOnDisk
-  paceHandoff --> planOnDisk["Task folder Memory/tasks/YYYYMMDD-HHMMSS-name/<br/>the plan and every prompt in prompts*.md first"]
-  planOnDisk --> everyPrompt["Each prompt stands alone, names its output file,<br/>asks for the report as it goes, names subagent_type and the capability it needs"]
+  paceHandoff --> planOnDisk["Task folder Memory/tasks/YYYYMMDD-HHMMSS-name/<br/>the plan and every prompt in prompts*.md first<br/>no plan newer than the session: the hook refuses"]
+  planOnDisk --> everyPrompt["Each prompt stands alone, names its output file,<br/>asks for the report as it goes, names subagent_type and the capability it needs<br/>the hook only notes a read-only type told to create a file"]
   everyPrompt --> modelCheck{"Model above max_model_price?"}
   modelCheck -->|"no, or model omitted"| singleDispatch
   modelCheck -->|"MODEL-APPROVED in the task folder"| singleDispatch
-  modelCheck -->|"attended, not declared unattended"| dialogToOwner["Permission dialog to the owner,<br/>asked only after every other check passed"]
-  modelCheck -->|"headless, declared unattended, or a model the gate cannot price"| modelRefused["Refused"]
-  dialogToOwner -->|"allowed"| singleDispatch["One at a time, in the foreground<br/>concurrency needs PARALLEL-APPROVED with a count"]
+  modelCheck -->|"attended, not declared unattended"| dialogToOwner["Every other check passed: the hook asks the owner<br/>in a permission dialog"]
+  modelCheck -->|"headless, declared unattended, or a model the gate cannot price"| modelRefused["The hook refuses"]
+  dialogToOwner -->|"allowed"| singleDispatch["One at a time, in the foreground<br/>concurrency needs PARALLEL-APPROVED with a count<br/>the hook refuses a second or a background dispatch"]
   dialogToOwner -->|"declined"| modelRefused
   singleDispatch --> prependBlock["The gate prepends the protocol block to the prompt"]
   prependBlock --> subAgentWork["The sub-agent does its unit in full<br/>and writes its report into the task folder as it goes"]
-  subAgentWork --> afterReturn["On return: slot released, a row in progress.md<br/>a note if the demanded report file never appeared"]
+  subAgentWork --> afterReturn["On return the gate releases the slot and adds a row to progress.md<br/>and notes a demanded report file that never appeared"]
   afterReturn -->|"next sub-task"| verdict
   class loadProtocol,stopRefused,stopWrapUp,paceInFlight,paceHandoff,planOnDisk,everyPrompt,dialogToOwner,modelRefused,singleDispatch,prependBlock,afterReturn gate
   classDef gate fill:#fde2e1,stroke:#c0392b,stroke-width:2px,color:#000
@@ -2455,13 +2455,13 @@ section.
 working together. Taking only one is fine: a skill is read at the model's discretion, so an
 unread one does nothing.
 
-**How `unattended-work` runs** (§ is the skill's section number; red boxes are steps the hook checks — a refusal, a note or an automatic action — the rest is kept by the agent):
+**How `unattended-work` runs** (§ is the skill's section number; in a red box, the sentence naming the hook or the gate is what the hook refuses, notes or carries out — the rest is kept by the agent):
 
 ```mermaid
 flowchart TD
-  trigger{"A long task, or the owner said<br/>無人職守, 無人值守, 無人模式, 自動模式, 做完再叫我 or unattended"} --> loadUnattended["Load unattended-work, print its ACTIVE line<br/>declared run without it: the first dispatch is refused once"]
-  loadUnattended --> planFirst["§2 The plan and every prompt land on disk first"]
-  planFirst --> sequential["§1 One dispatch at a time, no background, no mass-spawn"]
+  trigger{"A long task, or the owner said<br/>無人職守, 無人值守, 無人模式, 自動模式, 做完再叫我 or unattended"} --> loadUnattended["Load unattended-work, print its ACTIVE line<br/>declared run without it: the hook refuses the first dispatch once"]
+  loadUnattended --> planFirst["§2 The plan and every prompt land on disk first<br/>without them the hook refuses the dispatch"]
+  planFirst --> sequential["§1 One dispatch at a time, no background, no mass-spawn<br/>the hook refuses each of those"]
   sequential --> wave["§3 Implement → executing refuter → fix → refute the fix"]
   wave --> reviewers["§4 After a substantial block: two reviewers from different angles, one after the other"]
   reviewers --> adviser{"Fix, then ask the adviser, two rounds at most"}
@@ -2470,15 +2470,15 @@ flowchart TD
   adviser -->|"same question unresolved a second time"| pend["§7 Pend it: write the whole debate to a file<br/>mark the item pending, take the next item"]
   wave -.->|"§8 two rounds with no new confirmed finding"| pend
   adviser -->|"nothing left"| mutationCheck["§9 Mutation-check every fail-open guard<br/>§10 execute every claim first"]
-  mutationCheck --> emptyResult["§11 An empty result is a claim: anchor the path,<br/>never silence a search, add a positive control"]
-  emptyResult --> commitRules["§12–§13 Commit: message from a file, branch checked first, pushed at once<br/>the hook also refuses git add -A"]
+  mutationCheck --> emptyResult["§11 An empty result is a claim: anchor the path, add a positive control<br/>the hook refuses a search with its errors silenced"]
+  emptyResult --> commitRules["§12–§13 Commit: message from a file, branch checked first, pushed at once<br/>the hook refuses commit -m, a wrong branch and git add -A, and notes unpushed commits"]
   commitRules --> exitBar{"§14 Every line of the exit bar true?"}
   exitBar -->|"no, still fixable"| wave
   exitBar -->|"yes, or name the unmet line in the report"| stopReport["§16 Stopping report: the owner's steps first"]
   wave -.->|"only owner-operated items left"| lastItems["§15 Those go last, and only they may stop the run<br/>blocked on a peer: arm a wake-up first"]
   lastItems -.-> stopReport
-  runningShort["Usage STOP, or the context running short"] -.-> handover["§17 Handover: a standalone handover document, HANDOFF.md at STOP<br/>the next session's prompt saved as its own file<br/>the gate arms the resume itself at turn end"]
-  class loadUnattended,planFirst,sequential,commitRules,handover,emptyResult gate
+  runningShort["Usage STOP, or the context running short"] -.-> handover["§17 Handover: a standalone handover document, HANDOFF.md at STOP<br/>the next session's prompt saved as its own file<br/>at a usage STOP the gate arms the resume itself at turn end"]
+  class loadUnattended,planFirst,sequential,emptyResult,commitRules,handover gate
   classDef gate fill:#fde2e1,stroke:#c0392b,stroke-width:2px,color:#000
 ```
 
@@ -2535,17 +2535,17 @@ protocol is `reference/cross-machine.md`, in **two layers**: one append-only cla
 (usable only after both sides pass the write-test) plus **one content file per writer**; a side
 that cannot write the board speaks through its own file; 1:1, 1:N and N:1 change nothing.
 
-**How `cowork` runs** ("rule N" is the number among the thirteen rules; red boxes are steps the hook checks — a refusal, a note or an automatic action — the rest is kept by the agent):
+**How `cowork` runs** ("rule N" is the number among the thirteen rules; in a red box, the sentence naming the hook is what the hook refuses — the rest is kept by the agent):
 
 ```mermaid
 flowchart TD
-  trigger{"The request says cowork, teamwork, cooperate, collaborate or 分工合作<br/>or more than one session, machine, repository or project"} --> loadCowork["Load cowork<br/>a live same-machine peer and no cowork: the first write or commit is refused once"]
+  trigger{"The request says cowork, teamwork, cooperate, collaborate or 分工合作<br/>or more than one session, machine, repository or project"} --> loadCowork["Load cowork<br/>a live same-machine peer and no cowork: the hook refuses the first write or commit once"]
   loadCowork --> crossMachine{"Across machines?"}
   crossMachine -->|"yes"| writeTest["Rule 13: write-test each direction separately<br/>the detail is reference/cross-machine.md"]
   crossMachine -->|"no"| checkIn
   writeTest --> checkIn["Rule 2: write your ROLE's check-in file<br/>a wake is a restart, rewrite only a field that changed"]
   checkIn --> searchFirst["Rule 6: search the shared record before you start"]
-  searchFirst --> claim["Rules 1 and 3: claim on the append-only shared record<br/>take only what is unclaimed, correct by appending"]
+  searchFirst --> claim["Rules 1 and 3: claim on the append-only shared record<br/>take only what is unclaimed, correct by appending<br/>the hook refuses a rewrite of a file marked append-only"]
   claim --> authorFile["Produce into your own author-named file<br/>one file per writer, detail in reference/coordination.md 3.1"]
   authorFile --> verifyWrite["Rule 10: byte check plus a structural check<br/>rules 8, 9: execute the claim, control every empty result<br/>rules 11, 12: search by content before calling anything missing, name the kind of no-answer"]
   verifyWrite --> landResult["Rule 7: land the result in the shared artefact, or it is not finished"]
