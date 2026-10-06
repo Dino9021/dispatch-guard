@@ -33,6 +33,20 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.70.3
+
+擁有者 2026-10-06：「請在 README.md 中三個 skill 的段落各自加上該 Skill 的運作流程圖，用 mermaid skill」。
+
+- **README 裡三個 skill 各有一張運作流程圖（mermaid），中英兩半各一份。** `dispatch-protocol` 在
+  「規則本身只有一份活的」那段後面，`unattended-work` 與 `cowork` 在各自章節的開場段落後面。紅框是 hook
+  會檢查的步驟（拒絕、提醒或自動執行），其餘靠 agent 自己遵守；標籤用 skill 的章節號（§N、第 N 條）指回
+  原文，不重述規則。只改文件，程式行為不變。
+- 驗證：六張都用 mermaid 11.17.2 實際解析並渲染，另加一個故意壞掉的對照區塊確認解析器會報錯；中英每一對的
+  節點、連線與紅框由腳本機械比對一致（這支比對腳本也做過突變測試）。一個子代理逐格對照 SKILL.md 與
+  PROTOCOL.md §3：0 處錯誤、1 處言過其實、9 處誤導、7 處遺漏，全部修掉（最要緊的一處：NET 區不是「結束這一
+  輪」，只是不派子代理）。節點 id 依 mermaid skill 的規範改成有語意的名稱。紀錄在
+  `Memory/tasks/20261006-133755-readme-skill-diagrams/`。
+
 ## 0.70.2
 
 - **gate 的 `unattended_words` 預設值補上「無人模式」「自動模式」**，跟上擁有者在 3c0f0bb 加進
@@ -3148,6 +3162,23 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.70.3
+
+Owner, 2026-10-06: add a flowchart of how each skill works to its section in README.md, using
+mermaid.
+
+- **Each of the three skills has a mermaid flowchart in README, in both language halves.**
+  `dispatch-protocol`'s follows the "one live copy of the rules" paragraph; `unattended-work`'s and
+  `cowork`'s follow their sections' opening paragraphs. Red boxes are steps the hook checks (a
+  refusal, a note or an automatic action); the rest is kept by the agent. Labels point back at the
+  skill by section number (§N, rule N) instead of restating rules. Docs only; no behaviour changed.
+- Verified: all six parse and render with mermaid 11.17.2, beside a deliberately broken block that
+  must error; each zh/en pair has identical nodes, edges and red set, checked by a script that was
+  itself mutation-checked. A sub-agent checked every box against SKILL.md and PROTOCOL.md §3: 0
+  wrong, 1 overstated, 9 misleading, 7 omissions, all fixed (the weightiest: the net zone does not
+  end the turn, it only refuses dispatch). Node ids are semantic names, per the mermaid skill.
+  Record: `Memory/tasks/20261006-133755-readme-skill-diagrams/`.
 
 ## 0.70.2
 
