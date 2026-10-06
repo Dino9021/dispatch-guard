@@ -1107,6 +1107,15 @@ def unattended_first(payload, ctx, enabled=True):
     """
     if skill_seen(ctx, "unattended-work"):
         return None
+    # ⭐ 0.70 (owner, 2026-10-06): only a run the OWNER declared unattended - in their own words,
+    # recorded by the gate on the prompt that said so - asks for the skill before its first
+    # dispatch. Every other session is neither refused nor nagged. The per-session nag had
+    # loaded the skill in 25 of the 26 sessions that dispatched here in 14 days, which made
+    # "the skill is loaded" worthless as a sign that nobody is watching (ADR 20261006-105702 D7).
+    declared = ctx["state"]("unattended-declared")
+    if not os.path.exists(declared):
+        ctx["log"]("CMD-ALLOW(guard_unattended_first no declaration)")
+        return None
     try:
         import unattended
         if not unattended.announcing():
@@ -1114,6 +1123,11 @@ def unattended_first(payload, ctx, enabled=True):
     except Exception as exc:
         ctx["log"]("CMD-GUARD-ERROR(guard_unattended_first) %r" % (exc,))
         return None
+    try:
+        with open(declared, encoding="utf-8") as f:
+            word = f.read().strip()[:40] or "?"
+    except OSError:
+        word = "?"
     mark = ctx["state"]("unattended-nagged")
     if os.path.exists(mark):
         return None
@@ -1122,14 +1136,15 @@ def unattended_first(payload, ctx, enabled=True):
         return None
     _write(mark, "1")
     return _v(DENY, "guard_unattended_first",
-              "dispatch gate: dispatch refused ONCE - this session never invoked the "
-              "`unattended-work` skill. Invoke `dispatch-guard:unattended-work` now, print its "
-              "ACTIVE line, then dispatch again; the next dispatch is allowed either way. It "
-              "governs review rounds, the stall test, when you may proceed without the owner, "
-              "and the exit bar - all of which apply to what you are about to dispatch.",
-              "dispatch-guard: first dispatch refused - the agent had not loaded the "
-              "unattended-work skill. It is being asked to load it now. This happens at most "
-              "once per session.")
+              "dispatch gate: dispatch refused ONCE - the owner declared this run unattended "
+              "(%r) and this session never invoked the `unattended-work` skill. Invoke "
+              "`dispatch-guard:unattended-work` now, print its ACTIVE line, then dispatch again; "
+              "the next dispatch is allowed either way. It governs review rounds, the stall "
+              "test, when you may proceed without the owner, and the exit bar - all of which "
+              "apply to what you are about to dispatch." % (word,),
+              "dispatch-guard: first dispatch refused - the owner declared this run unattended "
+              "and the agent had not loaded the unattended-work skill. It is being asked to "
+              "load it now. This happens at most once per session.")
 
 
 def after_command(payload, ctx):

@@ -156,6 +156,45 @@ def main():
         third = dispatch("toolu_THIRD", "round 2 review, retried")
         assert third.get("permissionDecision") == "allow", third
 
+        # ⭐ 0.70: AN ASK HOLDS A SLOT, A SIBLING IS REFUSED, AN UNRESOLVED ASK IS RELEASED -
+        # through the real process. A dispatch over max_model_price in an attended session
+        # with nothing declared is escalated to the owner (`ask`) with the protocol block
+        # prepended; its slot is marked `asked`; a second dispatch inside the sibling window is
+        # refused as always; and because a denied or interrupted ask fires NO Post event
+        # (measured 2026-10-06, PROBES.md P7), the next parent-level dispatch after the window
+        # releases it and goes through.
+        fire(env, dict(base, hook_event_name="PostToolUse", tool_name="Agent",
+                       tool_use_id="toolu_THIRD", tool_response="done",
+                       tool_input={"subagent_type": "general-purpose"}))
+        assert not os.path.exists(slot0), "PostToolUse did not release the third dispatch"
+        env_ask = dict(env, CLAUDE_CODE_SESSION_ATTENDED="1")
+
+        def dispatch_model(tool_use_id, model):
+            return fire(env_ask, dict(base, hook_event_name="PreToolUse", tool_name="Agent",
+                                      tool_use_id=tool_use_id,
+                                      tool_input={"subagent_type": "general-purpose",
+                                                  "description": "price probe", "model": model,
+                                                  "prompt": "Work in %s and report." % task}))
+
+        asked = dispatch_model("toolu_ASK", "fable")
+        assert asked.get("permissionDecision") == "ask", asked
+        assert (asked.get("updatedInput") or {}).get("prompt", "").startswith(
+            "<<< SUB-TASK PROTOCOL"), asked
+        with open(slot0, encoding="utf-8") as f:
+            held = json.load(f)
+        assert held.get("asked") is True and held.get("id") == "toolu_ASK", held
+        sibling = dispatch_model("toolu_SIBLING", "opus")
+        assert sibling.get("permissionDecision") == "deny", sibling
+        assert "already in flight" in sibling.get("permissionDecisionReason", ""), sibling
+        held["at"] = time.time() - 30
+        with open(slot0, "w", encoding="utf-8") as f:
+            json.dump(held, f)
+        later = dispatch_model("toolu_LATER", "opus")
+        assert later.get("permissionDecision") == "allow", later
+        with open(os.path.join(sdir, "dispatch_gate.log"), encoding="utf-8") as f:
+            gate_log = f.read()
+        assert "RELEASE(ask unresolved) id=toolu_ASK" in gate_log, gate_log[-400:]
+
         # ⚠ AND THE HARNESS MUST ACTUALLY SEND THAT EVENT. main() handling it is half the
         # fix; hooks.json subscribing to it is the half that delivers it.
         with open(repo_path("hooks", "hooks.json"), encoding="utf-8") as f:

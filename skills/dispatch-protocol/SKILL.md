@@ -43,8 +43,13 @@ the task folder is committed.
 ## Choose the model BEFORE you dispatch
 
 Pick the cheapest model that can do the unit. `max_model_price` (default **5**) is the most a
-sub-agent's model may cost in US dollars per million **input** tokens, and a dispatch above it
-is refused — so decide here, not after a refusal.
+sub-agent's model may cost in US dollars per million **input** tokens. Above it the gate refuses
+— or, when a person can answer, puts the dispatch to the owner as a permission dialog with the
+price in it (`over_price`, 0.70): in a run the owner declared unattended (their prompt said
+無人職守, 無人值守, 做完再叫我 or unattended) it is refused, because a dialog nobody answers
+stalls the run, and a `MODEL-APPROVED` file in the task folder written from the owner's own
+words (`model fable`) lets a named model through without a dialog. So decide here, not after a
+refusal — and never write that file from anything but the owner's words.
 
 ⭐ **The prices are deliberately NOT written into this file.** A table typed into a skill goes
 stale until somebody ships a plugin update, and this repository shipped exactly that defect —
@@ -83,8 +88,8 @@ that session. Do not report it as active.
 3. **Dispatching before the plan is on disk** (`prompts*.md` newer than session start).
 4. **Any mass-spawn tool.** No approval path.
 5. **Dispatching when usage says STOP.**
-6. **A model above `max_model_price`** — see the model section above. Do not raise the limit; it is
-   the owner's setting.
+6. **A model above `max_model_price`** — refused, or put to the owner as a dialog when a person
+   can answer (see the model section above). Do not raise the limit; it is the owner's setting.
 
 Three ways agents talk themselves past rule 1 — none is an exception: "it is only a
 review" (**two reviewers is two dispatches** — the second reviewer waits); "this case is

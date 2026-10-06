@@ -790,23 +790,62 @@ def case_unattended_first(gate, sdir, root):
     cfgfile = os.path.join(cfgdir, "dispatch-guard.json")
     with open(cfgfile, "w", encoding="utf-8") as f:
         json.dump({"dispatch": base}, f)
+
+    def declare(s, words="把這三件做完再叫我"):
+        """The owner's prompt, through the hook - the way a declaration really happens."""
+        run_gate(gate, {"hook_event_name": "UserPromptSubmit", "cwd": root, "session_id": s,
+                        "prompt": words})
+
+    # ⭐ 0.70: NO DECLARATION, NO NAG. The owner ruled (2026-10-06) that the gate must not force
+    # every session to load the skill before its first dispatch - only a run the owner declared
+    # unattended, in their own words. An undeclared session is judged by the other rules only.
+    r0 = run_gate(gate, agent)
+    assert "unattended-work" not in reason(r0), "nagged without a declaration: %r" % (reason(r0),)
+    assert "CMD-ALLOW(guard_unattended_first no declaration)" in gitlog(root), gitlog(root)[-300:]
+    assert not os.path.exists(gate.state_path(sdir, sid, "unattended-nagged")), \
+        "the one refusal was spent on a session nobody declared unattended"
+    declare(sid)
+    assert os.path.exists(gate.state_path(sdir, sid, "unattended-declared")), "no marker written"
+    assert "UNATTENDED-DECLARED word='做完再叫我'" in gitlog(root), gitlog(root)[-300:]
+    # ⭐ ONE LIVE COPY OF THE WORDS, checked: every default the gate ships must appear in the
+    # unattended-work skill's description, which is where the owner chose them (0.69.2). The
+    # two lists cannot drift apart without this failing.
+    import re as _re
+    with open(os.path.join(repo_path("skills"), "unattended-work", "SKILL.md"),
+              encoding="utf-8") as f:
+        head = f.read(3000)
+    desc = head.split("description:", 1)[1].split("\n", 1)[0]
+    for pat in gate.DEFAULTS["unattended_words"]:
+        assert _re.search(pat, desc, _re.IGNORECASE), \
+            "default word %r is not in the unattended-work skill's description" % pat
+    # ⚠ The declaring prompt itself asks the model for the skill (the nudge rides on the
+    # UserPromptSubmit output), so the skill is requested at the moment it starts to matter.
     r = run_gate(gate, agent)
     assert decision(r) == "deny", r
-    assert "unattended-work" in reason(r), reason(r)
+    assert "unattended-work" in reason(r) and "做完再叫我" in reason(r), reason(r)
     assert r.get("systemMessage"), "the person should know the first dispatch was refused"
     # ⚠ ONCE. A skill that fails to load must not deadlock the session, so the second
     # dispatch is judged by the other rules only - here, the plan check.
     r2 = run_gate(gate, agent)
     assert "unattended-work" not in reason(r2), "it refused twice: %r" % (reason(r2),)
 
-    # Invoking the skill silences it for a fresh session.
+    # Invoking the skill silences it for a fresh, DECLARED session (undeclared, it would be
+    # silent for the other reason and prove nothing about the Skill call).
     sid2 = "s-loaded"
     stamp_session(gate, sdir, sid2)
+    declare(sid2, "unattended run: do it all, then call me")
+    assert "UNATTENDED-DECLARED word='unattended'" in gitlog(root), gitlog(root)[-300:]
     run_gate(gate, {"hook_event_name": "PostToolUse", "tool_name": "Skill", "cwd": root,
                     "session_id": sid2,
                     "tool_input": {"skill": "dispatch-guard:unattended-work"}})
     agent2 = dict(agent, session_id=sid2)
     assert "unattended-work" not in reason(run_gate(gate, agent2)), "the Skill call was ignored"
+    # ⛔ The skill's own NAME is not a declaration: this plugin's sessions say it constantly.
+    sid_name = "s-skill-name"
+    stamp_session(gate, sdir, sid_name)
+    declare(sid_name, "please check the unattended-work skill text for typos")
+    assert not os.path.exists(gate.state_path(sdir, sid_name, "unattended-declared")), \
+        "the word `unattended-work` was read as a declaration"
 
     # ⛔ ITS OWN OFF SWITCH LEAVES A TRACE. `guard_unattended_first: false` used to gate the
     # CALL, so the one guard whose switch produced no log line was this one - and an off
@@ -814,6 +853,7 @@ def case_unattended_first(gate, sdir, root):
     # nothing, which is the whole reason every decision here is written down.
     sid_off = "s-guard-off"
     stamp_session(gate, sdir, sid_off)
+    declare(sid_off)
     with open(cfgfile, "w", encoding="utf-8") as f:
         json.dump({"dispatch": dict(base, guard_unattended_first=False)}, f)
     try:
@@ -838,6 +878,9 @@ def case_unattended_first(gate, sdir, root):
     # loading a skill the owner opted out of would be the plugin overruling its own switch.
     sid3 = "s-optout"
     stamp_session(gate, sdir, sid3)
+    # ⚠ Declared, or the case is vacuous: an undeclared session is silent for the other reason
+    # (measured by the 0.70 refuter - it passed with the switch on or off).
+    declare(sid3)
     os.environ["CLAUDE_PLUGIN_OPTION_ANNOUNCE_UNATTENDED_WORK"] = "false"
     try:
         r3 = run_gate(gate, dict(agent, session_id=sid3))
@@ -1448,34 +1491,160 @@ def case_model_price_limit(gate, sdir, root):
     load_skills(gate, root, sid, "dispatch-guard:dispatch-protocol",
                 "dispatch-guard:unattended-work")
 
-    def dispatch(model=None, ceiling=5):
-        ti = {"prompt": "do a thing", "description": "d"}
+    # ⭐ 0.70: an over-price dispatch now travels the WHOLE chain (the ask is emitted at its
+    # end), so this case needs what any real dispatch needs - a plan on disk newer than the
+    # session, named in the prompt - and a usage reading that is GO.
+    import time as _time
+    task = "20261006-110000-price-case"
+    tdir = os.path.join(root, "Memory", "tasks", task)
+    os.makedirs(tdir, exist_ok=True)
+    _time.sleep(1.1)                       # the plan must be provably newer than the stamp
+    with open(os.path.join(tdir, "prompts.md"), "w", encoding="utf-8") as f:
+        f.write("the plan\n")
+    with open(os.path.join(sdir, "token_usage.json"), "w", encoding="utf-8") as f:
+        json.dump({"ts": int(_time.time() * 1000),
+                   "five_hour": {"used_percentage": 10,
+                                 "resets_at": int(_time.time()) + 3 * 3600}}, f)
+    uid = [0]
+
+    def dispatch(model=None, ceiling=5, extra=None):
+        ti = {"prompt": "Do a thing. Read Memory/tasks/%s/prompts.md for the plan." % task,
+              "description": "d"}
         if model is not None:
             ti["model"] = model
         cfgdir = os.path.join(root, ".claude")
         os.makedirs(cfgdir, exist_ok=True)
         cfgfile = os.path.join(cfgdir, "dispatch-guard.json")
         with open(cfgfile, "w", encoding="utf-8") as f:
-            json.dump({"dispatch": {"max_model_price": ceiling}}, f)
+            json.dump({"dispatch": dict({"max_model_price": ceiling}, **(extra or {}))}, f)
+        uid[0] += 1
         try:
             return run_gate(gate, {"hook_event_name": "PreToolUse", "tool_name": "Agent",
-                                   "cwd": root, "session_id": sid, "tool_input": ti})
+                                   "cwd": root, "session_id": sid,
+                                   "tool_use_id": "toolu_price%d" % uid[0],
+                                   "tool_input": ti})
         finally:
             os.remove(cfgfile)
 
+    slot = gate.state_path(sdir, sid, "slot0")
+
+    def free_slot():
+        """An allowed or asked dispatch holds its slot; nobody here returns, so free it."""
+        if os.path.exists(slot):
+            os.remove(slot)
+
     def refused(model, ceiling=5):
-        return "sub-agent model" in reason(dispatch(model, ceiling))
+        r = dispatch(model, ceiling)
+        free_slot()
+        return "sub-agent model" in reason(r)
 
     # ⭐ Above the ceiling, in every spelling the harness accepts.
     for model in ("fable", "FABLE", "best", "fable[1m]", "claude-fable-5",
                   "claude-mythos-5", "claude-fable-5[1m]"):
         assert refused(model), "%s reached the sub-agent" % model
     r = dispatch("fable")
-    assert decision(r) == "deny", r
-    assert "`opus`" in reason(r), "the refusal must name the level below: %r" % (reason(r),)
+    # ⭐ 0.70 (ADR 20261006-105702): attended (CLAUDE_CODE_SESSION_ATTENDED unset here), nothing
+    # declared, over_price auto -> the owner is ASKED. The dialog text carries the prices and
+    # the fallback and reads as a tool error too; the protocol block is prepended so an
+    # approved dispatch is a gated one; and the slot is held, marked `asked`.
+    assert decision(r) == "ask", r
+    assert "`opus`" in reason(r), "the ask must name the level below: %r" % (reason(r),)
     assert "$10" in reason(r) and "$5" in reason(r), "it should quote the published prices"
+    assert "tool ERROR" in reason(r), "the same text is the tool error where nobody can answer"
+    assert hso(r).get("updatedInput", {}).get("prompt", "").startswith("<<< SUB-TASK PROTOCOL"), \
+        hso(r).get("updatedInput", {}).get("prompt", "")[:80]
+    assert "ASK-ELIGIBLE(model 'fable' attended=1 declared=0 over_price=auto)" in gitlog(root), \
+        gitlog(root)[-300:]
+    assert "ASK-EMITTED(model 'fable' slots=1)" in gitlog(root), gitlog(root)[-300:]
+    with open(slot, encoding="utf-8") as f:
+        held = json.load(f)
+    assert held.get("asked") is True, "the asked dispatch's slot is not marked: %r" % (held,)
+    # ⛔ A SIBLING in the same message is refused as always: the asked slot is younger than the
+    # sibling window, so one-at-a-time holds while the owner is still deciding.
+    r2 = dispatch("opus")
+    assert decision(r2) == "deny" and "already in flight" in reason(r2), r2
+    # ⭐ ...and an ask nobody resolved - denied, interrupted, auto-denied: no Post event ever
+    # comes for it (measured, PROBES.md P7) - is released on the next parent-level dispatch
+    # once the window has passed.
+    held["at"] = _time.time() - 30
+    with open(slot, "w", encoding="utf-8") as f:
+        json.dump(held, f)
+    r3 = dispatch("opus")
+    assert decision(r3) == "allow", r3
+    assert "RELEASE(ask unresolved) id=toolu_price" in gitlog(root), gitlog(root)[-300:]
+    free_slot()
+    # ⛔ A model the gate cannot PRICE is never asked about: refused, as before.
+    r = dispatch("gpt-5")
+    assert decision(r) == "deny" and "does not recognise" in reason(r), r
+    # ⛔ DECLARED UNATTENDED -> refused, not asked: nobody can answer a dialog, and a dialog
+    # nobody answers stalls the run. Driven by the owner's prompt, through the hook.
+    run_gate(gate, {"hook_event_name": "UserPromptSubmit", "cwd": root, "session_id": sid,
+                    "prompt": "都做完再叫我"})
+    r = dispatch("fable")
+    assert decision(r) == "deny", r
     assert r.get("systemMessage"), "only the owner can change the ceiling"
-    assert "DENY(model 'fable')" in gitlog(root), gitlog(root)[-300:]
+    assert "DENY(model 'fable' attended=1 declared=1 over_price=auto)" in gitlog(root), \
+        gitlog(root)[-300:]
+    # `over_price: ask` ignores the declaration; `deny` is the pre-0.70 behaviour everywhere.
+    r = dispatch("fable", extra={"over_price": "ask"})
+    assert decision(r) == "ask", r
+    free_slot()
+    r = dispatch("fable", extra={"over_price": "deny"})
+    assert decision(r) == "deny", r
+    # ⛔ MUTATION: the marker is what flips ask into deny - remove it and the ask is back.
+    os.remove(gate.state_path(sdir, sid, "unattended-declared"))
+    r = dispatch("fable")
+    assert decision(r) == "ask", "without the marker it still refused: %r" % (r,)
+    free_slot()
+    # ⛔ HEADLESS -> refused whatever the mode: nobody can answer, and the harness would deny
+    # the ask anyway (PROBES.md P1-P5); the refusal text is the one that tells the agent what
+    # to do.
+    _env = os.environ.get("CLAUDE_CODE_SESSION_ATTENDED")
+    os.environ["CLAUDE_CODE_SESSION_ATTENDED"] = "0"
+    try:
+        r = dispatch("fable", extra={"over_price": "ask"})
+        assert decision(r) == "deny", r
+        assert "DENY(model 'fable' attended=0" in gitlog(root)[-400:], gitlog(root)[-400:]
+    finally:
+        if _env is None:
+            os.environ.pop("CLAUDE_CODE_SESSION_ATTENDED", None)
+        else:
+            os.environ["CLAUDE_CODE_SESSION_ATTENDED"] = _env
+    # ⭐ THE OWNER'S WRITTEN APPROVAL lets it through with no dialog: priced, scoped to the task
+    # folder, newer than the session, expiring. An approved fable covers the cheaper opus too;
+    # a dearer model is still asked about; a name that does not price is ignored.
+    _time.sleep(1.1)
+    approval = os.path.join(tdir, "MODEL-APPROVED")
+    with open(approval, "w", encoding="utf-8") as f:
+        f.write("owner 2026-10-06 11:00: model fable for this task\n")
+    r = dispatch("fable")
+    assert decision(r) == "allow", r
+    assert "MODEL-APPROVAL-USED model=claude-fable-5" in gitlog(root), gitlog(root)[-300:]
+    free_slot()
+    r = dispatch("claude-opus-4-0")
+    assert decision(r) == "ask", "$15 passed an approved $10: %r" % (r,)
+    assert "MODEL-APPROVAL-BELOW" in gitlog(root)[-600:], gitlog(root)[-600:]
+    free_slot()
+    # ⚠ `gpt-5`, not a near-miss like `fablee`: the resolver prices an unseen VERSION of a known
+    # family through the family (MODEL-PRICE-ASSUMED), so a typo inside a family name is
+    # honoured as that family. The case that must be ignored is a name no family claims.
+    with open(approval, "w", encoding="utf-8") as f:
+        f.write("model gpt-5\n")
+    r = dispatch("fable")
+    assert decision(r) == "ask", "an unpriceable approval passed every model: %r" % (r,)
+    assert "MODEL-APPROVAL-UNKNOWN" in gitlog(root)[-600:], gitlog(root)[-600:]
+    free_slot()
+    # ⛔ AN UNDECODABLE APPROVAL MUST NOT TAKE THE GATE DOWN. Measured by the 0.70 refuter through
+    # the real hook process: a `模型 fable` saved in cp950 (PowerShell 5.1 Set-Content) raised
+    # UnicodeDecodeError inside model_approval(), the hook printed nothing, exited 0 - and the
+    # fable dispatch RAN with no protocol block and no slot. Now: logged, treated as absent.
+    with open(approval, "wb") as f:
+        f.write("模型 fable".encode("cp950"))
+    r = dispatch("fable")
+    assert decision(r) == "ask", "an undecodable approval changed the decision: %r" % (r,)
+    assert "MODEL-APPROVAL-UNREADABLE" in gitlog(root)[-600:], gitlog(root)[-600:]
+    free_slot()
+    os.remove(approval)
 
     # ⛔ THE CASE A FAMILY LADDER GOT WRONG, and the reason this is priced per MODEL now.
     # claude-opus-4-0 is tier_15_75 in the catalog; claude-opus-5 is tier_5_25. Same family,
@@ -1483,7 +1652,9 @@ def case_model_price_limit(gate, sdir, root):
     # expensive one through an `opus` ceiling untouched.
     for expensive in ("claude-opus-4-0", "claude-opus-4-1", "opus-4-0"):
         assert refused(expensive), "%s passed an opus ceiling" % expensive
-    assert "$15" in reason(dispatch("claude-opus-4-0")), reason(dispatch("claude-opus-4-0"))
+    r = dispatch("claude-opus-4-0")
+    free_slot()
+    assert "$15" in reason(r), reason(r)
     for ok in ("claude-opus-4-8", "claude-opus-4-5", "claude-sonnet-4-6"):
         assert not refused(ok), "%s was refused and is at or below the ceiling" % ok
 
@@ -1531,10 +1702,14 @@ def case_model_price_limit(gate, sdir, root):
     try:
         assert gate.available_models(root) == ["sonnet", "haiku"], gate.available_models(root)
         r = dispatch("opus")
-        assert decision(r) == "deny", "an opus dispatch survived a sonnet-only allowlist"
-        assert "Dispatch with `sonnet`" in reason(r), reason(r)
-        assert "allows $2 per million" in reason(r), "it reported the configured limit"
+        # ⭐ 0.70: over the NARROWED ceiling, attended and undeclared, so the owner is asked -
+        # and the dialog names the effective limit and the account's best model, not the
+        # configured $5 and an opus the account cannot select.
+        assert decision(r) == "ask", "an opus dispatch survived a sonnet-only allowlist: %r" % (r,)
+        assert "`sonnet`" in reason(r), reason(r)
+        assert "($2 (narrowed to `sonnet`" in reason(r), "it reported the configured limit: %r" % (reason(r),)
         assert "MODEL-PRICE-LIMIT-CLAMPED" in gitlog(root), gitlog(root)[-300:]
+        free_slot()
         assert not refused("sonnet"), "sonnet is allowed and was refused"
     finally:
         os.remove(settings)

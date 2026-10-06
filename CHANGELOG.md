@@ -33,6 +33,49 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.70.0
+
+擁有者 2026-10-06：「有沒有辦法將這個 plug-in 規範的的"價格上限拒絕"改為: 停下來要求使用者確認?」→
+「同意，無人模式要可以繼續執行而不會整輪停下來，如果使用者明確指定模型種類應該也可以直接放行對嗎?」→
+執行中：「修改 gate 機制不要強制每個 session 在首次派工前載入 unattended-work，改用觸發詞」。
+ADR、探針與兩輪審查在 `Memory/tasks/20261006-105702-over-price-ask/`。
+
+- **超過 `max_model_price` 的派工：有人在就問，沒人在就拒絕，擁有者寫了核准就放行。** 新設定
+  `over_price`（預設 `auto`）：hook 回 `permissionDecision: "ask"`，在檢查鏈的「最後」發出（前面每一關照跑，
+  規範區塊跟著 `updatedInput` 走），只在有人能回答時 —— session 不是 headless、而且擁有者沒有宣告無人職守；
+  否則照舊拒絕。`ask` 忽略宣告；`deny` 是 0.70 以前的行為。gate 定不了價的模型一律拒絕、不問。
+  實測（`PROBES.md`，Claude Code 2.1.278，十一次巢狀執行）：hook 的 ask 在沒人能回答的地方（列印模式、任何權限
+  模式、子代理內）都被 harness 拒絕、從不自動放行；有 host 能回答時會跳出帶理由的請求，**bypassPermissions 也
+  一樣**；按允許後工具用 `updatedInput` 執行。互動式 UI 的對話框本身沒量到（沒辦法從這裡按），第一次真實使用就是
+  測試（ADR R1）。
+- **「沒人看著」的訊號是擁有者自己的話，不是 skill 有沒有載入。** prompt 含 無人職守／無人值守／做完再叫我／
+  `unattended`（整個字、後面不接 `-work`、`.py` 之類）就寫下 session 標記 `unattended-declared`（log
+  `UNATTENDED-DECLARED word=…`），並在那一句的 hook 輸出裡請模型載入 `unattended-work`。設定鍵
+  `unattended_words`。ADR 第一輪的阻斷發現：gate 自己的首次派工 nag 讓 14 天內 26 個有派工的 session 裡 25 個都
+  載入了那支 skill，「載入了」不可能代表「沒人在」。
+- **`guard_unattended_first` 只在擁有者宣告過的 run 才問**（擁有者執行中的指示）。沒宣告的 session 不擋也不唸
+  （log `CMD-ALLOW(guard_unattended_first no declaration)`）。`require_unattended_work`（選用的硬閘門）與
+  SessionStart 提醒不變。
+- **`MODEL-APPROVED`：** 任務資料夾裡的核准檔，和 `PARALLEL-APPROVED` 同一形狀（這個 session 內、`approval_ttl_min`
+  到期、限該資料夾、每次使用一行 `MODEL-APPROVAL-USED … says=…`）。形式 `model fable`／`MODEL=fable`／
+  `模型 fable`；名稱先定價再當上限，所以核准 fable 也涵蓋 agent 退而求其次的 opus；定不了價的名稱（`mythos`、
+  打錯字）記 `MODEL-APPROVAL-UNKNOWN` 後忽略，絕不變成所有模型的通行證（ADR 第二輪的阻斷發現）。沒辦法為一個
+  全新的 headless run 預先放好（必須比 session 新）。
+- **槽位：** 被拒絕、被中斷、被 harness 自動拒絕的 ask 不會觸發任何 Post 事件（實測 P7），所以它的槽位標記
+  `asked`，由下一次主層派工（payload 沒有 `agent_id`）在 10 秒窗口之後釋放（`RELEASE(ask unresolved) id=…
+  age=…s`）；同一則訊息裡的第二個派工在窗口內照舊被拒。PostToolUse 找不到槽位時現在會記
+  `RELEASE-MISS(returned, no slot held) id=…`，這是窗口判斷錯的證據（ADR R2）。
+- 文件：PROTOCOL.md §2／§3／§4、README、dispatch-protocol skill（中英）、config.example.json、注入區塊第 7 條、
+  開場的模型那一行。測試：gate selftest 新增五組；test_guards 的 `case_model_price_limit` 改成走完整條鏈
+  （ask／宣告→拒絕／ask 忽略宣告／deny／突變：拿掉標記 ask 就回來／headless→拒絕／核准檔→放行、$15 仍問、
+  打錯字忽略）、`case_unattended_first` 改成先宣告；test_slot_lifecycle 透過真實 hook 程序走 ask→同訊息拒絕→
+  釋放→放行。
+- 審查：ADR 兩輪（第一輪 REJECT：skill 載入訊號失真；第二輪 REJECT：核准檔名稱 fail open、前言理由寫錯），
+  兩輪的阻斷都已吸收；修正後再送一個子代理反駁 diff，它實測抓到一個 fail open：cp950／UTF-16 的核准檔讓
+  `UnicodeDecodeError` 把 hook 整個弄掉、什麼都不印、派工沒帶規範區塊也沒佔槽位 —— 現在接住、記
+  `MODEL-APPROVAL-UNREADABLE`、視同沒有檔案（`PARALLEL-APPROVED` 同一處讀檔一併補上）；另外
+  `unattended.py` 這種檔名曾被當成宣告、一個測試是空測、log 名稱分成 `ASK-ELIGIBLE`／`ASK-EMITTED`。
+
 ## 0.69.4
 
 擁有者 2026-10-06：「請你幫我檢查本專案發布出去的工具，其中的 skill、提示詞等是否有重複、矛盾、語意不清之類的
@@ -3088,6 +3131,63 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.70.0
+
+Owner, 2026-10-06: can the price-ceiling refusal become "stop and ask the user"? → agreed, with
+"an unattended run must keep going, never stall", and "if I named the model, let it through" →
+mid-run: "stop forcing every session to load unattended-work before its first dispatch; use the
+trigger words instead". ADR, probes and two review rounds:
+`Memory/tasks/20261006-105702-over-price-ask/`.
+
+- **A dispatch above `max_model_price` is asked about when a person can answer, refused when nobody
+  can, and let through on the owner's written approval.** New key `over_price` (default `auto`): the
+  hook answers `permissionDecision: "ask"`, emitted at the END of the check chain (every other check
+  runs first; the protocol block rides along in `updatedInput`), only when a person can answer - the
+  session is not headless and the owner did not declare the run unattended; otherwise refused as
+  before. `ask` ignores the declaration; `deny` is the pre-0.70 behaviour. A model the gate cannot
+  price is refused, never asked about. Measured (`PROBES.md`, Claude Code 2.1.278, eleven nested
+  runs): a hook's ask is DENIED by the harness wherever nobody can answer (print mode, any permission
+  mode, inside sub-agents) and never becomes an allow by itself; where a host can answer it prompts
+  with the reason, **in bypassPermissions too**; the approved call runs with the updated input. The
+  interactive dialog itself is unmeasured (nothing here can click): the first real use is the test
+  (ADR R1).
+- **"Nobody is watching" is the owner's own words, not whether a skill was loaded.** A prompt
+  containing 無人職守 / 無人值守 / 做完再叫我 / `unattended` (whole word; `unattended-work` and
+  `unattended.py` do not count) writes
+  the session marker `unattended-declared` (log `UNATTENDED-DECLARED word=…`) and that prompt's hook
+  output asks the model for `unattended-work`. Key `unattended_words`. Round 1's blocking finding: the
+  gate's own first-dispatch nag had loaded that skill in 25 of the 26 sessions that dispatched here in
+  14 days, so "loaded" could not mean "absent".
+- **`guard_unattended_first` fires only in a run the owner declared** (owner's mid-run instruction).
+  An undeclared session is neither refused nor nagged (`CMD-ALLOW(guard_unattended_first no
+  declaration)`). `require_unattended_work` (the opt-in hard gate) and the SessionStart reminder are
+  unchanged.
+- **`MODEL-APPROVED`:** an approval file in the task folder, the same shape as `PARALLEL-APPROVED`
+  (this session, `approval_ttl_min`, that folder, one `MODEL-APPROVAL-USED … says=…` line per use).
+  Forms `model fable` / `MODEL=fable` / `模型 fable`; the name is priced first and becomes the
+  ceiling, so an approved fable also covers the opus the agent falls back to; a name that does not
+  price (`mythos`, a typo) is logged `MODEL-APPROVAL-UNKNOWN` and ignored, never a pass for every
+  model (round 2's blocking finding). It cannot be pre-staged for a fresh headless run (it must be
+  newer than the session).
+- **Slots:** a denied, interrupted or auto-denied ask fires no Post event (measured, P7), so its slot
+  is marked `asked` and released by the next parent-level dispatch (no `agent_id` in the payload)
+  after a 10-second window (`RELEASE(ask unresolved) id=… age=…s`); a second dispatch of the same
+  message, inside the window, is refused as always. PostToolUse now logs `RELEASE-MISS(returned, no
+  slot held) id=…` when no slot is found - the evidence that the window was wrong (ADR R2).
+- Docs: PROTOCOL.md §2/§3/§4, README, the dispatch-protocol skill (both languages),
+  config.example.json, rule 7 of the injected block, the opening model line. Tests: five new groups in
+  the gate selftest; `case_model_price_limit` now travels the whole chain (ask / declared → deny / ask
+  ignores the declaration / deny / mutation: remove the marker and the ask returns / headless → deny /
+  approval → allow, $15 still asked, typo ignored); `case_unattended_first` declares first;
+  test_slot_lifecycle drives ask → sibling refused → released → allowed through the real hook process.
+- Review: two ADR rounds (round 1 REJECT: the skill-loaded signal; round 2 REJECT: an unpriceable
+  approval failed open, and the preamble's stated basis was wrong), both blockers absorbed; the diff
+  then went to a refuter, which measured a fail-open: a cp950 / UTF-16 approval file raised
+  `UnicodeDecodeError`, the hook printed nothing, and the dispatch ran with no protocol block and no
+  slot — now caught, logged `MODEL-APPROVAL-UNREADABLE`, treated as absent (the same read in
+  `PARALLEL-APPROVED` fixed alongside); also `unattended.py` had declared, one test was vacuous, and
+  the log lines are now `ASK-ELIGIBLE` / `ASK-EMITTED`.
 
 ## 0.69.4
 

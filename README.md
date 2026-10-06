@@ -59,12 +59,12 @@ skill 是模型看了描述之後**自己決定**要不要用；文件是模型*
 | ⛔ 拒絕 `git commit -m` | 訊息寫成檔案，用 `-F <路徑>` |
 | ⛔ 拒絕**把錯誤訊息吞掉**的搜尋 | `2>/dev/null`、`2>$null`、`--no-messages`、grep 的 `-s` |
 | ⛔ **沒載入 `dispatch-protocol` 就拒絕派工** | 每一次都拒絕，直到它被叫過。`require_dispatch_protocol` |
-| ⭐ 沒載入 `unattended-work` 就派工，**拒絕一次** | 只是提醒。要變成閘門就開 `require_unattended_work` |
+| ⭐ 你**宣告無人職守**（prompt 含 無人職守／無人值守／做完再叫我／unattended）之後，沒載入 `unattended-work` 就派工，**拒絕一次** | 0.70 起只在你宣告的那種 run 才問；沒宣告的 session 派工時不擋也不唸（SessionStart 的提醒不變）。要變成閘門就開 `require_unattended_work` |
 | ⚠ `cd <相對路徑> && …` 出警告 | `cd` 失敗時，後面整串安靜地不執行 |
 | ⚠ 有更舊的 commit 沒推，會提醒 | 只提醒，不拒絕 |
 | ⚠ 子 agent 回來了，但**它的提示詞要求的檔案沒有出現** | `guard_agent_report_file`。摘要照樣回來、而且看起來很正常；檔案不存在看起來不正常 |
 | ⚠ **唯讀的 `subagent_type`** 配上一份叫它建立檔案的提示詞 | 同一個開關，派工前就警告。⭐ 不認識的型別什麼都不說 |
-| ⛔ 拒絕**模型太貴**的子代理派工 | `max_model_price`，預設 **5**（每百萬輸入 token 美元） |
+| ⭐ **模型太貴**的子代理派工：有人在就**跳確認框問你**，沒人在（headless、或你宣告無人職守）就**拒絕**，任務資料夾有你寫的 `MODEL-APPROVED` 就直接放行 | `max_model_price`，預設 **5**（每百萬輸入 token 美元）；`over_price` auto／ask／deny（0.70） |
 | ⛔ 拒絕**改寫一個自己宣告只能追加的檔案** —— `Write`、`Edit`、shell 一律 | `guard_append_only`（0.63.0）。第一個標題含 `append-only`，或帶 `<!-- append-only -->`。追加（`>>`、`tee -a`、接在最後一行之後的 Edit）放行 |
 | ⭐ 這個 repo 裡有**另一個活著的 session**、而你沒載入 `cowork`，第一次寫入或 commit **拒絕一次** | `guard_cowork_first`、`peer_alive_min`（15 分鐘）。只是提醒，一個 session 一次 |
 
@@ -1731,12 +1731,12 @@ one are byte-identical on screen. Each has its own switch; all default to on.
 | ⛔ refuses `git commit -m` | write the message to a file and use `-F <path>` |
 | ⛔ refuses a search with **its errors silenced** | `2>/dev/null`, `2>$null`, `--no-messages`, and `-s` for grep |
 | ⛔ **refuses every dispatch until `dispatch-protocol` has been invoked** | `require_dispatch_protocol` — that skill is what the gate enforces |
-| ⭐ refuses the **first** dispatch when `unattended-work` was never invoked | a nag, not a gate. `require_unattended_work` makes it a gate |
+| ⭐ refuses the **first** dispatch of a run **you declared unattended** (your prompt said 無人職守 / 無人值守 / 做完再叫我 / unattended) when `unattended-work` was never invoked | since 0.70 only in a declared run; an undeclared session is neither refused nor nagged at dispatch (the SessionStart reminder is unchanged). A nag, not a gate. `require_unattended_work` makes it a gate |
 | ⚠ warns on `cd <relative> && …` | when the `cd` fails, everything after it silently does not run |
 | ⚠ reports unpushed commits older than the one just made | advisory, never a refusal |
 | ⚠ a sub-agent returned, but **the file its prompt demanded never appeared** | `guard_agent_report_file`. The summary still comes back and still looks normal; a missing file does not |
 | ⚠ a **read-only `subagent_type`** paired with a prompt that tells it to create a file | same switch, warned before it runs. ⭐ An unknown type says nothing at all |
-| ⛔ refuses a sub-agent whose model **costs too much** | `max_model_price`, default **5** ($/M input tokens) |
+| ⭐ a sub-agent whose model **costs too much**: **asks you** (a permission dialog) when a person can answer, **refuses** when nobody can (headless, or a run you declared unattended), and lets it through when your `MODEL-APPROVED` is in the task folder | `max_model_price`, default **5** ($/M input tokens); `over_price` auto / ask / deny (0.70) |
 | ⛔ refuses a **rewrite of a file that declares itself append-only** — `Write`, `Edit` and the shell alike | `guard_append_only` (0.63.0). First heading contains `append-only`, or the file carries `<!-- append-only -->`. Appends (`>>`, `tee -a`, an Edit after the last line) pass |
 | ⭐ **another live session in this repository** and `cowork` not loaded: the first write or commit is refused **once** | `guard_cowork_first`, `peer_alive_min` (15 min). A nag, once per session |
 

@@ -130,6 +130,25 @@ DEFAULTS = {
     # ever meets as a refusal is a rule it tries to route around; Tools/Debug/test_guards.py
     # asserts the skill's table and this table have not drifted apart.
     "max_model_price": 5,
+    # ⭐ OVER THE CEILING (0.70, ADR Memory/tasks/20261006-105702-over-price-ask): "auto" ASKS the
+    # owner - a permission prompt with the price in it - when a person can answer, and REFUSES
+    # when nobody can: a headless session, or a run the owner declared unattended (see
+    # unattended_words). "ask" ignores the declaration; "deny" is the pre-0.70 behaviour.
+    # Measured 2026-10-06 (PROBES.md): a hook's ask is never an allow by itself - where nobody
+    # can answer it the harness denies it - so the direction is fail-closed either way.
+    "over_price": "auto",
+    # ⭐ THE OWNER'S OWN WORDS for "nobody is watching". A prompt containing one of these marks
+    # the session unattended-declared (regexes, case-insensitive). They are the unattended-work
+    # skill's trigger words (0.69.2); `unattended` as a whole word not followed by `-` or `.`
+    # and a word character, so `unattended-work` and `unattended.py` - which this plugin's own
+    # sessions name constantly - do not count. Why the owner's words and
+    # not "the skill was loaded": the gate's own first-dispatch nag loaded that skill in 25 of
+    # the 26 sessions that dispatched here in 14 days, so it could not mean absence.
+    "unattended_words": [r"無人職守", r"無人值守", r"做完再叫我", r"\bunattended\b(?![-.]\w)"],
+    # The owner's written approval of a dearer model for ONE task folder, expiring with
+    # approval_ttl_min - the same shape as PARALLEL-APPROVED. Forms: `model fable`,
+    # `MODEL=fable`, `模型 fable`; the dispatched model must price at or below the approved one.
+    "model_approval_glob": "MODEL-APPROVED*",
     # ⛔ PAST THE SOFT THRESHOLD, A DISPATCH NEEDS A CURRENT HANDOFF ON DISK. Default ON,
     # and the reasoning is the owner's: the handoff is written when the agent hits STOP,
     # which assumes it still gets a turn - and a real cut-off, the server refusing, gives no
@@ -198,6 +217,13 @@ DEFAULTS.update(cmd_guards.GUARD_DEFAULTS)
 # owner would have said two and been given sixteen. Measured defect, 2026-08-26.
 APPROVAL_FORMS = (r"平行\s*(\d{1,2})\b", r"\bN\s*=\s*(\d{1,2})\b",
                   r"\bparallel\s*[:=]?\s*(\d{1,2})\b")
+# ⭐ MODEL-APPROVED's recognised forms (0.70). The name class keeps `claude-fable-5-1` and
+# `fable[1m]` whole; the name is then PRICED by model_price(), and one that does not price is
+# ignored - see model_approval().
+MODEL_APPROVAL_FORMS = (r"模型\s*[:=：]?\s*([A-Za-z0-9._\[\]-]+)",
+                        r"\bMODEL\s*=\s*([A-Za-z0-9._\[\]-]+)",
+                        r"\bmodel\s*[:=]?\s*([A-Za-z0-9._\[\]-]+)")
+OVER_PRICE_MODES = ("auto", "ask", "deny")
 
 # ⭐ THE PRICE TABLE IS A FILE NOW, NOT A LITERAL IN THIS MODULE. Every number comes from
 # Anthropic's published pricing page, parsed by hooks/model_pricing.py into
@@ -333,8 +359,10 @@ anything YOU dispatch in turn.
    cost at most ${max_model_price} per million INPUT tokens: {price_list} - and `best`
    means fable. Naming an old version can cost MORE than naming the family ({dear_example}).
    Omitting `model` is always allowed and inherits the model already in use, so there is
-   always a legal dispatch. These prices are read from Anthropic's published pricing page,
-   not from anybody's memory; the reasoning is in `dispatch-protocol`.
+   always a legal dispatch. Above the ceiling the gate refuses, or asks the owner when a
+   person can answer - never in a run the owner declared unattended. These prices are read
+   from Anthropic's published pricing page, not from anybody's memory; the reasoning is in
+   `dispatch-protocol`.
 8. SCRATCH FILES GO IN THE TASK FOLDER, AND YOU DO NOT DELETE THEM. Every intermediate
    file you write - probes, captured output, half-built scripts, fixtures - goes under
    {task_root}/<task>/scratch/<your-subtask>/, never the system temp directory and never
@@ -431,6 +459,23 @@ def gate_config(root, sdir):
             log(root, "CONFIG-IGNORED(%s=%r) using %r" % (k, cfg[k], DEFAULTS[k]))
             good = DEFAULTS[k]
         cfg[k] = good
+    # ⭐ 0.70: a string enum and a list, validated the same way - a wrong value is the default,
+    # said in the log, never a TypeError inside the decision path.
+    mode = cfg.get("over_price")
+    mode = mode.strip().lower() if isinstance(mode, str) else mode
+    if mode not in OVER_PRICE_MODES:
+        log(root, "CONFIG-IGNORED(over_price=%r) using %r"
+            % (cfg.get("over_price"), DEFAULTS["over_price"]))
+        mode = DEFAULTS["over_price"]
+    cfg["over_price"] = mode
+    words = cfg.get("unattended_words")
+    if not isinstance(words, (list, tuple)) or not all(isinstance(w, str) and w for w in words):
+        log(root, "CONFIG-IGNORED(unattended_words=%r) using the defaults" % (words,))
+        cfg["unattended_words"] = list(DEFAULTS["unattended_words"])
+    if not isinstance(cfg.get("model_approval_glob"), str) or not cfg["model_approval_glob"]:
+        log(root, "CONFIG-IGNORED(model_approval_glob=%r) using %r"
+            % (cfg.get("model_approval_glob"), DEFAULTS["model_approval_glob"]))
+        cfg["model_approval_glob"] = DEFAULTS["model_approval_glob"]
     if not cfg["task_root"]:
         cfg["task_root"] = next((t for t in TASK_ROOTS
                                  if os.path.isdir(os.path.join(root, t.replace("/", os.sep)))),
@@ -1157,8 +1202,12 @@ def model_price(raw):
     return None, None, False
 
 
-def model_refusal(tool_input, cfg, avail=None, log_to=None):
+def model_refusal(tool_input, cfg, avail=None, log_to=None, as_ask=False):
     """Is this dispatch's model above the ceiling? Returns a reason, or None.
+
+    `as_ask` (0.70) returns the same facts worded for the owner's permission dialog - and for
+    the tool error the harness hands the model where nobody can answer - instead of the refusal.
+    Same computation, one path: the two texts cannot disagree about a price.
 
     `avail` is the `availableModels` allowlist, or None for "everything". ⭐ It NARROWS two
     things and decides neither: the ceiling is clamped to the best family the account can
@@ -1257,6 +1306,19 @@ def model_refusal(tool_input, cfg, avail=None, log_to=None):
                    runnable("model_pricing.py")))
     if price <= cw:
         return None
+    if as_ask:
+        # ⭐ Written to read BOTH as a dialog and as a tool error (PROBES.md P1-P3: where nobody
+        # can answer, this exact text is what the model receives).
+        return ("dispatch-guard: sub-agent model `%s` is published at $%g per million input "
+                "tokens - about %.1fx the `max_model_price` ceiling ($%g%s). ALLOW = this one "
+                "dispatch runs at that price, with the protocol block prepended as usual. "
+                "DENY = the agent dispatches `%s` or omits `model` instead. ⚠ If you are "
+                "reading this as a tool ERROR, nobody could answer the prompt: dispatch `%s` or "
+                "omit `model` to inherit this session's model, and do not retry this model."
+                % (label, price, float(price) / cw, cw,
+                   (" (narrowed to `%s` by your `availableModels` allowlist)" % narrowed)
+                   if narrowed else "",
+                   best_allowed, best_allowed))
     # ⛔ REPORT THE EFFECTIVE LIMIT, NOT THE CONFIGURED ONE. Naming $5 while advising `sonnet`
     # reads as a bug in the gate rather than as a restriction on the account, and an agent that
     # thinks the gate is broken works around it instead of complying.
@@ -1323,7 +1385,8 @@ def model_note(cfg, sdir, avail=None):
             " ⚠ The last price refresh FAILED: %s" % str(st.get("reason", ""))[:140])
     return (" ⭐ SUB-AGENT MODELS: `max_model_price` allows $%g per million input tokens%s, so "
             "you may dispatch %s%s. Omitting `model` inherits this session's model and is "
-            "always allowed. Choose BEFORE you dispatch - the gate refuses the rest. Prices "
+            "always allowed. Choose BEFORE you dispatch - above the ceiling the gate refuses, "
+            "or asks the owner when a person can answer (`over_price`). Prices "
             "%s (%s).%s"
             % (cw,
                (" (narrowed to `%s` by your `availableModels` allowlist)" % narrowed)
@@ -1391,6 +1454,34 @@ def allow_prepended(event, tool_input, cfg, note, warn=None):
     out = {"hookSpecificOutput": {
         "hookEventName": event, "permissionDecision": "allow",
         "permissionDecisionReason": "dispatch gate: protocol prepended",
+        "updatedInput": updated}}
+    if warn:
+        out["hookSpecificOutput"]["additionalContext"] = warn
+        out["systemMessage"] = warn
+    print(json.dumps(out, ensure_ascii=False))
+
+
+def ask_prepended(event, tool_input, cfg, note, reason, warn=None):
+    """Escalate the dispatch to the owner, with the protocol block prepended exactly as an allow
+    would (0.70, ADR D1.3).
+
+    The harness shows `reason` in the dialog and, where nobody can answer, hands it to the model
+    as the tool error (measured 2026-10-06, PROBES.md P1-P6) - so the text is written to read both
+    ways. `updatedInput` rides along with `ask`: the prompt shows the updated input and the
+    approved call runs with it (P6b/P6c), which is what keeps an approved dispatch a gated one.
+    """
+    prompt = tool_input.get("prompt")
+    if not isinstance(prompt, str):
+        deny(event, reason)
+        return
+    head = prepend_head(cfg)
+    if note:
+        head += "!! %s\n\n" % note
+    updated = dict(tool_input)
+    updated["prompt"] = head + prompt
+    out = {"hookSpecificOutput": {
+        "hookEventName": event, "permissionDecision": "ask",
+        "permissionDecisionReason": reason,
         "updatedInput": updated}}
     if warn:
         out["hookSpecificOutput"]["additionalContext"] = warn
@@ -2930,7 +3021,11 @@ def approved_slots(root, cfg, cutoff, folder, log_to=None):
     try:
         with open(path, encoding="utf-8") as f:
             text = f.read(400)
-    except OSError:
+    except (OSError, ValueError) as exc:
+        # ⚠ ValueError is UnicodeDecodeError: a file saved in cp950 or UTF-16 by a shell.
+        # Measured by the 0.70 refuter on MODEL-APPROVED - the same read sits here.
+        if log_to:
+            log(log_to, "APPROVAL-UNREADABLE file=%s %r - ignored" % (os.path.basename(path), exc))
         return 1
     for form in APPROVAL_FORMS:
         found = re.search(form, text)
@@ -2945,6 +3040,77 @@ def approved_slots(root, cfg, cutoff, folder, log_to=None):
                        " ".join(text.split())[:100]))
             return n
     return 1
+
+
+def model_approval(root, cfg, cutoff, folder, tool_input, avail=None, log_to=None):
+    """Did the owner approve a dearer model for THIS task folder, in this session, recently?
+
+    Same shape as approved_slots(): the newest MODEL-APPROVED* in the folder, newer than the
+    session, younger than approval_ttl_min, in one recognised form (`model fable`,
+    `MODEL=fable`, `模型 fable`). The comparison is the ceiling's own: model_refusal() with the
+    approved name as the limit, so aliases, versions, the availableModels clamp and
+    MODEL-PRICE-ASSUMED behave exactly as they do for max_model_price - "priced at or below the
+    approved model", never a name match (an approved `fable` also covers the `opus` the agent
+    falls back to).
+
+    ⛔ THE NAME MUST PRICE (the ADR's round-2 blocking finding). model_refusal() fails OPEN on a
+    ceiling it cannot resolve, because a mistyped max_model_price is the OWNER's typo. This file
+    an agent can write itself, so an approval that resolves to no price - a typo, `mythos`,
+    `inherit`, an unknown family - is logged and IGNORED, never a 60-minute pass for every model.
+    ADR: Memory/tasks/20261006-105702-over-price-ask/ADR.md D1.1.
+    """
+    if not folder:
+        return False
+    tr = cfg["task_root"].replace("/", os.sep)
+    mtime, path = newest(os.path.join(root, tr, folder, cfg["model_approval_glob"]))
+    if mtime is None or mtime < cutoff:
+        return False
+    name_of = os.path.basename(path)
+    age_min = (time.time() - mtime) / 60.0
+    if age_min > cfg["approval_ttl_min"]:
+        if log_to:
+            log(log_to, "MODEL-APPROVAL-EXPIRED(%.0f min old) %s" % (age_min, name_of))
+        return False
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read(400)
+    except (OSError, ValueError) as exc:
+        # ⛔ ValueError IS UnicodeDecodeError. Measured by the refuter through the real hook
+        # process: a `模型 fable` saved in cp950 by PowerShell 5.1 raised here, the hook printed
+        # nothing, exited 0 - and nothing printed is an ALLOW with no block and no slot. Logged
+        # and treated as absent, so the dispatch takes the ordinary ask/deny path.
+        if log_to:
+            log(log_to, "MODEL-APPROVAL-UNREADABLE file=%s %r - ignored" % (name_of, exc))
+        return False
+    says = " ".join(text.split())[:100]
+    name = None
+    for form in MODEL_APPROVAL_FORMS:
+        found = re.search(form, text, re.IGNORECASE)
+        if found:
+            name = found.group(1)
+            break
+    if not name:
+        if log_to:
+            log(log_to, "MODEL-APPROVAL-UNRECOGNISED file=%s says=%r" % (name_of, says))
+        return False
+    label, price, _exact = model_price(name)
+    if label is None or label == "inherit" or not price:
+        if log_to:
+            log(log_to, "MODEL-APPROVAL-UNKNOWN name=%r file=%s - ignored" % (name, name_of))
+        return False
+    if model_refusal(tool_input, dict(cfg, max_model_price=name), avail=avail, log_to=None):
+        if log_to:
+            log(log_to, "MODEL-APPROVAL-BELOW model=%r approved=%s $%g file=%s"
+                % (tool_input.get("model"), label, price, name_of))
+        return False
+    wl, wp, _wx = model_price(str(tool_input.get("model") or ""))
+    if log_to:
+        # ⭐ Provenance in ONE line, like APPROVAL-USED: what ran, what was approved, how old,
+        # and what the file says - so a reader can tell the owner's words from an agent's.
+        log(log_to, "MODEL-APPROVAL-USED model=%s $%s approved=%s $%g age=%.0fmin file=%s says=%r"
+            % (wl, ("%g" % wp) if isinstance(wp, (int, float)) else "?",
+               label, price, age_min, name_of, says))
+    return True
 
 
 def record_progress(root, cfg, folder, desc, started_at, response):
@@ -2993,7 +3159,7 @@ def record_progress(root, cfg, folder, desc, started_at, response):
 
 
 def claim_slot(root, sdir, cfg, session_id, slots, tool_use_id, folder=None, desc=None,
-               wants=None):
+               wants=None, asked=False):
     """Atomically take one of `slots` numbered slots. True if one was free.
 
     O_CREAT|O_EXCL is atomic - 20 threads racing it produce exactly one winner - so two
@@ -3019,9 +3185,13 @@ def claim_slot(root, sdir, cfg, session_id, slots, tool_use_id, folder=None, des
             # PostToolUse payload is not the place to go looking for the prompt again, and
             # the answer must be the one the PreToolUse branch actually computed - two reads
             # of the same prompt by two code paths is two chances to disagree.
+            # ⭐ `asked` (0.70): the slot of a dispatch escalated to the owner. Never cleared -
+            # an approved ask runs under it and PostToolUse releases it by id; an unresolved
+            # one is released by release_unresolved_asks() on the next parent-level dispatch.
             os.write(fd, json.dumps({"id": str(tool_use_id), "folder": folder,
                                      "desc": desc, "at": time.time(),
-                                     "wants": list(wants or ())}).encode("utf-8"))
+                                     "wants": list(wants or ()),
+                                     "asked": bool(asked)}).encode("utf-8"))
             os.close(fd)
             return True
         except FileExistsError:
@@ -3115,6 +3285,47 @@ def release_slot(sdir, cfg, session_id, tool_use_id):
         except OSError as exc:
             return "error: %r" % (exc,)
     return False
+
+
+def release_unresolved_asks(root, sdir, cfg, session_id, tool_use_id, agent_id,
+                            min_age_s=10):
+    """Free the slot of an `ask` nobody resolved with an event (0.70, ADR D2).
+
+    An asked dispatch the owner denied, interrupted, or that the harness auto-denied fires
+    neither PostToolUse nor PostToolUseFailure (measured 2026-10-06, PROBES.md P7), so its slot
+    would sit until slot_ttl_min and refuse every dispatch meanwhile - a refusal that reads
+    exactly like the rule working. The parent session cannot issue another Agent call while an
+    ask is unresolved, EXCEPT a sibling tool_use of the same assistant message - so a parent-
+    level dispatch arriving more than min_age_s after an asked slot was claimed means that ask
+    was resolved without an event; younger than that it is a sibling and keeps its slot, and
+    the one-at-a-time refusal does its job. An approved ask runs under its slot and PostToolUse
+    releases it by id as always. ⚠ A sub-agent's own dispatch (agent_id set) never releases
+    the parent's: the parent's approved ask may be the very thing running it. The window is a
+    heuristic with no sibling timing behind it (ADR T3); the TTL remains the backstop.
+    """
+    if agent_id:
+        return 0
+    freed = 0
+    want = str(tool_use_id)
+    for i in range(cfg["max_slots"]):
+        p = state_path(sdir, session_id, "slot%d" % i)
+        try:
+            with open(p, encoding="utf-8") as f:
+                held = json.loads(f.read())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(held, dict) or not held.get("asked") or held.get("id") == want:
+            continue
+        age = time.time() - float(held.get("at") or 0)
+        if age <= min_age_s:
+            continue
+        try:
+            os.remove(p)
+        except OSError:
+            continue
+        log(root, "RELEASE(ask unresolved) id=%s age=%.0fs" % (held.get("id"), age))
+        freed += 1
+    return freed
 
 
 # ---------------------------------------------------------------------------- events
@@ -3539,6 +3750,55 @@ def driving_pct(v):
     return "", round(v.get("pct") or 0)
 
 
+def unattended_word(text, cfg, log_to=None):
+    """The first configured "nobody is watching" word found in `text`, or "" (0.70, ADR D0)."""
+    for pat in cfg.get("unattended_words") or ():
+        try:
+            m = re.search(pat, text, re.IGNORECASE)
+        except re.error as exc:
+            if log_to:
+                log(log_to, "CONFIG-IGNORED(unattended_words=%r) %r" % (pat, exc))
+            continue
+        if m:
+            return m.group(0)
+    return ""
+
+
+def note_unattended_declaration(payload, root, sdir, cfg, sid):
+    """Mark the session unattended-declared when the OWNER'S prompt says so (0.70, ADR D0/D7).
+
+    The words are the owner's own (the unattended-work skill's trigger words, 0.69.2). The marker
+    is per session and never cleared by a later prompt: a mid-run message adds work, it does not
+    end an unattended run (unattended-work §15). What it changes: a dispatch over max_model_price
+    is REFUSED instead of asked (nobody can answer a dialog), and guard_unattended_first asks for
+    the skill before the first dispatch - in no other session does it. A false match (the word in
+    another sense) costs a refusal, which is the pre-0.70 behaviour. Returns the nudge for the
+    model, once per prompt until the skill is loaded.
+    """
+    text = payload.get("prompt")
+    if not isinstance(text, str) or not text.strip():
+        return ""
+    hit = unattended_word(text, cfg, log_to=root)
+    if not hit:
+        return ""
+    mark = state_path(sdir, sid, "unattended-declared")
+    if not os.path.exists(mark):
+        os.makedirs(os.path.dirname(mark), exist_ok=True)
+        with open(mark, "w", encoding="utf-8") as f:
+            f.write(hit)
+        log(root, "UNATTENDED-DECLARED word=%r sid=%s" % (hit, str(sid or "?")[:8]))
+    try:
+        if cmd_guards.skill_seen(guard_ctx(root, sdir, sid, cfg), "unattended-work"):
+            return ""
+    except Exception as exc:
+        log(root, "SKILL-SEEN-CHECK-FAILED %r" % (exc,))
+    return (" ⛔ The owner declared this run unattended (%r). Invoke "
+            "`dispatch-guard:unattended-work` now and print its ACTIVE line. From here a dispatch "
+            "naming a model above `max_model_price` is refused rather than asked - nobody is "
+            "watching to answer - and the first dispatch is refused until that skill is loaded."
+            % hit)
+
+
 def on_user_prompt(payload, root, sdir, cfg):
     """The wind-down net, ported from claude-pacer's budget-guard.
 
@@ -3557,6 +3817,13 @@ def on_user_prompt(payload, root, sdir, cfg):
     except Exception as exc:              # a notice must never take the brake down with it
         log(root, "FAILED-NOTE-ERROR %r" % (exc,))
         mine = ""
+    # ⭐ THE OWNER'S OWN WORDS (0.70, ADR 20261006-105702 D0/D7): a prompt saying 無人職守 /
+    # 做完再叫我 / unattended marks the session unattended-declared, and asks the model for
+    # `unattended-work` on that very prompt. Before anything else, and never fatal.
+    try:
+        mine += note_unattended_declaration(payload, root, sdir, cfg, sid)
+    except Exception as exc:
+        log(root, "DECLARATION-CHECK-FAILED %r" % (exc,))
     # ⭐ AND "THE WINDOW HIT THE CAP": a turn cut by the cap ends silently on screen - two of the
     # three sessions cut on 2026-09-29 never knew. Checked here too, because the first hook after
     # a reset is often a prompt. ADR 20260929-152000 item 5.
@@ -3801,18 +4068,53 @@ def on_pre_agent(payload, root, sdir, cfg, wind=None):
     # usage brake on purpose: at STOP nothing should be dispatched at all, and a "use a
     # cheaper model" refusal invites an immediate retry - which is the wrong thing to invite
     # when the answer is "dispatch nothing until the window resets".
-    why = model_refusal(tool_input, cfg, avail=available_models(root), log_to=root)
+    avail = available_models(root)
+    why = model_refusal(tool_input, cfg, avail=avail, log_to=root)
+    ask_why = None
     if why:
-        log(root, "DENY(model %r) %s" % (tool_input.get("model"), desc))
-        deny(event, why,
-             # ⭐ ON THE SCREEN, because only the owner can change the ceiling - and because
-             # a sub-agent quietly running on a model they did not choose is the thing they
-             # asked to be able to see.
-             systemMessage=("dispatch-guard: dispatch REFUSED - sub-agent model %r costs more "
-                            "than `max_model_price` (%r $/M input). Nothing was dispatched."
-                            % (tool_input.get("model"),
-                               cfg.get("max_model_price", DEFAULTS["max_model_price"]))))
-        return
+        # ⭐ 0.70 (ADR Memory/tasks/20261006-105702-over-price-ask). The owner's written approval
+        # in the task folder lets it through. Otherwise ASK the owner when a person can answer -
+        # emitted at the END of the chain, so every other check still runs - and REFUSE when
+        # nobody can: a headless session, or a run the owner declared unattended (nobody is
+        # there to answer a dialog, and a dialog nobody answers stalls the whole run).
+        try:
+            approved = model_approval(root, cfg, started,
+                                      plan_for(root, cfg, tool_input.get("prompt") or "")[1],
+                                      tool_input, avail=avail, log_to=root)
+        except Exception as exc:
+            # ⛔ A crash here must not become an UNGATED dispatch: a hook that raises before it
+            # prints has allowed the call (measured by the refuter with an undecodable file).
+            # Logged, and the file is treated as absent - the ordinary ask/deny path follows.
+            log(root, "MODEL-APPROVAL-CHECK-FAILED %r" % (exc,))
+            approved = False
+        if approved:
+            why = None
+    if why:
+        mode = cfg.get("over_price", DEFAULTS["over_price"])
+        declared = os.path.exists(state_path(sdir, sid, "unattended-declared"))
+        # ⚠ A model this gate cannot PRICE is never asked about: the dialog would have no price
+        # in it, and "treated as ABOVE the limit" is the rule for an unrecognised name.
+        known = model_price(str(tool_input.get("model") or ""))[0] is not None
+        can_ask = (mode != "deny" and attended() and known
+                   and (mode == "ask" or not declared))
+        if not can_ask:
+            log(root, "DENY(model %r attended=%d declared=%d over_price=%s) %s"
+                % (tool_input.get("model"), int(attended()), int(declared), mode, desc))
+            deny(event, why,
+                 # ⭐ ON THE SCREEN, because only the owner can change the ceiling - and because
+                 # a sub-agent quietly running on a model they did not choose is the thing they
+                 # asked to be able to see.
+                 systemMessage=("dispatch-guard: dispatch REFUSED - sub-agent model %r costs "
+                                "more than `max_model_price` (%r $/M input). Nothing was "
+                                "dispatched."
+                                % (tool_input.get("model"),
+                                   cfg.get("max_model_price", DEFAULTS["max_model_price"]))))
+            return
+        # ⚠ ELIGIBLE, not yet emitted: a later check (plan, handoff, slots) can still refuse.
+        # ASK-EMITTED at the end of the chain is the line that says the dialog went out.
+        log(root, "ASK-ELIGIBLE(model %r attended=1 declared=%d over_price=%s) %s"
+            % (tool_input.get("model"), int(declared), mode, desc))
+        ask_why = model_refusal(tool_input, cfg, avail=avail, log_to=None, as_ask=True) or why
 
     # ⭐ AFTER THE USAGE BRAKE, BEFORE EVERYTHING ELSE. `unattended-work` is the skill that
     # would have told this agent to write the plan first, so asking for it ahead of the plan
@@ -3925,8 +4227,16 @@ def on_pre_agent(payload, root, sdir, cfg, wind=None):
         log(root, "AGENT-TYPE-DISABLED")
 
     slots = approved_slots(root, cfg, started, folder, log_to=root)
+    # ⭐ 0.70: an ask that was denied, interrupted or auto-denied leaves NO Post event (measured,
+    # PROBES.md P7), so its slot would sit until slot_ttl_min and refuse every dispatch
+    # meanwhile. Released here, on the next parent-level dispatch, before claiming.
+    try:
+        release_unresolved_asks(root, sdir, cfg, sid, payload.get("tool_use_id"),
+                                payload.get("agent_id"))
+    except Exception as exc:
+        log(root, "ASK-RELEASE-FAILED %r" % (exc,))
     if not claim_slot(root, sdir, cfg, sid, slots, payload.get("tool_use_id"),
-                      folder, desc, wants=wants):
+                      folder, desc, wants=wants, asked=bool(ask_why)):
         log(root, "DENY(slots-full n=%d) %s" % (slots, desc))
         deny(event, "dispatch gate: %d sub-task(s) are already in flight, which is all "
                     "the owner approved. Dispatch one at a time - that needs no "
@@ -3950,6 +4260,13 @@ def on_pre_agent(payload, root, sdir, cfg, wind=None):
                            "%s minutes after it was claimed.)" % (cfg["slot_ttl_min"],))))
         return
 
+    if ask_why:
+        # ⭐ 0.70: the owner decides. Every check above has passed and the slot is claimed (marked
+        # `asked`), so an approved dispatch is a fully gated one - block prepended, slot held.
+        log(root, "ASK-EMITTED(model %r slots=%d) %s" % (tool_input.get("model"), slots, desc))
+        ask_prepended(event, tool_input, cfg, note, ask_why,
+                      warn="\n\n".join([t for t in (warn, wind) if t]) or None)
+        return
     log(root, "ALLOW(slots=%d) %s" % (slots, desc))
     # ⚠ The wind-down rides in the same channel as the read-only-type warning: both are
     # about the DISPATCH and both are for the dispatcher, not for the sub-agent.
@@ -4169,6 +4486,10 @@ def main():
                 log(root, "AGENT-FILE-CHECK-FAILED %r" % (exc,))
         elif result is not False:
             log(root, "RELEASE-FAILED %s" % result)
+        else:
+            # ⭐ 0.70: said with the id, so an ask released as "unresolved" that then RETURNS
+            # (the sibling window was wrong) is visible as this line - ADR R2.
+            log(root, "RELEASE-MISS(returned, no slot held) id=%s" % payload.get("tool_use_id"))
 
 
 def selftest():
@@ -4334,6 +4655,126 @@ def selftest():
         assert not model_refusal({"model": "fable"}, {"max_model_price": None}), "null must be off"
         assert not model_refusal({"model": "fable"}, {"max_model_price": "typo"}), "typo opens"
         assert not model_refusal({"model": "fable"}, {"max_model_price": 0}), "0 must be off"
+
+        # ⭐ 0.70: OVER THE CEILING IS ASKED, APPROVED OR REFUSED (ADR 20261006-105702). The
+        # pieces, each on its own; the wiring is Tools/Debug/test_guards.py case_model_price_limit.
+        # (1) The words that mean "nobody is watching" are the OWNER'S - never the skill's name,
+        # which this plugin's own sessions say in every other sentence.
+        wcfg = {"unattended_words": list(DEFAULTS["unattended_words"])}
+        assert unattended_word("把這三件做完再叫我", wcfg) == "做完再叫我"
+        assert unattended_word("Unattended run, call me when done", wcfg).lower() == "unattended"
+        assert unattended_word("切到無人值守模式", wcfg) == "無人值守"
+        assert not unattended_word("check the unattended-work skill text", wcfg), \
+            "the skill's own name read as a declaration"
+        assert not unattended_word("edit hooks/unattended.py and unattended_work.md", wcfg), \
+            "a file name read as a declaration (`.` is a word boundary)"
+        assert unattended_word("Run it unattended.", wcfg), "a sentence-final word was missed"
+        assert not unattended_word("attended by the owner", wcfg)
+        assert not unattended_word("anything", {"unattended_words": [r"["]}), "a bad regex raised"
+        # (2) The ask text and the refusal come from ONE computation, so they cannot disagree
+        # about a price - and the ask names the fallback, because the same text is the tool
+        # error where nobody can answer.
+        ask = model_refusal({"model": "fable"}, ceil, as_ask=True)
+        assert ask and "ALLOW = this one dispatch" in ask and "$10" in ask and "$5" in ask \
+            and "`opus`" in ask and "tool ERROR" in ask, ask
+        assert model_refusal({"model": "opus"}, ceil, as_ask=True) is None
+        # (3) MODEL-APPROVED: the owner's name is PRICED and then used as the ceiling - "at or
+        # below the approved model", so an approved fable also covers the opus the agent falls
+        # back to - and a name that does not price is IGNORED, never a pass for every model
+        # (the ADR's round-2 blocker: this file an agent can write itself).
+        aroot = tempfile.mkdtemp()
+        afolder = "20261006-000000-approval"
+        tdir = os.path.join(aroot, "Memory", "tasks", afolder)
+        os.makedirs(tdir)
+        acfg = dict(DEFAULTS)
+        acfg["task_root"] = "Memory/tasks"
+        apath = os.path.join(tdir, "MODEL-APPROVED")
+
+        def approve(text, age=0):
+            with open(apath, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            if age:
+                os.utime(apath, (time.time() - age, time.time() - age))
+
+        def alog():
+            try:
+                with open(os.path.join(aroot, ".claude", "dispatch_gate.log"),
+                          encoding="utf-8") as fh:
+                    return fh.read()
+            except OSError:
+                return ""
+
+        cutoff = time.time() - 60
+        approve("owner 2026-10-06: 模型 fable for this task")
+        assert model_approval(aroot, acfg, cutoff, afolder, {"model": "fable"}, log_to=aroot)
+        # ⚠ The family, not the version: this selftest runs on whichever table is loaded.
+        assert re.search(r"MODEL-APPROVAL-USED model=claude-fable-5\S* \$10 "
+                         r"approved=claude-fable-5\S* \$10 age=\d+min", alog()), alog()[-400:]
+        assert model_approval(aroot, acfg, cutoff, afolder, {"model": "opus"}), \
+            "a model priced below the approved one must pass"
+        assert not model_approval(aroot, acfg, cutoff, afolder, {"model": "claude-opus-4-0"},
+                                  log_to=aroot), "$15 passed an approved $10"
+        assert "MODEL-APPROVAL-BELOW" in alog()
+        for bad in ("model mythos", "MODEL=typo", "model inherit"):
+            approve(bad)
+            assert not model_approval(aroot, acfg, cutoff, afolder, {"model": "fable"},
+                                      log_to=aroot), "%r approved every model" % bad
+        assert alog().count("MODEL-APPROVAL-UNKNOWN") == 3, alog()[-600:]
+        approve("the owner said yes")
+        assert not model_approval(aroot, acfg, cutoff, afolder, {"model": "fable"}, log_to=aroot)
+        assert "MODEL-APPROVAL-UNRECOGNISED" in alog()
+        approve("MODEL=fable", age=3700)
+        # ⚠ The session cutoff must be OLDER than the file here, or the "newer than the session"
+        # test answers first and the TTL branch is never exercised.
+        assert not model_approval(aroot, acfg, time.time() - 4000, afolder, {"model": "fable"},
+                                  log_to=aroot), "an approval older than approval_ttl_min was honoured"
+        assert "MODEL-APPROVAL-EXPIRED" in alog()
+        approve("model fable")
+        assert not model_approval(aroot, acfg, time.time() + 10, afolder, {"model": "fable"}), \
+            "an approval older than the session was honoured"
+        assert not model_approval(aroot, acfg, cutoff, None, {"model": "fable"}), "no folder"
+        # (4) An ask nobody resolved leaves no event: its slot is released on the next
+        # parent-level dispatch - after the sibling window, never for a sub-agent's dispatch.
+        asdir = tempfile.mkdtemp()
+        os.makedirs(os.path.join(asdir, "state"))
+        acfg2 = dict(DEFAULTS)
+
+        def slot(at, asked=True, sid_="s-ask"):
+            with open(state_path(asdir, sid_, "slot0"), "w", encoding="utf-8") as fh:
+                json.dump({"id": "toolu_ASKED", "at": at, "asked": asked}, fh)
+
+        slot(time.time() - 20)
+        assert release_unresolved_asks(aroot, asdir, acfg2, "s-ask", "toolu_NEXT", None) == 1
+        assert "RELEASE(ask unresolved) id=toolu_ASKED" in alog()
+        assert not os.path.exists(state_path(asdir, "s-ask", "slot0"))
+        slot(time.time() - 1)
+        assert release_unresolved_asks(aroot, asdir, acfg2, "s-ask", "toolu_NEXT", None) == 0, \
+            "a sibling inside the window was released"
+        slot(time.time() - 20)
+        assert release_unresolved_asks(aroot, asdir, acfg2, "s-ask", "toolu_NEXT", "agent-x") == 0, \
+            "a sub-agent's dispatch released the parent's asked slot"
+        assert release_unresolved_asks(aroot, asdir, acfg2, "s-ask", "toolu_ASKED", None) == 0, \
+            "the asked dispatch's own id released its slot"
+        slot(time.time() - 20, asked=False)
+        assert release_unresolved_asks(aroot, asdir, acfg2, "s-ask", "toolu_NEXT", None) == 0, \
+            "an ordinary running slot was released"
+        # (5) The config: a string enum and a list, validated like the numbers - never a
+        # TypeError inside the decision path, and a wrong value says so in the log.
+        csdir = tempfile.mkdtemp()
+        with open(os.path.join(csdir, "config.json"), "w", encoding="utf-8") as fh:
+            json.dump({"dispatch": {"over_price": " Ask ", "unattended_words": "nope",
+                                    "model_approval_glob": 7}}, fh)
+        ccfg = gate_config(aroot, csdir)
+        assert ccfg["over_price"] == "ask", ccfg["over_price"]
+        assert ccfg["unattended_words"] == list(DEFAULTS["unattended_words"])
+        assert ccfg["model_approval_glob"] == DEFAULTS["model_approval_glob"]
+        with open(os.path.join(csdir, "config.json"), "w", encoding="utf-8") as fh:
+            json.dump({"dispatch": {"over_price": "maybe"}}, fh)
+        assert gate_config(aroot, csdir)["over_price"] == "auto"
+        assert "CONFIG-IGNORED(over_price='maybe')" in alog(), alog()[-300:]
+        assert "CONFIG-IGNORED(unattended_words='nope')" in alog()
+        for d in (aroot, asdir, csdir):
+            shutil.rmtree(d, ignore_errors=True)
         # ⭐ availableModels NARROWS the limit and the advice. On an account restricted to
         # sonnet, a $5 limit is really a $2 limit - and the refusal must not tell the agent to
         # use a model the account cannot select.
