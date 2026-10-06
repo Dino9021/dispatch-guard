@@ -33,6 +33,15 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.69.3
+
+擁有者 2026-10-06：「就算眼前只有一個 session 也要啟動的原因 cowork 的情境可能是與另一台工作站協作，不一定是同一台工作站上同一個專案
+的多個 session，所以使用者在有必要的時候進行呼叫就要帶出來」。
+
+- **`cowork` 的 description 寫出原因：** 「即使眼前只有一個 session」後面補上「協作的另一方可能在另一台工作站、從這裡看不到」——
+  只寫規則不寫原因，模型可能自己判斷「這裡只有我一個」而跳過。為了留在 1024 字元內，拿掉最後一句「有兩條規則由 hook 強制」
+  （skill 內文的「What the hook enforces」一節原本就寫了）。1008 字元。README 兩種語言同步。
+
 ## 0.69.2
 
 擁有者 2026-10-06：「cowork 幫我加入 session 自己叫的詞，只要看到 cowork、Teamwork、Cooperate、Collaborate、分工合作 就自己叫」、
@@ -3053,6 +3062,18 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.69.3
+
+Owner, 2026-10-06: cowork must load even with one session in sight, because the collaboration may be with
+another workstation, not several sessions of one project on one machine - so when the user calls for it,
+bring it in.
+
+- **`cowork` description states the reason:** "even with one session in sight" now carries "(the other
+  party may be on another workstation, out of view)" - a rule without its reason invites a model to decide
+  "it is only me here" and skip it. To stay within 1024 characters the closing "Two of its rules are
+  enforced by the dispatch-guard hook." was dropped (the skill's *What the hook enforces* section says it).
+  1008 characters. README updated in both languages.
 
 ## 0.69.2
 
