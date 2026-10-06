@@ -33,6 +33,17 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.70.1
+
+擁有者 2026-10-06：「請把 SessionStart 那個『請載入 unattended-work』的提醒關掉」。
+
+- **`announce_unattended_work` 只管開場提醒，不再連帶關掉別的。** 0.70.0 以前這個開關設 false 時，
+  派工前的 nag（`guard_unattended_first`）跟著靜音、`require_unattended_work` 也被拿掉 —— 當時的解讀是
+  「不要提醒」等於「不要這支 skill」。0.70 之後「要不要這支 skill」由擁有者的觸發詞決定，所以把提醒關掉
+  不能順手把觸發詞的效果也關掉：現在宣告過無人職守的 run 照樣在第一次派工前被要求載入，硬閘門照常。
+  test_guards 兩個反過來斷言的 case 改成斷言「開關關了仍然會問」。本機已用
+  `claude plugin configure --values-stdin` 把這個選項設成 false。
+
 ## 0.70.0
 
 擁有者 2026-10-06：「有沒有辦法將這個 plug-in 規範的的"價格上限拒絕"改為: 停下來要求使用者確認?」→
@@ -3131,6 +3142,19 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.70.1
+
+Owner, 2026-10-06: switch off the SessionStart "load unattended-work" reminder.
+
+- **`announce_unattended_work` now governs the SessionStart reminder only.** Until 0.70.0 setting
+  it false also silenced the first-dispatch nag (`guard_unattended_first`) and removed the skill
+  from `require_unattended_work` — "no reminder" was read as "I do not want this skill". Since 0.70
+  the owner's trigger words say when the skill is wanted, so switching the reminder off must not
+  switch the words off too: a declared run is still asked to load the skill before its first
+  dispatch, and the hard gate still applies. The two test_guards cases that asserted the old
+  coupling now assert the opposite. The option was set to false on the owner's machine with
+  `claude plugin configure --values-stdin`.
 
 ## 0.70.0
 

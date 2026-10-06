@@ -993,25 +993,18 @@ def _truthy(value, default):
 def required_skills(cfg):
     """The skills this session must have invoked before dispatching. [] = the check is off.
 
-    ⛔ `announce_unattended_work=false` REMOVES `unattended-work`, and that is a conflict
-    resolved rather than ignored. That switch means "I do not want this skill"; a check that
-    then refused every dispatch until it loaded would be the plugin overruling its own off
-    switch, and the owner would face two settings that contradict. ⇒ One meaning per switch.
-    `dispatch-protocol` is unaffected: it has no such switch, and it is the one this plugin
-    cannot sensibly work without.
+    ⭐ INDEPENDENT OF `announce_unattended_work` since 0.70.1. Until then that switch also
+    removed `unattended-work` from this list, on the reading that "no reminder" meant "I do
+    not want this skill". With 0.70 the owner's own words (unattended_words) say when the
+    skill is wanted, so the reminder switch means only what it says: no SessionStart
+    reminder. One meaning per switch, the other way round. `dispatch-protocol` has no such
+    switch; it is the one this plugin cannot sensibly work without.
     """
     names = []
     if _truthy(cfg.get("require_dispatch_protocol"), True):
         names.append("dispatch-protocol")
     if _truthy(cfg.get("require_unattended_work"), False):
         names.append("unattended-work")
-    if "unattended-work" in names:
-        try:
-            import unattended
-            if not unattended.announcing():
-                names.remove("unattended-work")
-        except Exception:
-            pass                        # cannot read the switch: keep the stricter list
     return names
 
 
@@ -1100,10 +1093,11 @@ def unattended_first(payload, ctx, enabled=True):
     plugin, a broken registry - would otherwise deadlock the session at its first dispatch,
     and a guard that can brick a session is a guard people remove.
 
-    ⛔ SILENT WHEN THE OWNER TURNED THE REMINDER OFF. `announce_unattended_work=false` is a
-    decision that the rules do not apply here; refusing a dispatch for not loading a skill
-    the owner opted out of would be the plugin overruling its own off switch. One source of
-    truth for that switch - unattended.announcing().
+    ⭐ INDEPENDENT OF `announce_unattended_work` since 0.70.1 (owner, 2026-10-06: the
+    SessionStart reminder goes off, the trigger words stay). Until then the reminder switch
+    also silenced this nag, on the reading that "no reminder" meant "I do not want this
+    skill"; now the owner's declaration is what says the skill is wanted, and the reminder
+    switch means only what it says.
     """
     if skill_seen(ctx, "unattended-work"):
         return None
@@ -1115,13 +1109,6 @@ def unattended_first(payload, ctx, enabled=True):
     declared = ctx["state"]("unattended-declared")
     if not os.path.exists(declared):
         ctx["log"]("CMD-ALLOW(guard_unattended_first no declaration)")
-        return None
-    try:
-        import unattended
-        if not unattended.announcing():
-            return None
-    except Exception as exc:
-        ctx["log"]("CMD-GUARD-ERROR(guard_unattended_first) %r" % (exc,))
         return None
     try:
         with open(declared, encoding="utf-8") as f:

@@ -874,21 +874,27 @@ def case_unattended_first(gate, sdir, root):
     assert "unattended-work" in reason(run_gate(gate, dict(agent, session_id=sid_off))), \
         "switching the guard back on did not restore the refusal"
 
-    # ⛔ AND IT IS SILENT WHEN THE OWNER TURNED THE REMINDER OFF. Refusing a dispatch for not
-    # loading a skill the owner opted out of would be the plugin overruling its own switch.
+    # ⭐ 0.70.1: INDEPENDENT OF THE REMINDER SWITCH. Until 0.70.0 `announce_unattended_work=false`
+    # also silenced this nag ("no reminder" was read as "I do not want the skill"). The owner
+    # switched the reminder off on 2026-10-06 precisely so that the trigger words would be the
+    # only thing asking for the skill - so a declared run is still refused once with the
+    # reminder off, and an undeclared one is still left alone.
     sid3 = "s-optout"
     stamp_session(gate, sdir, sid3)
-    # ⚠ Declared, or the case is vacuous: an undeclared session is silent for the other reason
-    # (measured by the 0.70 refuter - it passed with the switch on or off).
     declare(sid3)
     os.environ["CLAUDE_PLUGIN_OPTION_ANNOUNCE_UNATTENDED_WORK"] = "false"
     try:
         r3 = run_gate(gate, dict(agent, session_id=sid3))
-        assert "unattended-work" not in reason(r3), "it ignored announce_unattended_work=false"
+        assert "unattended-work" in reason(r3), \
+            "the reminder switch silenced the declared-run nag: %r" % (reason(r3),)
+        sid4 = "s-optout-undeclared"
+        stamp_session(gate, sdir, sid4)
+        r4 = run_gate(gate, dict(agent, session_id=sid4))
+        assert "unattended-work" not in reason(r4), "nagged an undeclared session: %r" % (reason(r4),)
     finally:
         os.environ.pop("CLAUDE_PLUGIN_OPTION_ANNOUNCE_UNATTENDED_WORK", None)
     os.remove(cfgfile)
-    print("ok - one refusal for a missing unattended-work, and it respects the off switch")
+    print("ok - one refusal for a missing unattended-work in a declared run, reminder switch or not")
 
 
 def case_require_skills(gate, sdir, root):
@@ -985,9 +991,10 @@ def case_require_skills(gate, sdir, root):
         assert "REPEATS" in reason(run_gate(gate, dict(agent, session_id=sid_str))), \
             '"true" was read as false'
 
-    # ⛔ AND THE OTHER OFF SWITCH IS HONOURED. `announce_unattended_work=false` means "I do not
-    # want that skill", so it wins even over `require_unattended_work: true` - otherwise the
-    # plugin would overrule its own off switch. `dispatch-protocol` has no such switch.
+    # ⭐ 0.70.1: THE REMINDER SWITCH NO LONGER OVERRULES THE HARD RULE. Until 0.70.0
+    # `announce_unattended_work=false` removed `unattended-work` from the required list ("no
+    # reminder" read as "I do not want the skill"). The switch now means only what it says:
+    # with `require_unattended_work: true` the hard rule still answers, reminder or not.
     sid_opt = "s-require-optout"
     stamp_session(gate, sdir, sid_opt)
     load_skills(gate, root, sid_opt, "dispatch-guard:dispatch-protocol")
@@ -995,8 +1002,8 @@ def case_require_skills(gate, sdir, root):
     try:
         with project_cfg(root, require_unattended_work=True):
             r_opt = run_gate(gate, dict(agent, session_id=sid_opt))
-            assert "REPEATS" not in reason(r_opt), \
-                "it ignored announce_unattended_work=false: %r" % (reason(r_opt),)
+            assert "REPEATS" in reason(r_opt), \
+                "the reminder switch overruled require_unattended_work: %r" % (reason(r_opt),)
     finally:
         os.environ.pop("CLAUDE_PLUGIN_OPTION_ANNOUNCE_UNATTENDED_WORK", None)
 

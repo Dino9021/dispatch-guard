@@ -672,12 +672,14 @@ claude plugin install dispatch-guard@dispatch-guard --config announce_unattended
 | 值 | 結果 |
 |---|---|
 | 沒設、`true`、或任何看不懂的值 | ⭐ 每個 session 開場提醒你載入這個 skill |
-| `false`、`0`、`no`、`off` | ⛔ 那個 hook 什麼都不印。skill 還在，你自己叫 |
+| `false`、`0`、`no`、`off` | ⛔ 那個 hook 什麼都不印。skill 還在，你自己叫；你宣告無人職守的 run 照樣會在第一次派工前被要求載入它（0.70.1 起這個開關只管開場提醒） |
 
 ⛔ **看不懂的值當作「開」，這個方向是刻意的。** 預設是開；一個**安靜消失**的提醒比一個
 多餘的提醒糟得多 —— 你會以為規則生效了，實際上根本沒有東西去載入它。
 
-⚠ 關掉之後 `Skill(unattended-work)` 照樣叫得動，只是不會有人提醒你。
+⚠ 關掉之後 `Skill(unattended-work)` 照樣叫得動，只是開場不會有人提醒你；prompt 裡說了
+無人職守／無人值守／做完再叫我／unattended 的 run，gate 還是會在第一次派工前要求載入它，
+`require_unattended_work` 也照常（0.70.1 之前這個開關會把那兩個一起關掉）。
 
 
 ## 第三個 skill：`cowork`（0.63.0）
@@ -2363,13 +2365,16 @@ Or edit `options.announce_unattended_work` under this plugin's entry in `pluginC
 | Value | Result |
 |---|---|
 | unset, `true`, or anything unrecognised | ⭐ every session opens by telling the agent to load the skill |
-| `false`, `0`, `no`, `off` | ⛔ the hook prints nothing. The skill is still installed; invoke it yourself |
+| `false`, `0`, `no`, `off` | ⛔ the hook prints nothing. The skill is still installed; invoke it yourself — and a run you declared unattended is still asked to load it before its first dispatch (since 0.70.1 this switch governs the SessionStart reminder only) |
 
 ⛔ **An unrecognised value counts as ON, and that direction is deliberate.** The default is
 true, and a reminder that **silently stops appearing** is far worse than a redundant one: you
 would believe the rules were in force while nothing had loaded them.
 
-⚠ With it off, `Skill(unattended-work)` still works by hand. Only the prompting stops.
+⚠ With it off, `Skill(unattended-work)` still works by hand. Only the SessionStart prompting
+stops: a run whose prompt said 無人職守 / 無人值守 / 做完再叫我 / unattended is still asked to load
+the skill before its first dispatch, and `require_unattended_work` still applies (before 0.70.1
+this switch silenced both).
 
 
 ## The third skill: `cowork` (0.63.0)
