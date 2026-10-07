@@ -33,6 +33,37 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.72.0
+
+擁有者 2026-10-07（經 aiintroduction-95 轉來，原話在它的逐字稿裡核對過）：「plugin 的 hook 是固定的，
+會檢查是否有安裝，有安裝就指定專案，沒安裝就跳過」—— 讓 claude-mem 的記憶搜尋自動限定在目前的專案。
+
+- **新開關 `guard_claude_mem_project`（預設開）。** claude-mem 的 `search`、或用 `query` 搜尋的 `timeline`
+  沒帶 `project` 時，PreToolUse 用 claude-mem 自己為這個 session 記的專案名補上（唯讀 `mode=ro` 打開它的
+  資料庫，以 session id 查 `sdk_sessions`），用 `updatedInput` 交回、**不帶**權限決定。資料庫位置照 claude-mem
+  自己的規則找：環境變數 `CLAUDE_MEM_DATA_DIR`、它設定檔裡的同名鍵、否則 `~/.claude-mem`；設定檔只讀那一個鍵，
+  從不寫進 log。
+- **沒裝 claude-mem 就什麼都不做：** 規則只認 `mcp__plugin_claude-mem_…__search` / `__timeline`（或名為
+  `claude-mem` 的 server），不比對就不讀任何東西。
+- **保留與放行：** 呼叫自己帶的 `project` 保留；`"*"` 拿掉，變成不限專案 —— 任何 claude-mem 工具都拿掉，因為
+  `*` 是 gate 自己教的寫法，claude-mem 會拿它當字面專案名、什麼都查不到；帶 anchor 的 `timeline` 和帶 `projects`
+  的呼叫不補專案（anchor 本身也會被專案過濾，跨專案的 anchor 會查不到）。第一次補專案時告訴 agent 這兩種
+  寫法，每個 session、每個子代理一次。不確定（沒資料庫、沒紀錄、表結構變了）就不碰，log 寫
+  `CLAUDE-MEM-PROJECT-UNKNOWN`。PostToolUse 對照實際送出的輸入，寫 `CLAUDE-MEM-SCOPE-APPLIED` / `-DROPPED`。
+- **權限提示實測不變：** 三個探針（SDK host）—— manual 模式下，不帶決定的 `updatedInput` 仍跳權限請求，請求裡就是
+  改過的輸入；bypassPermissions 本來就不問，輸入一樣被改；`allow` 會跳過 manual 的提示（等於放寬權限，所以不用）。巢狀 session 載入 repo 版本、對真的 claude-mem
+  搜尋一次：請求顯示 `"project": "dispatch-guard"`，log 依序是 `CLAUDE-MEM-SCOPED` 與
+  `CLAUDE-MEM-SCOPE-APPLIED expected='dispatch-guard' ran='dispatch-guard'`；下面 refuter 的兩項修正之後重跑一次，結果相同。
+- ADR 兩輪審查（第一輪 REJECT、兩個阻擋項修正後，第二輪 ACCEPT WITH NON-BLOCKING）。程式完成後另派 refuter
+  攻擊 diff，找到兩個必修：教給 agent 的 `*` 會原封不動流進 anchor 的 `timeline` 和 `get_observations`（已改成
+  任何 claude-mem 工具都拿掉）；以及 WAL 資料庫旁沒有 `-wal`/`-shm` 時，`mode=ro` 打開仍會建立這兩個檔案
+  （實測；已改成那種情況加 `immutable=1`，什麼都不建立）。test_guards 新案例涵蓋補專案、提示一次、空字串、保留、
+  `*`（含 anchor、`projects`、`get_observations`）、沒紀錄、別的工具、沒資料庫、APPLIED/DROPPED 與狀態檔清除、
+  收尾提醒同框、關閉開關、每次輸出都不帶權限決定、claude-mem 資料夾前後完全相同；五種突變都被抓到。紀錄在
+  `Memory/tasks/20261007-081315-claude-mem-search-project-scope/`。
+- **沒做到的**（`PROTOCOL.md` §4）：依賴 claude-mem 的內部表結構；claude-mem 沒紀錄的 session（擁有者機器上近期
+  約 3%）、server 模式、Bash 跑的搜尋都不會被限定；agent 自己寫錯的專案名照樣保留；互動介面的權限框沒有量測。
+
 ## 0.71.0
 
 擁有者 2026-10-07：「更新過後開 session，一開始的時候還是會顯示 ⭐ unattended-work ACTIVE，但應該已經改成
@@ -3208,6 +3239,55 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.72.0
+
+Owner, 2026-10-07 (relayed by aiintroduction-95; the original words were checked in its
+transcript): "the plugin's hook is fixed; it checks whether claude-mem is installed — if it is,
+name the project; if not, skip" — scope claude-mem memory searches to the current project.
+
+- **New switch `guard_claude_mem_project` (default on).** A claude-mem `search`, or a `timeline`
+  that searches by `query`, with no `project` gets the project claude-mem itself recorded for
+  this session (its database opened read-only, `mode=ro`, `sdk_sessions` looked up by session
+  id), returned as `updatedInput` with **no** permission decision. The database is found by
+  claude-mem's own rule: the `CLAUDE_MEM_DATA_DIR` environment variable, the same key in its
+  settings file, else `~/.claude-mem`; only that one key is read from the settings file, and the
+  file is never logged.
+- **Without claude-mem installed, nothing happens:** the rule matches only
+  `mcp__plugin_claude-mem_…__search` / `__timeline` (or a server named `claude-mem`), and reads
+  nothing unless it matches.
+- **Kept and let through:** a `project` the call names is kept; `"*"` is removed so the call is
+  not limited to any project — on every claude-mem tool, because `*` is the gate's own form and
+  claude-mem would take it as a literal project name and find nothing; an anchored `timeline`
+  and a call carrying `projects` get no project filled (the anchor itself is filtered by
+  project, so a cross-project anchor would not be found). The
+  first time a project is filled the agent is told both forms, once per session and sub-agent.
+  Anything uncertain (no database, no row, a reshaped table) is left alone and logged
+  `CLAUDE-MEM-PROJECT-UNKNOWN`. PostToolUse compares the input that actually ran and logs
+  `CLAUDE-MEM-SCOPE-APPLIED` / `-DROPPED`.
+- **The permission prompt, measured unchanged:** three probes (SDK host) — in manual mode an
+  `updatedInput` with no decision still raised the permission request, showing the changed
+  input; bypassPermissions never asks and the input was changed the same way; `allow` skipped
+  manual mode's prompt (a widening, so it is not used). A nested session loading the repository
+  copy, on one real claude-mem search: the request showed `"project": "dispatch-guard"` and the
+  log read `CLAUDE-MEM-SCOPED` then
+  `CLAUDE-MEM-SCOPE-APPLIED expected='dispatch-guard' ran='dispatch-guard'`; repeated after the
+  refuter's two fixes below, with the same result.
+- ADR with two review rounds (round 1 REJECT; its two blockers fixed; round 2 ACCEPT WITH
+  NON-BLOCKING). A refuter then attacked the finished diff and found two must-fixes: the `*` the
+  agent is taught passed untouched into an anchored `timeline` and `get_observations` (now
+  removed on every claude-mem tool); and with no `-wal`/`-shm` beside a WAL database, a
+  `mode=ro` open still created both (measured; that case now adds `immutable=1`, which creates
+  nothing). A new test_guards case covers the fill, the note once, an empty string, a kept
+  project, `*` (anchored, with `projects`, on `get_observations`), no row, other tools, no
+  database, APPLIED/DROPPED with the state file removed, the wind-down note in the same object,
+  the off switch, no permission decision on any output, and claude-mem's folder identical before
+  and after; five mutations are all caught. The record is in
+  `Memory/tasks/20261007-081315-claude-mem-search-project-scope/`.
+- **Not reached** (`PROTOCOL.md` §4): it depends on claude-mem's internal table; a session
+  claude-mem has no row for (about 3% of recent ones on the owner's machine), server mode and
+  Bash-run searches stay unscoped; a project name the agent got wrong is kept as given; the
+  interactive permission dialog was not measured.
 
 ## 0.71.0
 

@@ -150,6 +150,13 @@ DEFAULTS = {
     # approval_ttl_min - the same shape as PARALLEL-APPROVED. Forms: `model fable`,
     # `MODEL=fable`, `模型 fable`; the dispatched model must price at or below the approved one.
     "model_approval_glob": "MODEL-APPROVED*",
+    # ⭐ CLAUDE-MEM SEARCHES SCOPED TO THIS PROJECT (0.72.0, owner 2026-10-07; ADR
+    # Memory/tasks/20261007-081315-claude-mem-search-project-scope/ADR.md). A claude-mem `search`
+    # (or a query-form `timeline`) with no project gets the project claude-mem itself recorded for
+    # this session, read read-only from its database, as `updatedInput` with NO permission
+    # decision - measured: the user's permission prompt is left exactly as it was. Nothing happens
+    # where claude-mem is not installed: the rule only matches claude-mem's own tool names.
+    "guard_claude_mem_project": True,
     # ⛔ PAST THE SOFT THRESHOLD, A DISPATCH NEEDS A CURRENT HANDOFF ON DISK. Default ON,
     # and the reasoning is the owner's: the handoff is written when the agent hits STOP,
     # which assumes it still gets a turn - and a real cut-off, the server refusing, gives no
@@ -3751,6 +3758,201 @@ def driving_pct(v):
     return "", round(v.get("pct") or 0)
 
 
+# ⭐ CLAUDE-MEM PROJECT SCOPE (0.72.0). See the `guard_claude_mem_project` default and the ADR.
+CLAUDE_MEM_TOOLS = ("search", "timeline")
+CLAUDE_MEM_ALL = "*"                    # the deliberate every-project search; removed before claude-mem sees it
+
+
+def claude_mem_tool(tool_name, any_tool=False):
+    """'search' / 'timeline' when `tool_name` is a claude-mem tool this gate scopes, else ''.
+    With `any_tool`, the tool part of ANY claude-mem tool - only for removing a `*` project.
+
+    `mcp__plugin_claude-mem_<server>__<tool>` (plugin install) or `mcp__claude-mem__<tool>` (a server
+    configured by hand under that name). ⚠ `plugin_claude-mem-cowork_…` does NOT match: the character
+    after `claude-mem` must be `_`. Any other spelling is left alone (fail open, ADR A1).
+    """
+    s = str(tool_name or "")
+    if not s.startswith("mcp__"):
+        return ""
+    server, sep, tool = s[len("mcp__"):].rpartition("__")
+    if not sep or not tool or not (server == "claude-mem" or server.startswith("plugin_claude-mem_")):
+        return ""
+    return tool if (any_tool or tool in CLAUDE_MEM_TOOLS) else ""
+
+
+def _claude_mem_expand(path):
+    """claude-mem's own `~` rule (13.34.2 `nn()`): `~` and `~/…` (and `~\\…` on Windows) only."""
+    home = os.path.expanduser("~")
+    if path == "~":
+        return home
+    if path.startswith("~/") or (os.name == "nt" and path.startswith("~" + chr(92))):
+        return os.path.join(home, path[2:])
+    return path
+
+
+def claude_mem_db():
+    """Where claude-mem keeps its database, by claude-mem's own rule (13.34.2 `pr()`):
+    `CLAUDE_MEM_DATA_DIR` in the environment, else that key in `~/.claude-mem/settings.json` - read
+    from `env` when `env` holds any `CLAUDE_MEM_*` key, else from the top level - else `~/.claude-mem`.
+    ⛔ Only that one key is read and nothing of the file is ever logged: it holds tokens.
+    """
+    base = os.path.join(os.path.expanduser("~"), ".claude-mem")
+    d = os.environ.get("CLAUDE_MEM_DATA_DIR") or ""
+    if not d:
+        try:
+            with open(os.path.join(base, "settings.json"), encoding="utf-8-sig") as f:   # claude-mem strips a BOM too
+                s = json.load(f)
+            if isinstance(s, dict):
+                env = s.get("env")
+                if isinstance(env, dict) and any(str(k).startswith("CLAUDE_MEM_") for k in env):
+                    s = env
+                v = s.get("CLAUDE_MEM_DATA_DIR")
+                d = v if isinstance(v, str) else ""
+        except (OSError, ValueError):
+            d = ""
+    return os.path.join(_claude_mem_expand(d) if d else base, "claude-mem.db")
+
+
+def claude_mem_project(session_id):
+    """(project, why): the project claude-mem recorded for this Claude session, or ('', reason).
+
+    Read-only (`mode=ro`), one indexed lookup in claude-mem's `sdk_sessions` by the session id the hook
+    payload carries - claude-mem's own decision, so it cannot disagree with claude-mem's naming rule.
+    ⚠ `sqlite3` is imported HERE, not at the top: no other hook call pays for it or can be broken by it.
+    Any failure - no file, a locked or reshaped database, no row yet - returns a reason and the call is
+    left alone (fail open, ADR D2).
+    """
+    if not session_id:
+        return "", "no session id"
+    path = claude_mem_db()
+    if not os.path.isfile(path):
+        return "", "no claude-mem database"
+    # ⛔ NOTHING CREATED in claude-mem's folder. Measured (task scratch/R3/fix_wal_check.py): `mode=ro` on
+    # a WAL database whose `-wal`/`-shm` are absent (claude-mem's worker stopped) CREATES both and leaves
+    # them. `immutable=1` creates nothing - but reads past a live `-wal`, missing its newest rows - so it
+    # is used only when the sidecars are absent, when there is no WAL content to miss. A writer starting
+    # in that instant reads as an older row or `no row`: left alone, fail open.
+    live = all(os.path.exists(path + s) for s in ("-wal", "-shm"))
+    try:
+        import pathlib
+        import sqlite3
+        con = sqlite3.connect(pathlib.Path(path).as_uri() + ("?mode=ro" if live else "?mode=ro&immutable=1"),
+                              uri=True, timeout=1)
+        try:
+            row = con.execute("SELECT project FROM sdk_sessions WHERE content_session_id = ? "
+                              "ORDER BY id DESC LIMIT 1", (str(session_id),)).fetchone()
+        finally:
+            con.close()
+    except Exception as exc:
+        # the message tells a held lock from a renamed table (ADR R1); sqlite's own text carries no path
+        return "", "sqlite %s: %s" % (type(exc).__name__, str(exc)[:120])
+    if not row or not isinstance(row[0], str) or not row[0].strip():
+        return "", "no row for this session"
+    return row[0].strip(), ""
+
+
+def _claude_mem_state(sdir, sid, tool_use_id):
+    safe = re.sub(r"[^A-Za-z0-9_-]", "", str(tool_use_id or ""))[:80] or "none"
+    return state_path(sdir, sid, "cm-%s" % safe)
+
+
+def claude_mem_scope(payload, root, sdir, cfg, wind=None):
+    """PreToolUse on a claude-mem search: scope it to this project. True when it printed the output.
+
+    ADR D1/D3: an anchored `timeline` (a lookup by id) and a call carrying `projects` are left alone; a
+    given `project` is kept; `project: "*"` is removed (every project); no project → the recorded one.
+    ⭐ `*` IS REMOVED FROM EVERY claude-mem TOOL, not only the two scoped ones (refuter R3 F2): it is this
+    gate's own sentinel - the note below teaches it - and a model carrying it on from `search` into an
+    anchored `timeline` or `get_observations` would send a literal "*", which claude-mem matches against
+    nothing ("Observation #123 not found" for a record that exists). No claude-mem project is named `*`.
+    ⛔ NEVER A permissionDecision. Measured (RESULT.md §3): `updatedInput` alone rewrites the call and
+    leaves the permission prompt exactly as it was; `allow` would skip a prompt the user's settings ask
+    for. Off switch and a session with no start stamp: log what would have happened, change nothing.
+    """
+    tool = claude_mem_tool(payload.get("tool_name"), any_tool=True)
+    ti = payload.get("tool_input")
+    if not tool or not isinstance(ti, dict):
+        return False
+    sid = payload.get("session_id")
+    given = ti.get("project")
+    given = given.strip() if isinstance(given, str) else given
+    if given != CLAUDE_MEM_ALL:
+        if tool not in CLAUDE_MEM_TOOLS:
+            return False
+        if tool == "timeline" and ti.get("anchor") not in (None, ""):
+            log(root, "CLAUDE-MEM-ANCHORED %s - a lookup by id, left alone" % tool)
+            return False
+        if "projects" in ti:
+            log(root, "CLAUDE-MEM-PROJECT-KEPT %s carries projects - left alone" % tool)
+            return False
+        if given not in (None, ""):
+            log(root, "CLAUDE-MEM-PROJECT-KEPT %s project=%r" % (tool, given))
+            return False
+    if given == CLAUDE_MEM_ALL:
+        new, project, what = {k: v for k, v in ti.items() if k != "project"}, None, "every project"
+    else:
+        project, why = claude_mem_project(sid)
+        if not project:
+            log(root, "CLAUDE-MEM-PROJECT-UNKNOWN %s - %s; left alone" % (tool, why))
+            return False
+        new, what = dict(ti, project=project), "project %r" % project
+    if not cmd_guards._truthy(cfg.get("guard_claude_mem_project"), True):
+        log(root, "CLAUDE-MEM-SCOPE-OFF %s would have scoped to %s" % (tool, what))
+        return False
+    if session_start(sdir, sid) is None:
+        log(root, "ADVISORY(no-session-stamp) CLAUDE-MEM %s would have scoped to %s" % (tool, what))
+        return False
+    note = ""
+    if project:
+        mark = state_path(sdir, sid, "cm-noted-%s" % re.sub(r"[^A-Za-z0-9_-]", "",
+                                                           str(payload.get("agent_id") or "main"))[:60])
+        if not os.path.exists(mark):
+            note = ("dispatch-guard scoped this claude-mem %s to project %r - the project claude-mem "
+                    "recorded for this session. To search every project, pass project \"*\"; to search "
+                    "another project, name it." % (tool, project))
+            try:
+                with open(mark, "w", encoding="utf-8") as f:
+                    f.write(project)
+            except OSError:
+                pass
+    try:
+        with open(_claude_mem_state(sdir, sid, payload.get("tool_use_id")), "w", encoding="utf-8") as f:
+            json.dump({"project": project}, f)
+    except OSError:
+        pass
+    out = {"hookSpecificOutput": {"hookEventName": payload.get("hook_event_name", "PreToolUse"),
+                                  "updatedInput": new}}
+    ctx = "\n\n".join(t for t in (note, wind) if t)
+    if ctx:
+        out["hookSpecificOutput"]["additionalContext"] = ctx
+    log(root, "%s %s %s" % ("CLAUDE-MEM-SCOPED" if project else "CLAUDE-MEM-ALL-PROJECTS", tool, what))
+    print(json.dumps(out, ensure_ascii=False))
+    return True
+
+
+def claude_mem_check(payload, root, sdir):
+    """PostToolUse on a claude-mem search this gate scoped: did the tool run with that project?
+
+    Logs CLAUDE-MEM-SCOPE-APPLIED or CLAUDE-MEM-SCOPE-DROPPED - the line that makes ADR R3 falsifiable
+    (a later Claude Code, or another hook's decision, could drop an updatedInput silently).
+    """
+    sid = payload.get("session_id")
+    path = _claude_mem_state(sdir, sid, payload.get("tool_use_id"))
+    try:
+        with open(path, encoding="utf-8") as f:
+            expected = json.load(f).get("project")
+    except (OSError, ValueError):
+        return
+    ti = payload.get("tool_input") if isinstance(payload.get("tool_input"), dict) else {}
+    ran = ti.get("project")
+    ok = (ran == expected) if expected is not None else ("project" not in ti)
+    log(root, "CLAUDE-MEM-SCOPE-%s expected=%r ran=%r" % ("APPLIED" if ok else "DROPPED", expected, ran))
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
 # ⭐ THIS PLUGIN'S SKILLS, for the on-screen notice when one is invoked (0.71.0).
 OWN_SKILLS = ("dispatch-protocol", "unattended-work", "cowork")
 
@@ -4478,6 +4680,18 @@ def main():
             log(root, "FILE-GUARDS-FAILED %r" % (exc,))
         return emit_with(event, None, wind)
 
+    # ⭐ 0.72.0: a claude-mem memory search, scoped to this project (ADR
+    # Memory/tasks/20261007-081315-claude-mem-search-project-scope/ADR.md). ⛔ WRAPPED like the
+    # branches above: a crash here must leave the call exactly as it came - fail open.
+    if claude_mem_tool(tool, any_tool=True):
+        try:
+            if event == "PreToolUse" and claude_mem_scope(payload, root, sdir, cfg, wind):
+                return
+            if event == "PostToolUse":
+                claude_mem_check(payload, root, sdir)
+        except Exception as exc:
+            log(root, "CLAUDE-MEM-SCOPE-FAILED %r" % (exc,))
+
     if tool != "Agent":
         # ⛔ THIS RETURN IS WHERE THE INCIDENT WENT. Every Read and every Write of that
         # session arrived here and left again. The gate saw all of them and said nothing.
@@ -4718,6 +4932,36 @@ def selftest():
         for other in ("other-plugin:cowork", "mattpocock-skills:tdd", "cowork-extra", "",
                       None, "dispatch-guard:install", "dispatch-guard:COWORK"):
             assert skill_active_notice(other) == "", other
+        # ⭐ 0.72.0: which tool names the claude-mem scope touches - claude-mem's own search and
+        # timeline only, never another plugin's `search`, never claude-mem-cowork, never Bash.
+        for name, want in (("mcp__plugin_claude-mem_mcp-search__search", "search"),
+                           ("mcp__plugin_claude-mem_mcp-search__timeline", "timeline"),
+                           ("mcp__claude-mem__search", "search"),
+                           ("mcp__plugin_claude-mem_mcp-search__get_observations", ""),
+                           ("mcp__plugin_claude-mem_mcp-search__smart_search", ""),
+                           ("mcp__plugin_claude-mem-cowork_x__search", ""),
+                           ("mcp__plugin_other_server__search", ""),
+                           ("mcp__claude-mem-extra__search", ""),
+                           ("Bash", ""), ("", ""), (None, "")):
+            assert claude_mem_tool(name) == want, (name, claude_mem_tool(name))
+        # ...and, for removing a `*` project only, any claude-mem tool - still never a lookalike.
+        assert claude_mem_tool("mcp__plugin_claude-mem_mcp-search__get_observations", any_tool=True) == "get_observations"
+        for name in ("mcp__plugin_claude-mem-cowork_x__search", "mcp__plugin_other_server__get_observations",
+                     "mcp__claude-mem-extra__search", "mcp__plugin_claude-mem_x__", "Bash"):
+            assert claude_mem_tool(name, any_tool=True) == "", name
+        home = os.path.expanduser("~")
+        assert _claude_mem_expand("~") == home
+        assert _claude_mem_expand("~/x/y") == os.path.join(home, "x/y")
+        assert _claude_mem_expand("~other/x") == "~other/x", "only ~ and ~/ expand, like claude-mem"
+        _old = os.environ.get("CLAUDE_MEM_DATA_DIR")
+        os.environ["CLAUDE_MEM_DATA_DIR"] = "~/cm-data"
+        try:
+            assert claude_mem_db() == os.path.join(home, "cm-data", "claude-mem.db"), claude_mem_db()
+        finally:
+            if _old is None:
+                os.environ.pop("CLAUDE_MEM_DATA_DIR", None)
+            else:
+                os.environ["CLAUDE_MEM_DATA_DIR"] = _old
         assert not unattended_word("anything", {"unattended_words": [r"["]}), "a bad regex raised"
         # (2) The ask text and the refusal come from ONE computation, so they cannot disagree
         # about a price - and the ask names the fallback, because the same text is the tool

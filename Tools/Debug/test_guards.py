@@ -23,6 +23,7 @@ so the branch cases need no commit, no identity and no signing key.
 """
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -936,6 +937,159 @@ def case_skill_active_notice(gate, sdir, root):
         gate.skill_active_notice = real
     print("ok - the three dispatch-guard skills announce themselves when invoked, nothing else does, "
           "mutation-checked")
+
+
+def case_claude_mem_project(gate, sdir, root):
+    """⭐ 0.72.0: claude-mem searches scoped to the project claude-mem recorded for this session.
+
+    Owner, 2026-10-07: one fixed hook - claude-mem present, the search names the current project;
+    absent, nothing happens. A fake claude-mem database (CLAUDE_MEM_DATA_DIR points at it) holds the
+    one table and the two columns the gate reads. Driven through main() with real payloads.
+    ⛔ The output must NEVER carry a permissionDecision: measured, `allow` skips a prompt the user's
+    settings ask for, while `updatedInput` alone leaves the prompt as it was.
+    """
+    import sqlite3
+    sid = "s-claude-mem"
+    stamp_session(gate, sdir, sid)
+    with scratch_dir("claude-mem-data") as cmdir:      # kept after the case, like every scratch dir
+        pass
+    dbfile = os.path.join(cmdir, "claude-mem.db")
+    con = sqlite3.connect(dbfile)
+    con.execute("PRAGMA journal_mode=WAL")      # like the real one; closing the last connection removes the sidecars
+    con.execute("CREATE TABLE sdk_sessions (id INTEGER PRIMARY KEY, content_session_id TEXT, project TEXT)")
+    con.execute("INSERT INTO sdk_sessions (content_session_id, project) VALUES (?, ?)", (sid, "my-repo"))
+    con.execute("INSERT INTO sdk_sessions (content_session_id, project) VALUES (?, ?)", ("s-other", "elsewhere"))
+    con.commit()
+    con.close()
+
+    def data_dir():
+        with open(dbfile, "rb") as f:
+            return sorted(os.listdir(cmdir)), hashlib.sha256(f.read()).hexdigest()
+
+    before = data_dir()
+    assert before[0] == ["claude-mem.db"], before
+    old_env = os.environ.get("CLAUDE_MEM_DATA_DIR")
+    os.environ["CLAUDE_MEM_DATA_DIR"] = cmdir
+    SEARCH = "mcp__plugin_claude-mem_mcp-search__search"
+    TIMELINE = "mcp__plugin_claude-mem_mcp-search__timeline"
+    n = [0]
+
+    def call(tool, ti, session=sid, event="PreToolUse", agent=None, uid=None):
+        n[0] += 1
+        p = {"hook_event_name": event, "tool_name": tool, "cwd": root, "session_id": session,
+             "tool_use_id": uid or "toolu_cm%d" % n[0], "tool_input": ti}
+        if agent:
+            p["agent_id"] = agent
+        r = run_gate(gate, p)
+        # ⛔ on EVERY call, not only the first: a decision on any of them widens what the user allowed.
+        assert "permissionDecision" not in hso(r), (tool, ti, r)
+        return r
+
+    def updated(r):
+        return hso(r).get("updatedInput") if isinstance(r, dict) else None
+
+    try:
+        # 1. no project -> the recorded one, the rest of the input kept, a note, NO decision.
+        r = call(SEARCH, {"query": "install", "limit": 3})
+        assert updated(r) == {"query": "install", "limit": 3, "project": "my-repo"}, r
+        assert "permissionDecision" not in hso(r), "a permission decision widens what the user allowed"
+        assert "project \"*\"" in (hso(r).get("additionalContext") or ""), r
+        assert "CLAUDE-MEM-SCOPED search project 'my-repo'" in gitlog(root), gitlog(root)[-300:]
+        # ...the note once per session and agent; a sub-agent hears it once too.
+        r = call(SEARCH, {"query": "again"})
+        assert updated(r) == {"query": "again", "project": "my-repo"} and not hso(r).get("additionalContext"), r
+        r = call(SEARCH, {"query": "sub"}, agent="agent-1")
+        assert "project \"*\"" in (hso(r).get("additionalContext") or ""), r
+        # ...an empty project is "no project".
+        assert updated(call(SEARCH, {"query": "x", "project": "  "}))["project"] == "my-repo"
+        # 2. a project given -> kept, untouched (another project on purpose).
+        r = call(SEARCH, {"query": "x", "project": "elsewhere"})
+        assert not updated(r), r
+        assert "CLAUDE-MEM-PROJECT-KEPT search project='elsewhere'" in gitlog(root)
+        # 3. project "*" -> removed: every project. Needs no lookup, so it works without a row too.
+        r = call(SEARCH, {"query": "x", "project": "*"}, session="s-no-row")
+        assert not updated(r), "an unstamped session must stay advisory: %r" % (r,)
+        r = call(SEARCH, {"query": "x", "project": " * "})
+        assert updated(r) == {"query": "x"}, r
+        assert "CLAUDE-MEM-ALL-PROJECTS search every project" in gitlog(root)
+        # 4. timeline: query form scoped; anchored (a lookup by id) left alone.
+        assert updated(call(TIMELINE, {"query": "deploy"})) == {"query": "deploy", "project": "my-repo"}
+        assert not updated(call(TIMELINE, {"anchor": 1234}))
+        assert not updated(call(TIMELINE, {"anchor": "S12", "query": "x"}))
+        assert "CLAUDE-MEM-ANCHORED timeline" in gitlog(root)
+        # 5. `projects` (plural) left alone.
+        assert not updated(call(SEARCH, {"query": "x", "projects": ["a", "b"]}))
+        # ...but the `*` the note teaches is removed wherever it is carried to (refuter R3 F2): an
+        # anchored timeline, a call with `projects`, and claude-mem tools this gate never scopes.
+        assert updated(call(TIMELINE, {"anchor": 1234, "project": "*"})) == {"anchor": 1234}
+        assert updated(call(SEARCH, {"query": "x", "projects": ["a"], "project": "*"})) == {"query": "x", "projects": ["a"]}
+        GET = "mcp__plugin_claude-mem_mcp-search__get_observations"
+        assert updated(call(GET, {"ids": [5], "project": "*"})) == {"ids": [5]}
+        assert not updated(call(GET, {"ids": [5]})), "a tool this gate does not scope got a project"
+        assert not updated(call(GET, {"ids": [5], "project": "my-repo"}))
+        assert not updated(call("mcp__plugin_claude-mem-cowork_x__search", {"query": "x", "project": "*"}))
+        # 6. no row for this session -> left alone, and said why.
+        stamp_session(gate, sdir, "s-no-row")
+        r = call(SEARCH, {"query": "x"}, session="s-no-row")
+        assert not updated(r), r
+        assert "CLAUDE-MEM-PROJECT-UNKNOWN search - no row for this session" in gitlog(root)
+        # 7. never another tool: another plugin's `search`, claude-mem-cowork, a non-scoped claude-mem tool.
+        for tool in ("mcp__plugin_other_server__search", "mcp__plugin_claude-mem-cowork_x__search",
+                     "mcp__plugin_claude-mem_mcp-search__get_observations"):
+            assert not updated(call(tool, {"query": "x"})), tool
+        # 8. claude-mem absent (no database) -> nothing, and no error.
+        os.environ["CLAUDE_MEM_DATA_DIR"] = os.path.join(cmdir, "not-there")
+        r = call(SEARCH, {"query": "x"})
+        assert not updated(r), r
+        assert "CLAUDE-MEM-PROJECT-UNKNOWN search - no claude-mem database" in gitlog(root)
+        os.environ["CLAUDE_MEM_DATA_DIR"] = cmdir
+        # 9. PostToolUse: the tool ran with the project -> APPLIED; without it -> DROPPED.
+        call(SEARCH, {"query": "p"}, uid="toolu_cmPOST")
+        stash = gate._claude_mem_state(sdir, sid, "toolu_cmPOST")
+        assert os.path.exists(stash), stash
+        call(SEARCH, {"query": "p", "project": "my-repo"}, event="PostToolUse", uid="toolu_cmPOST")
+        assert "CLAUDE-MEM-SCOPE-APPLIED expected='my-repo' ran='my-repo'" in gitlog(root), gitlog(root)[-300:]
+        assert not os.path.exists(stash), "the PostToolUse check left its state file behind"
+        call(SEARCH, {"query": "q"}, uid="toolu_cmDROP")
+        call(SEARCH, {"query": "q"}, event="PostToolUse", uid="toolu_cmDROP")
+        assert "CLAUDE-MEM-SCOPE-DROPPED expected='my-repo' ran=None" in gitlog(root), gitlog(root)[-300:]
+        # 10. the off switch: logged, nothing changed.
+        cfgfile = os.path.join(root, ".claude", "dispatch-guard.json")
+        os.makedirs(os.path.dirname(cfgfile), exist_ok=True)
+        with open(cfgfile, "w", encoding="utf-8") as f:
+            json.dump({"dispatch": {"guard_claude_mem_project": False}}, f)
+        try:
+            assert not updated(call(SEARCH, {"query": "x"}))
+            assert "CLAUDE-MEM-SCOPE-OFF search would have scoped to project 'my-repo'" in gitlog(root)
+        finally:
+            os.remove(cfgfile)
+        # 11. the wind-down note rides in the same one object - the scoped output must not swallow it.
+        real_wind = gate.wind_down_note
+        gate.wind_down_note = lambda *_a, **_k: "WIND-DOWN-PROBE"
+        try:
+            r = call(SEARCH, {"query": "wind"})
+            assert updated(r) and "WIND-DOWN-PROBE" in (hso(r).get("additionalContext") or ""), r
+        finally:
+            gate.wind_down_note = real_wind
+        # 12. ⛔ claude-mem's folder untouched: no file created (no -wal/-shm beside a WAL database whose
+        # sidecars were absent - refuter R3 F1) and the database byte-identical.
+        assert data_dir() == before, (before, data_dir())
+        # ⛔ MUTATION: take the rule away and the fill must disappear - the assertions above could
+        # otherwise be passing on some other branch that happens to print.
+        real = gate.claude_mem_tool
+        gate.claude_mem_tool = lambda *_a, **_k: ""
+        try:
+            assert not updated(call(SEARCH, {"query": "x"})), "scoped with the rule removed"
+        finally:
+            gate.claude_mem_tool = real
+        assert updated(call(SEARCH, {"query": "x"})), "restoring the rule did not restore the scope"
+    finally:
+        if old_env is None:
+            os.environ.pop("CLAUDE_MEM_DATA_DIR", None)
+        else:
+            os.environ["CLAUDE_MEM_DATA_DIR"] = old_env
+    print("ok - claude-mem searches get this session's recorded project, with no permission decision; kept, "
+          "*, anchored, projects, no row, no claude-mem, other tools, post-check, off switch - mutation-checked")
 
 
 def case_require_skills(gate, sdir, root):
@@ -2915,6 +3069,7 @@ def main():
         case_unattended_first(gate, sdir, root)
         case_require_skills(gate, sdir, root)
         case_skill_active_notice(gate, sdir, root)
+        case_claude_mem_project(gate, sdir, root)
         case_skill_price_table(gate)
         case_price_refresh(gate, sdir)
         case_handoff_past_soft(gate, sdir, root)

@@ -67,6 +67,7 @@ skill 是模型看了描述之後**自己決定**要不要用；文件是模型*
 | ⭐ **模型太貴**的子代理派工：有人在就**跳確認框問你**，沒人在（headless、或你宣告無人職守）就**拒絕**，任務資料夾有你寫的 `MODEL-APPROVED` 就直接放行 | `max_model_price`，預設 **5**（每百萬輸入 token 美元）；`over_price` auto／ask／deny（0.70） |
 | ⛔ 拒絕**改寫一個自己宣告只能追加的檔案** —— `Write`、`Edit`、shell 一律 | `guard_append_only`（0.63.0）。第一個標題含 `append-only`，或帶 `<!-- append-only -->`。追加（`>>`、`tee -a`、接在最後一行之後的 Edit）放行 |
 | ⭐ 這個 repo 裡有**另一個活著的 session**、而你沒載入 `cowork`，第一次寫入或 commit **拒絕一次** | `guard_cowork_first`、`peer_alive_min`（15 分鐘）。只是提醒，一個 session 一次 |
+| ⭐ **claude-mem 的記憶搜尋沒指定專案，自動限定在本專案** —— 沒裝 claude-mem 就什麼都不做 | `guard_claude_mem_project`（0.72.0）。不拒絕、不跳過權限提示。見下方「claude-mem 搜尋限定在本專案」 |
 
 ⭐ **價格從 Anthropic 官方定價頁抓，不是手打的。**
 `hooks/model_pricing.py` 把
@@ -805,6 +806,33 @@ cowork 只指過去、不重述 —— 一條規則只有一份正本。`Tools/D
 心跳與 `SendMessage` 在那裡都不存在）。
 
 `skills/cowork/SKILL.md` 是入口；規則本身怎麼被強制、以及誠實列出的缺口，在 `PROTOCOL.md` §3–§4。
+
+
+## claude-mem 搜尋限定在本專案（0.72.0）
+
+[claude-mem](https://github.com/thedotmack/claude-mem) 的記憶搜尋（`search`，以及用 `query` 搜尋的
+`timeline`）沒帶 `project` 時，會把**所有專案**的紀錄混在一起回來 —— 別的專案的結果看起來跟本專案的
+一模一樣。gate 會在這種呼叫送出前補上本專案的名字。
+
+- **專案名從哪裡來：** claude-mem 自己為這個 session 記的那一筆（它資料庫的 `sdk_sessions` 表，用
+  session id 查）。gate 只用唯讀方式打開那個資料庫，從不寫入，也不在它旁邊建立任何檔案；也不自己推算
+  專案名 —— 推算的規則一旦跟 claude-mem 不同，就會安靜地搜錯專案。
+- **沒裝 claude-mem 就什麼都不做。** 規則只認 claude-mem 自己的工具名，不讀任何檔案。日後才裝
+  claude-mem，第一次搜尋就開始生效，不用重裝 dispatch-guard，也不用改設定。
+- **權限提示不變。** gate 只改輸入，不給權限決定；透過 SDK host 實測，原本會跳權限提示的，照樣跳，
+  提示裡看到的就是補好專案的那個輸入。
+- **要搜別的專案或全部：** 呼叫自己帶的 `project` 一律保留；`project: "*"` 會被拿掉，變成不限專案 ——
+  任何 claude-mem 工具都一樣（例如接著用的 `get_observations`），因為 `*` 是 gate 教的寫法，claude-mem
+  本身不認得。帶 anchor 的 `timeline`（用 id 查一筆的前後文）和帶 `projects` 的呼叫不補專案。gate 第一次
+  補專案時會告訴 agent 這兩種寫法（每個 session、每個子代理一次）。
+- **不確定就不碰：** 找不到資料庫、這個 session 在 claude-mem 裡還沒有紀錄、表的結構變了 —— 呼叫照原樣
+  送出，log 寫 `CLAUDE-MEM-PROJECT-UNKNOWN` 和原因。呼叫順利跑完後 log 再寫一行 `CLAUDE-MEM-SCOPE-APPLIED`
+  （真的用了補上的專案）或 `-DROPPED`（被別的東西換掉了）；失敗或被拒的呼叫不會有這一行。
+- **關掉：** 設定檔 `guard_claude_mem_project` 設 `false`，呼叫就完全不改。它仍會唯讀查一次專案名，好讓
+  log 寫出它本來會做什麼（`CLAUDE-MEM-SCOPE-OFF`）。
+
+⚠ **它管不到的：** 用 Bash 跑的 claude-mem 搜尋（`npx claude-mem search`、claude-mem-cowork 外掛）、
+claude-mem 的 server 模式、agent 自己寫錯的專案名。完整清單在 `PROTOCOL.md` §4。
 
 
 ## 怎麼看那些數字
@@ -1827,6 +1855,7 @@ one are byte-identical on screen. Each has its own switch; all default to on.
 | ⭐ a sub-agent whose model **costs too much**: **asks you** (a permission dialog) when a person can answer, **refuses** when nobody can (headless, or a run you declared unattended), and lets it through when your `MODEL-APPROVED` is in the task folder | `max_model_price`, default **5** ($/M input tokens); `over_price` auto / ask / deny (0.70) |
 | ⛔ refuses a **rewrite of a file that declares itself append-only** — `Write`, `Edit` and the shell alike | `guard_append_only` (0.63.0). First heading contains `append-only`, or the file carries `<!-- append-only -->`. Appends (`>>`, `tee -a`, an Edit after the last line) pass |
 | ⭐ **another live session in this repository** and `cowork` not loaded: the first write or commit is refused **once** | `guard_cowork_first`, `peer_alive_min` (15 min). A nag, once per session |
+| ⭐ **a claude-mem memory search with no project is scoped to this project** — without claude-mem installed it does nothing | `guard_claude_mem_project` (0.72.0). Never refuses, never skips the permission prompt. See "claude-mem searches scoped to this project" below |
 
 ⛔ **Every one of these exists because the rule was already written down, read, and broken
 anyway.** Four were broken in ONE session on 2026-08-27, two of them by the agent that had
@@ -2600,6 +2629,42 @@ skill assumes do not exist).
 
 `skills/cowork/SKILL.md` is the entry point; how the two rules are enforced, and the honest
 gaps, are in `PROTOCOL.md` §3–§4.
+
+
+## claude-mem searches scoped to this project (0.72.0)
+
+A [claude-mem](https://github.com/thedotmack/claude-mem) memory search (`search`, or a
+`timeline` that searches by `query`) with no `project` brings back records from **every
+project** mixed together — and another project's results look exactly like this one's. The
+gate adds this project's name before such a call goes out.
+
+- **Where the name comes from:** the row claude-mem itself recorded for this session (the
+  `sdk_sessions` table in its database, looked up by session id). The gate opens that database
+  read-only, never writes to it, creates no file beside it, and never works the name out on its
+  own — a rule of its own that drifted from claude-mem's would quietly search the wrong project.
+- **Without claude-mem installed, it does nothing.** The rule matches only claude-mem's own tool
+  names and reads no file. Install claude-mem later and the first search is scoped, with nothing
+  to reinstall or reconfigure.
+- **The permission prompt is unchanged.** The gate changes the input and gives no permission
+  decision; measured through the SDK host, a call that would have prompted still prompts, and
+  the prompt shows the scoped input.
+- **To search another project, or all of them:** a `project` the call names is always kept;
+  `project: "*"` is removed so the call is not limited to any project — on every claude-mem tool
+  (a `get_observations` that follows, say), because `*` is the gate's own form and claude-mem
+  does not know it. An anchored `timeline` (the context around one record, by id) and a call
+  carrying `projects` get no project filled. The first time the gate fills a project it tells
+  the agent both forms (once per session and sub-agent).
+- **When unsure, it does nothing:** no database, no row for this session in claude-mem yet, a
+  reshaped table — the call goes out as written and the log says `CLAUDE-MEM-PROJECT-UNKNOWN`
+  and why. After a completed call the log adds `CLAUDE-MEM-SCOPE-APPLIED` (the filled project
+  was used) or `-DROPPED` (something replaced it); a failed or declined call gets no such line.
+- **To turn it off:** set `guard_claude_mem_project` to `false` and no call is changed. It still
+  looks the project up, read-only, so the log can say what it would have done
+  (`CLAUDE-MEM-SCOPE-OFF`).
+
+⚠ **What it does not reach:** claude-mem searches run through Bash (`npx claude-mem search`,
+the claude-mem-cowork plugin), claude-mem's server mode, and a project name the agent got
+wrong itself. The full list is in `PROTOCOL.md` §4.
 
 
 ## Seeing the numbers
