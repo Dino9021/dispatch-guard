@@ -247,8 +247,9 @@ and add only what several sessions change about it.
    hardware: `reference/cross-machine.md`, and run its opening checklist BEFORE the move.**
    Every item on it is cheap in advance and expensive afterwards - the write-test is five
    commands, and skipping it cost most of an hour of two-sided silence.
-4. Before a long or unattended task: `unattended-work` and `dispatch-protocol` first;
-   `reference/longrunning.md` for what several sessions add.
+4. Before an unattended task - the owner said unattended, 無人職守 or another of
+   `unattended-work`'s trigger words - load `unattended-work`; before dispatching,
+   `dispatch-protocol`; `reference/longrunning.md` for what several sessions add.
 5. When something looks wrong: find the shape in the table above before theorising.
 6. When this file is wrong, the fix goes to the dispatch-guard repository and arrives by
    plugin update - never to an installed copy, and never as a second file under this name.

@@ -3751,6 +3751,30 @@ def driving_pct(v):
     return "", round(v.get("pct") or 0)
 
 
+# ⭐ THIS PLUGIN'S SKILLS, for the on-screen notice when one is invoked (0.71.0).
+OWN_SKILLS = ("dispatch-protocol", "unattended-work", "cowork")
+
+
+def skill_active_notice(name):
+    """The on-screen line for an invoked skill of THIS plugin, or "" (0.71.0, owner 2026-10-07:
+    every skill should announce itself with `⭐ <skill> ACTIVE` when it is invoked).
+
+    `dispatch-guard:cowork` and a bare `cowork` count; `other-plugin:cowork` does not - matched on
+    the name as written, never through cmd_guards.skill_slug(), which strips every prefix.
+
+    ⭐ IT SAYS THE CALL HAPPENED, and that is all it can say. It fires on PostToolUse (a declined
+    call fires nothing). Whether the agent then FOLLOWS the skill is the agent's business:
+    unattended-work also has the agent print its own ACTIVE line, and measured 2026-10-07 a model
+    printed that line twice with no Skill call at all - a resumed session repeating what it had
+    printed before. So this line is the evidence of an invocation; the agent's line is a claim.
+    """
+    s = str(name or "").strip()
+    for own in OWN_SKILLS:
+        if s in (own, "dispatch-guard:" + own):
+            return "⭐ %s ACTIVE — dispatch-guard saw the skill invoked" % own
+    return ""
+
+
 def unattended_word(text, cfg, log_to=None):
     """The first configured "nobody is watching" word found in `text`, or "" (0.70, ADR D0)."""
     for pat in cfg.get("unattended_words") or ():
@@ -4426,6 +4450,16 @@ def main():
             cmd_guards.note_skill(payload, guard_ctx(root, sdir, sid, cfg))
         except Exception as exc:
             log(root, "SKILL-NOTE-FAILED %r" % (exc,))
+        # ⭐ 0.71.0: one of THIS plugin's skills was invoked -> say so on the screen.
+        try:
+            ti = payload.get("tool_input")
+            notice = skill_active_notice(ti.get("skill") if isinstance(ti, dict) else None)
+        except Exception as exc:
+            log(root, "SKILL-NOTICE-FAILED %r" % (exc,))
+            notice = ""
+        if notice:
+            log(root, "SKILL-ACTIVE-NOTICE %s" % notice.split(" ACTIVE")[0][2:])
+            print(json.dumps({"systemMessage": notice}, ensure_ascii=False))
         return
 
     # ⭐ THE FILE-TOOL GUARDS (0.63.0): a Write/Edit that rewrites a file declaring itself
@@ -4675,6 +4709,15 @@ def selftest():
             "a file name read as a declaration (`.` is a word boundary)"
         assert unattended_word("Run it unattended.", wcfg), "a sentence-final word was missed"
         assert not unattended_word("attended by the owner", wcfg)
+        # ⭐ 0.71.0: the invoked-skill notice is for THIS plugin's three skills only, under either
+        # spelling, and never for another plugin's skill that happens to share a bare name.
+        for own in OWN_SKILLS:
+            for spelled in (own, "dispatch-guard:" + own, "  dispatch-guard:%s " % own):
+                assert skill_active_notice(spelled) == \
+                    "⭐ %s ACTIVE — dispatch-guard saw the skill invoked" % own, spelled
+        for other in ("other-plugin:cowork", "mattpocock-skills:tdd", "cowork-extra", "",
+                      None, "dispatch-guard:install", "dispatch-guard:COWORK"):
+            assert skill_active_notice(other) == "", other
         assert not unattended_word("anything", {"unattended_words": [r"["]}), "a bad regex raised"
         # (2) The ask text and the refusal come from ONE computation, so they cannot disagree
         # about a price - and the ask names the fallback, because the same text is the tool

@@ -33,6 +33,30 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.71.0
+
+擁有者 2026-10-07：「更新過後開 session，一開始的時候還是會顯示 ⭐ unattended-work ACTIVE，但應該已經改成
+不強制在開始時載入，改為關鍵詞呼叫」，以及「希望三個 skill 都在被呼叫的時候顯示 ⭐ {skill name} ACTIVE」。
+
+- **診斷：不是 hook。** 追了 dev-workstation 那個 session 的逐字稿：它跑的是 0.70 以後的 hook，開場提醒
+  沒有發出（`announce_unattended_work` 已關）；自提醒關掉以來的兩次 ACTIVE 行，前面**都沒有任何 Skill 呼叫**，
+  是模型自己印的。推它的有三樣，量不出是哪一樣：擁有者的 `~/.claude/CLAUDE.md` 要求「超過幾步的任務前先叫
+  unattended-work」並且「開場沒看到確認行就去讀 SKILL.md 照做」；skill 自己的描述寫「任何超過幾步的任務一開始
+  就用」；以及那個恢復的長對話之前已經印過很多次。
+- **三支 skill 被叫到時，hook 在畫面上顯示 `⭐ <skill> ACTIVE — dispatch-guard saw the skill invoked`。**
+  在 PostToolUse 的 `Skill` 分支、記錄完呼叫之後發出；只認這個外掛的三支（裸名或 `dispatch-guard:` 前綴），
+  別的外掛同名的 skill 不算。它證明的是「呼叫發生了」；`unattended-work` 要 agent 自己印的那行是 agent 的說法，
+  兩行意思不同。test_guards 新案例：三支兩種寫法都顯示、其他 skill 不顯示、仍有記錄，並做突變檢查（拿掉通知
+  函式，畫面訊息必須消失）。
+- **`unattended-work` 的描述改成只看關鍵詞：** 無人職守、無人值守、無人模式、自動模式、做完再叫我、unattended，
+  或直接指名；拿掉「任何超過幾步的任務一開始就用」，「審查波之前、停下來之前再用一次」限定在已宣告的 run。
+  §19 那段「開場沒有 ACTIVE 行就是沒載入、印出的那行就是檢查」改寫成兩行 ACTIVE 各代表什麼（中文副本同步）。
+  cowork「怎麼用」第 4 點同樣改成看關鍵詞（中英）。README 的 unattended-work 流程圖觸發節點、三張圖的載入框、
+  以及「叫過 vs 照做了」那段同步更新；六張重新渲染通過。
+- **沒改的：** 開場提醒 `announce_unattended_work` 的預設仍是開（「沒設定就當開」是記錄過的判斷，擁有者的機器
+  已經關掉）。新描述的觸發效果沒有量測：在這台機器上，擁有者的 CLAUDE.md 也會載入到巢狀 session，
+  在那兩行改掉之前量不出描述本身的效果。
+
 ## 0.70.5
 
 擁有者 2026-10-06：「沒修正的項目請修正」—— 0.70.4 報告裡「沒做的」三項。
@@ -3184,6 +3208,37 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.71.0
+
+Owner, 2026-10-07: after updating, a new session still opens with "⭐ unattended-work ACTIVE", though
+it should load on keywords now rather than at the start; and every skill should show
+"⭐ {skill name} ACTIVE" when it is invoked.
+
+- **Diagnosis: not the hook.** The dev-workstation session's transcript: it ran a 0.70+ hook, and the
+  SessionStart reminder was not emitted (`announce_unattended_work` is off). Both ACTIVE lines since the
+  reminder was switched off were printed with **no Skill call at all**. Three things push toward the line
+  and nothing measured separates them: the owner's `~/.claude/CLAUDE.md` ("invoke unattended-work before
+  any task longer than a few steps"; "if the confirmation line did not print at session start, read
+  SKILL.md and follow it"), the skill's own description ("Use at the START of any task that will run
+  longer than a few steps"), and a long resumed conversation that had printed it many times.
+- **When any of the three skills is invoked, the hook shows `⭐ <skill> ACTIVE — dispatch-guard saw the
+  skill invoked`.** Emitted on PostToolUse for `Skill`, after the invocation is recorded; only this
+  plugin's three, bare or `dispatch-guard:`-prefixed, never another plugin's skill sharing a bare name. It
+  proves the call happened; the line `unattended-work` has the agent print is the agent's claim, and the
+  two mean different things. New test_guards case: the three in both spellings get it, others do not,
+  the invocation is still recorded, and a mutation (the notice function switched off) makes it vanish.
+- **`unattended-work`'s description is keyword-only:** unattended, 無人職守, 無人值守, 無人模式, 自動模式,
+  做完再叫我, or the skill named; "at the START of any task longer than a few steps" is gone, and the "use
+  it again before a review wave / before stopping" clauses apply once a run has been declared. §19's "no
+  ACTIVE line at session start = nothing loaded it; the printed line is the check" now says what each of
+  the two ACTIVE lines means (zh-TW copy too). cowork "How to use" item 4 likewise (both languages).
+  README: the unattended-work chart's trigger, all three charts' load boxes, and the "invoked vs adopted"
+  paragraph; all six re-rendered.
+- **Not changed:** the `announce_unattended_work` default stays on ("unset means on" is a recorded
+  judgement; the owner's machine has it off). The new description's triggering is unmeasured: on this
+  machine the owner's CLAUDE.md loads in nested sessions too, so its effect cannot be isolated until those
+  two lines change.
 
 ## 0.70.5
 

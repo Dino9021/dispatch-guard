@@ -213,9 +213,12 @@ HANDOFF.md 一旦落到硬碟上，你這一輪在 PACE/STOP 結束時，gate �
 要關掉就設 `CLAUDE_PLUGIN_OPTION_ANNOUNCE_UNATTENDED_WORK=false`。
 ⛔ 不要再去 `settings.json` 加第二個提醒 —— 那會變成一則逐位元組相同的重複訊息。
 
-⚠ session 開場沒有 ACTIVE 那一行 = 沒有東西載入它；
-⭐ **hook 有觸發，不等於規則有被遵守** —— 印出來的那一行才是檢查。
-沒印出來的話，就去「已安裝的外掛路徑」底下讀這個檔案，然後照樣遵守它。
+⚠ **兩行 ACTIVE，意思不一樣（0.71.0）。** `Skill` 呼叫一回來，dispatch-guard 自己會顯示
+`⭐ unattended-work ACTIVE — dispatch-guard saw the skill invoked`：那才是「skill 真的被載入」的證據。
+上面那一行、也就是**你**印的那一行，是你說你採用了這些規則 —— 是宣稱，不是證明：2026-10-07 實測，
+模型在完全沒有 `Skill` 呼叫的情況下印了兩次，是一個恢復的 session 在重複它之前印過的東西。
+⇒ 只有在這個 session 真的叫過這支 skill 之後才印；發現自己在照這些規則做、卻沒有那次呼叫，就去叫它。
+⭐ **hook 有觸發，仍然不等於規則有被遵守。**
 
 ## 20. 這個 skill 沒有涵蓋的
 

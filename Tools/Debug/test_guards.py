@@ -897,6 +897,47 @@ def case_unattended_first(gate, sdir, root):
     print("ok - one refusal for a missing unattended-work in a declared run, reminder switch or not")
 
 
+def case_skill_active_notice(gate, sdir, root):
+    """⭐ 0.71.0: an invoked dispatch-guard skill is announced on the screen, `⭐ <skill> ACTIVE`.
+
+    The owner asked (2026-10-07) for every skill to announce itself when invoked. The agent's own
+    printed ACTIVE line cannot be that signal: measured the same day, a model printed
+    unattended-work's line twice with no Skill call at all. The PostToolUse hook is the one place
+    that knows the call happened. Driven through main() with real PostToolUse Skill payloads.
+    """
+    sid = "s-active-notice"
+    stamp_session(gate, sdir, sid)
+
+    def invoked(name):
+        return run_gate(gate, {"hook_event_name": "PostToolUse", "tool_name": "Skill",
+                               "cwd": root, "session_id": sid, "tool_input": {"skill": name}})
+
+    for own in ("dispatch-protocol", "unattended-work", "cowork"):
+        for spelled in (own, "dispatch-guard:" + own):
+            r = invoked(spelled)
+            msg = r.get("systemMessage", "") if isinstance(r, dict) else ""
+            assert msg.startswith("⭐ %s ACTIVE" % own), (spelled, r)
+            # ...and the invocation is still RECORDED - the notice must not replace note_skill.
+            assert os.path.exists(gate.state_path(sdir, sid, "skill-seen-%s" % own)), spelled
+    assert "SKILL-ACTIVE-NOTICE cowork" in gitlog(root), gitlog(root)[-300:]
+    # ⛔ Another plugin's skill - even one sharing a bare name - gets no notice.
+    for other in ("other-plugin:cowork", "mattpocock-skills:tdd", "dispatch-guard:install"):
+        r = invoked(other)
+        assert not (isinstance(r, dict) and r.get("systemMessage")), (other, r)
+    # ⛔ MUTATION: take the notice away and the screen line must disappear. Without this the
+    # assertions above could be passing on some other branch that happens to print.
+    real = gate.skill_active_notice
+    gate.skill_active_notice = lambda _name: ""
+    try:
+        r = invoked("dispatch-guard:cowork")
+        assert not (isinstance(r, dict) and r.get("systemMessage")), \
+            "a screen line appeared with the notice switched off: %r" % (r,)
+    finally:
+        gate.skill_active_notice = real
+    print("ok - the three dispatch-guard skills announce themselves when invoked, nothing else does, "
+          "mutation-checked")
+
+
 def case_require_skills(gate, sdir, root):
     """⛔ NOTHING DISPATCHES UNTIL `dispatch-protocol` IS LOADED, and it refuses EVERY time.
 
@@ -2873,6 +2914,7 @@ def main():
         case_cowork_first(gate, sdir, root)
         case_unattended_first(gate, sdir, root)
         case_require_skills(gate, sdir, root)
+        case_skill_active_notice(gate, sdir, root)
         case_skill_price_table(gate)
         case_price_refresh(gate, sdir)
         case_handoff_past_soft(gate, sdir, root)

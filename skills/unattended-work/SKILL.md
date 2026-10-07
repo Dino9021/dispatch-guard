@@ -1,6 +1,6 @@
 ---
 name: unattended-work
-description: Use at the START of any task that will run longer than a few steps, and whenever the request says unattended, 無人職守, 無人值守, 無人模式, 自動模式, or 做完再叫我 (any case or form). Use it again before dispatching a review wave, when you hesitate or disagree with an adviser, when deciding whether to interrupt the owner, and before stopping. Covers the implement-refute-fix-refute wave, two-reviewer review, the debate ladder, when NOT to ask, the stall test, the exit bar, the stopping report, and clean handover.
+description: Use whenever the request says unattended, 無人職守, 無人值守, 無人模式, 自動模式, or 做完再叫我 (any case or form) - the owner's way of saying nobody is watching - or names this skill. A long task alone is not a reason to load it. Once a run has been declared that way, use it again before dispatching a review wave, when you hesitate or disagree with an adviser, when deciding whether to interrupt the owner, and before stopping. Covers the implement-refute-fix-refute wave, two-reviewer review, the debate ladder, when NOT to ask, the stall test, the exit bar, the stopping report, and clean handover.
 ---
 
 # Unattended work
@@ -233,9 +233,13 @@ The session-start reminder ships in the plugin (`hooks/unattended.py`); switch i
 `CLAUDE_PLUGIN_OPTION_ANNOUNCE_UNATTENDED_WORK=false`. ⛔ Do not add a second reminder to
 `settings.json` — that produces a byte-identical double message.
 
-⚠ No ACTIVE line at session start = nothing loaded it; a hook that fired is not a rule that
-was followed — the printed line is the check. If it did not print, read this file under the
-installed plugin path and follow it anyway.
+⚠ **Two ACTIVE lines, and they mean different things (0.71.0).** When the `Skill` call returns,
+dispatch-guard itself shows `⭐ unattended-work ACTIVE — dispatch-guard saw the skill invoked`:
+that is the evidence the skill was loaded. The line above, the one YOU print, says you adopted
+the rules - a claim, not proof: measured 2026-10-07, a model printed it twice with no `Skill`
+call at all, repeating what a resumed session had printed before. ⇒ Print it only after
+invoking the skill in this session; if you find yourself following these rules without that
+call, invoke the skill. A hook that fired is still not a rule that was followed.
 
 ## 20. Not covered here
 

@@ -98,7 +98,7 @@ skill 是模型看了描述之後**自己決定**要不要用；文件是模型*
 
 ```mermaid
 flowchart TD
-  needAgent["要派一個子代理"] --> loadProtocol["載入 dispatch-protocol<br/>沒載入，hook 拒絕每一次派工"]
+  needAgent["要派一個子代理"] --> loadProtocol["載入 dispatch-protocol，hook 顯示 ⭐ dispatch-protocol ACTIVE<br/>沒載入，hook 拒絕每一次派工"]
   loadProtocol --> verdict{"usage.py --verdict"}
   verdict -->|"STOP（含 NET 區）"| stopRefused["hook 拒絕派工"]
   stopRefused --> stopWrapUp["一般 STOP：收尾、寫或更新 HANDOFF.md、結束這一輪<br/>NET 區：自己的工作照做，只是不派子代理<br/>續跑鬧鐘由 gate 自動上"]
@@ -682,11 +682,16 @@ claude plugin marketplace remove dispatch-guard
 ⚠ **三件事是分開的，故意的。** 一個管「怎麼派」，一個管「怎麼做」，一個管「幾個人一起做」。
 只想要其中一個也可以：skill 是模型自己決定要不要讀的，不讀就不生效。
 
+⭐ **`unattended-work` 什麼時候載入：看關鍵詞（0.71.0）。** 擁有者說了 無人職守、無人值守、無人模式、
+自動模式、做完再叫我 或 unattended，或直接指名它；「任務很長」本身不再是載入的理由。
+⚠ 開場提醒（`announce_unattended_work`，預設開）仍會在每個 session 要求載入；想完全只靠關鍵詞，
+就照下面那節把它關掉。三支 skill 被叫到時，hook 都會在畫面上顯示 `⭐ <skill> ACTIVE`。
+
 **`unattended-work` 的運作流程**（§ 是 skill 裡的章節號；紅框裡點名 hook 或 gate 的那一句，是 hook 會拒絕、提醒或自動完成的事，其餘靠 agent 自己遵守）：
 
 ```mermaid
 flowchart TD
-  trigger{"長任務，或擁有者說了<br/>無人職守、無人值守、無人模式、自動模式、做完再叫我、unattended"} --> loadUnattended["載入 unattended-work，印出 ACTIVE 那一行<br/>宣告過的 run 沒載入：hook 拒絕第一次派工一次"]
+  trigger{"擁有者說了<br/>無人職守、無人值守、無人模式、自動模式、做完再叫我、unattended<br/>或指名這支 skill"} --> loadUnattended["載入 unattended-work，hook 顯示 ⭐ unattended-work ACTIVE<br/>agent 也印出它自己的 ACTIVE 那一行<br/>宣告過的 run 沒載入：hook 拒絕第一次派工一次"]
   loadUnattended --> planFirst["§2 計畫和每份提示詞先落到硬碟<br/>沒有就由 hook 拒絕派工"]
   planFirst --> sequential["§1 一次派一個，不背景、不大量生成<br/>違反的派工 hook 都拒絕"]
   sequential --> wave["§3 實作 → 會執行的反駁者 → 修正 → 把修正再送去反駁"]
@@ -757,7 +762,7 @@ git、權限都一樣。**第 13 條**是跨機器的底線：依賴一條管道
 
 ```mermaid
 flowchart TD
-  trigger{"說了 cowork、teamwork、cooperate、collaborate、分工合作<br/>或不只一個 session、機器、repo、專案"} --> loadCowork["載入 cowork<br/>同機有活的 peer 卻沒載入：hook 拒絕第一次寫入或 commit 一次"]
+  trigger{"說了 cowork、teamwork、cooperate、collaborate、分工合作<br/>或不只一個 session、機器、repo、專案"} --> loadCowork["載入 cowork，hook 顯示 ⭐ cowork ACTIVE<br/>同機有活的 peer 卻沒載入：hook 拒絕第一次寫入或 commit 一次"]
   loadCowork --> crossMachine{"跨機器？"}
   crossMachine -->|"是"| writeTest["第 13 條：兩個方向分別做寫入測試<br/>細節在 reference/cross-machine.md"]
   crossMachine -->|"否"| checkIn
@@ -1671,9 +1676,10 @@ dispatch_gate.py        ← 每次工具呼叫都是新行程，跟上面沒有�
   拒絕訊息刻意**不會**告訴 agent 那個鍵，因為一條會講出自己關閉開關的規則，
   就是一條會被關掉的規則。⚠ 正常情況下它鎖不死任何東西 ——
   叫一支 skill 就是一次 agent 做得到的工具呼叫，而開場那一行會先指名這兩支。
-- ⚠ **gate 分不出「叫過」和「照做了」。** 它記錄的是 `Skill` 這個工具呼叫。
-  agent 之後有沒有真的遵守那支 skill，從 hook 是看不出來的 ——
-  `unattended-work` 自己那行 `ACTIVE` 才是答案的另外一半。
+- ⚠ **gate 分不出「叫過」和「照做了」。** 它記錄的是 `Skill` 這個工具呼叫，
+  而且三支 skill 被叫到時都會在畫面上顯示 `⭐ <skill> ACTIVE`（0.71.0）—— 那是「叫過」的證據。
+  agent 之後有沒有真的遵守，從 hook 看不出來。`unattended-work` 要 agent 自己印的那行 `ACTIVE`
+  是 agent 的說法、不是證明：2026-10-07 實測到模型在完全沒有呼叫 skill 的情況下印了兩次。
 - ⚠ **模型上限只看得到「明寫在 `tool_input.model` 裡」的那個值。**
   寫在 agent 定義檔 frontmatter 裡的 model、或某個 `subagent_type` 的預設 model，
   hook 看不到。`subagent_type: "fork"` 永遠繼承主控的模型，上限拉不下來。
@@ -1841,7 +1847,7 @@ conventions, what the hook actually enforces, the honest gaps, and how resume wo
 
 ```mermaid
 flowchart TD
-  needAgent["Need a sub-agent"] --> loadProtocol["Load dispatch-protocol<br/>without it the hook refuses every dispatch"]
+  needAgent["Need a sub-agent"] --> loadProtocol["Load dispatch-protocol, the hook shows ⭐ dispatch-protocol ACTIVE<br/>without it the hook refuses every dispatch"]
   loadProtocol --> verdict{"usage.py --verdict"}
   verdict -->|"STOP, net zone included"| stopRefused["The hook refuses the dispatch"]
   stopRefused --> stopWrapUp["Plain STOP: wrap up, write or update HANDOFF.md, end the turn<br/>net zone: keep doing your own work, dispatch nothing<br/>the gate arms the resume itself"]
@@ -2455,11 +2461,17 @@ section.
 working together. Taking only one is fine: a skill is read at the model's discretion, so an
 unread one does nothing.
 
+⭐ **When `unattended-work` loads: on the owner's words (0.71.0).** The request says 無人職守,
+無人值守, 無人模式, 自動模式, 做完再叫我 or unattended, or names the skill; a long task alone is no
+longer a reason. ⚠ The SessionStart reminder (`announce_unattended_work`, on by default) still
+asks every session to load it; to rely on the words alone, switch it off as the next section
+shows. When any of the three skills is invoked, the hook shows `⭐ <skill> ACTIVE` on the screen.
+
 **How `unattended-work` runs** (§ is the skill's section number; in a red box, the sentence naming the hook or the gate is what the hook refuses, notes or carries out — the rest is kept by the agent):
 
 ```mermaid
 flowchart TD
-  trigger{"A long task, or the owner said<br/>無人職守, 無人值守, 無人模式, 自動模式, 做完再叫我 or unattended"} --> loadUnattended["Load unattended-work, print its ACTIVE line<br/>declared run without it: the hook refuses the first dispatch once"]
+  trigger{"The owner said<br/>無人職守, 無人值守, 無人模式, 自動模式, 做完再叫我 or unattended<br/>or named this skill"} --> loadUnattended["Load unattended-work, the hook shows ⭐ unattended-work ACTIVE<br/>and the agent prints its own ACTIVE line<br/>declared run without it: the hook refuses the first dispatch once"]
   loadUnattended --> planFirst["§2 The plan and every prompt land on disk first<br/>without them the hook refuses the dispatch"]
   planFirst --> sequential["§1 One dispatch at a time, no background, no mass-spawn<br/>the hook refuses each of those"]
   sequential --> wave["§3 Implement → executing refuter → fix → refute the fix"]
@@ -2539,7 +2551,7 @@ that cannot write the board speaks through its own file; 1:1, 1:N and N:1 change
 
 ```mermaid
 flowchart TD
-  trigger{"The request says cowork, teamwork, cooperate, collaborate or 分工合作<br/>or more than one session, machine, repository or project"} --> loadCowork["Load cowork<br/>a live same-machine peer and no cowork: the hook refuses the first write or commit once"]
+  trigger{"The request says cowork, teamwork, cooperate, collaborate or 分工合作<br/>or more than one session, machine, repository or project"} --> loadCowork["Load cowork, the hook shows ⭐ cowork ACTIVE<br/>a live same-machine peer and no cowork: the hook refuses the first write or commit once"]
   loadCowork --> crossMachine{"Across machines?"}
   crossMachine -->|"yes"| writeTest["Rule 13: write-test each direction separately<br/>the detail is reference/cross-machine.md"]
   crossMachine -->|"no"| checkIn
@@ -3544,8 +3556,10 @@ Read this before trusting it. Every item is a way it can look like it is working
   nothing — invoking a skill is a tool call the agent can make, and the opening line names both
   skills before the first dispatch.
 - ⚠ **The gate cannot tell an INVOKED skill from an ADOPTED one.** It records the `Skill` tool
-  call; whether the agent then followed the skill is not knowable from a hook.
-  `unattended-work`'s own `ACTIVE` line is the second half of that answer.
+  call, and when any of the three skills is invoked it shows `⭐ <skill> ACTIVE` on the screen
+  (0.71.0) - the evidence of an invocation. Whether the agent then follows the skill is not
+  knowable from a hook. The `ACTIVE` line `unattended-work` has the agent print is the agent's
+  claim, not proof: measured 2026-10-07, a model printed it twice with no Skill call at all.
 - ⚠ **The model ceiling sees only an EXPLICIT `tool_input.model`.** A model pinned in an
   agent definition's frontmatter, or a `subagent_type` default, is invisible to the hook, and
   `subagent_type: "fork"` always inherits the parent model — a ceiling cannot lower it.

@@ -213,8 +213,8 @@ session 永遠不算 peer，這個守衛對它永遠不會觸發。⇒ 跨機任
 3. **跟另一台機器上的 session 協作、或把專案搬到新硬體之前：`reference/cross-machine.md`，
    並且在**搬家之前**跑它開頭那份檢查清單。**上面每一項事前都很便宜、事後都很貴 ——
    寫入測試只要五條指令，省掉它的代價是兩邊互相沉默將近一小時。
-4. 長時間或無人看管的任務之前：先 `unattended-work` 和 `dispatch-protocol`；多 session 多出來的部分
-   在 `reference/longrunning.md`。
+4. 無人看管的任務之前（擁有者說了無人職守、unattended 或 `unattended-work` 的其他觸發詞）：先
+   `unattended-work`；派工之前：`dispatch-protocol`；多 session 多出來的部分在 `reference/longrunning.md`。
 5. 事情看起來不對：先在上表找形狀，再推理。
 6. 這個檔錯了，修正送進 dispatch-guard repository、由 plugin 更新送達 —— 絕不改已安裝的副本，也絕不
    在這個名字底下放第二個檔。**只有一份** —— 同名兩個檔就是擲硬幣，即使此刻一模一樣。
