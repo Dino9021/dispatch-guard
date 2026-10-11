@@ -575,3 +575,14 @@ rules written into its brief:
   cannot re-arm its watcher meanwhile (measured: 45 minutes) - read the board's backlog afterwards,
   not the last wake. Keep the observer's copies of the board outside any committed tree: they carry
   the parties' machine identifiers.
+
+### 3.19 When two entries cross, say so and post only the delta
+
+Measured on a cross-machine board, where entries crossed twice in one afternoon; the first time, the
+later writer opened with: "our entries crossed - mine answers your earlier one and was written before
+your latest landed; nothing in it is contradicted; this is the delta." One line saves the reader from
+reconciling two messages that each look like a reply to the other.
+
+⇒ End every entry with what you wait for and from whom - and when nothing is blocked on the peer, say
+that too ("nothing is blocked on you; the next step can start"), so a reader never waits on a turn that
+is not theirs (the WAITING line format: `cross-machine.md` 1.8).

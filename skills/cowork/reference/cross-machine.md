@@ -56,6 +56,20 @@ failure shape in this file, because every instinct says "give them more time".
 confirms it can see the other's.** Two writes and two reads. It costs one round and it is
 the only thing that proves the channel exists in the direction you need.
 
+⛔ **And re-measure at the start of every new or resumed session - one-sided, nothing posted on the board:
+the account you are on the channel can change under you.** Measured, six days into a reused channel: after the share was changed, one side's logon had
+silently become a different account. It could read everything and create new files, but every file
+created before the change refused an append, because those files' permissions named only the
+previous account. No warning, no error until a write was tried, and that side could not repair the
+permissions itself. ⇒ At each session start, first open every file you rely on for append and close it
+without writing (measured on a local disk: neither size nor write time changes, so a watcher sees
+nothing). Then create one probe file and read its **owner** - in a folder every side's `-Ignore` names, or
+under a `.claude` folder, which the shipped watcher skips - and delete it in the same command with a
+gone-check; a probe in the watched tree wakes every peer (1.8). Files you created today are the positive
+control - if they are writable and the older ones are not, the instrument works and the permissions are
+the problem. Until it is fixed, speak through a file you created yourself (1.5) and say on it
+that the board is unwritable.
+
 ### 1.3 The board must not live inside the thing being moved or changed
 
 The board was in the root of the tree being copied. So the operation that needed the channel
@@ -97,6 +111,12 @@ One side finding itself blocked concluded "there is no channel", which was false
 
 ⇒ Test both directions, name them separately in the result, and if one is blocked, use the
 one that is not. "I cannot write to you" does not mean "you cannot write to me".
+
+⚠ **Two PATHS to one channel are two channels for permissions.** Measured: the side hosting the share
+wrote through its local path, and the share's own permission list named only the far side's network
+account, so the host side was refused through the network path it does not normally use. ⇒ Name the path a
+write-test used. A test through the local path proves nothing about the network path; only the side
+that uses the network path can prove it.
 
 ### 1.5 Content goes one file per writer; the shared board carries claims, and only if both can write it
 
@@ -176,6 +196,12 @@ entry: the text carries a placeholder, the append substitutes the clock. ⚠ Use
 occurs nowhere else in the text - measured, the substitution also rewrote the sentence that explained
 the placeholder (4.4's shape).
 
+⭐ **Make the same append command refuse when the board grew since you read it.** Pass it the length you
+read; if the file is longer, it appends nothing - you read the new entry first, then append. Measured on one
+channel, over two sessions six days apart: it stopped three appends that would have answered entries the
+writer had not read, and once caught the writer's own guessed length ("the expected length was estimated,
+not measured"). Re-read by BYTE offset (4.8).
+
 ### 1.8 ⛔ Waiting for a peer is not stopping - arm a wake-up before you end your turn
 
 A session acts only inside a turn. Between turns it runs nothing, and **nothing wakes it when a
@@ -187,7 +213,13 @@ was waiting; nobody was watching; the owner was the only thing moving.
 ⇒ **Before ending a turn to wait for a PEER, arm something that will wake you:**
 
 - **Peer on the same machine:** send it a message with `notify_when_idle` (or a pure
-  subscription) - one notice arrives when it next goes idle. No polling.
+  subscription) - one notice arrives when it next goes idle. No polling. ⚠ Measured with a pure
+  subscription: subscribing to a peer that is ALREADY idle fires at once, reporting a turn that ended before you subscribed - compare
+  the notice's "finished a turn at" with your subscription time before reading anything into it; and
+  re-subscribing while it is still idle fires again, so a wake → re-subscribe loop spins. Subscribe
+  while the peer is busy (`ListAgents` shows it); while it is idle, wait on the channel watcher. The
+  subscription can also be "only logged" when the peer runs in another permission class - keep a
+  watcher as the second wake.
 - **Peer on another machine, or reachable only through files:** run the shipped watcher in the
   background - `pwsh -NoProfile -WindowStyle Hidden -File <plugin>/skills/cowork/tools/watch-folder.ps1
   -Folder <channel root> -Ignore "<your file>,checkin/<your role>.md,<observer file>"` (Bash
@@ -199,7 +231,25 @@ was waiting; nobody was watching; the owner was the only thing moving.
   ⛔ Through 0.69.0 it listed only the top folder - so it never saw a check-in, and two sessions that
   each said "watcher armed, recursive" were both watching one folder (1.3). Its first output line names
   its version, "(whole tree)" and the file count: **read that line before telling anyone what you watch.**
+- **Waiting on a DELAY, not a peer** (a recount in a few minutes, a timeout): run the delayed step itself
+  as a background job - a script that sleeps, then measures - so its exit wakes you. Ending the turn
+  with "I will recount in five minutes" and nothing armed drops the recount.
 - Post **one** line on the board: `[time, clock][you] WAITING for <who> to <what>. watcher armed.`
+
+⛔ **A watcher pointed at a share that no longer exists reports NO CHANGE, not an error, to whoever is
+asleep.** Measured from both sides of one channel: the share stopped existing for about twenty minutes
+(cause UNCONFIRMED); the far watcher wrote one "cannot find path" line per poll into its output file,
+which nobody reads while asleep, and had the run reached its time limit inside that window it would
+have exited "no change" - a clean, believable false zero on the one instrument that says the peer has
+spoken. ⇒ On every wake read the watcher's WHOLE output, not only its change block; if it logged path
+errors, say so on the board - the other side's silence in that window means nothing. ⇒ Treat an
+unexplained delay as the channel first: confirm the share still exists before concluding anything
+about the peer.
+
+⚠ **The watcher sees files, not sessions.** Measured: one side's network session to the share was
+closed from the server on purpose; the client reconnected transparently and the far side's watcher
+logged **zero** errors through it. Only a share that is gone shows (as path errors); a session change
+does not. Announce a deliberate disruption, with its time, so the far side can explain anything odd.
 
 Measured after adoption: one side finished, and the other side's watcher woke it and it acted
 **about fifty seconds later, with no human in between.**
@@ -217,6 +267,41 @@ peer, and a peer that rewrites its own wakes you back.
 ⚠ **Waiting on the OWNER is different** - the owner speaks in your window, so stopping cleanly is
 right there, with a line saying what you wait for. A watcher is for peers. (`unattended-work`
 §15 says the same from the other side: a peer-blocked item is not owner-blocked.)
+
+### 1.9 The channel's identity can change: after a rename or re-point, prove it is THE channel before writing
+
+Measured: after the share was renamed, its new name pointed for about ten minutes at a different folder
+(the owner's re-point) - the destination side's own, unshared project folder. The far side, following the standing
+instruction to use the new name, listed it, read two of that side's handover documents, and ran its
+write-test there (a file and a directory, created and deleted). A wrong folder is indistinguishable
+from the channel: it is readable and writable. What went right afterwards is the pattern: the far side
+**disclosed everything it had done there**, in its own files, and asked the folder's owner to check
+that the test artefacts were gone, because it could no longer reach the folder to check itself; the
+destination side checked (recursively, with a known file as the control) and reported both artefacts gone.
+
+⇒ After the channel's name, path or share changes: confirm by CONTENT that you reached the channel -
+its standing file and its board heading are there - before any write, test writes included.
+⇒ A write-test leaves debris and can land in the wrong place; whoever ran one where it should not have
+been says so, and the side that can still reach the folder runs the gone-check.
+
+### 1.10 A channel reused for many jobs: one folder per job, and a standing file that indexes them
+
+The share was set up as the channel for migrating several projects in turn, and the layout used for the
+first of them (one migration, observed from opening through the transfer; the archive step had not yet
+been exercised when this was written) was: at the root, a **standing
+file** (rules adopted mid-run - `coordination.md` 3.15 - plus an index of jobs; both sides may edit it, but
+every change other than the opener's own index row is proposed on the board first, so the shared file never
+has a silent writer), a **channel-level board** (identity, channel tests, one line to OPEN and one to CLOSE
+each job, nothing else), and the check-ins; per job, `jobs/<name>/` holding that job's own append-only
+board, one content file per writer and a `transfer/` folder with a manifest. A job board opened by an
+`OPENED` line on the root board, and listed in the index, is scoped to that job: it is not a second channel,
+and 1.3's "the root board wins" settles only two boards competing for the same scope. A finished job's folder
+is to move to `archive/` (not yet exercised); every side adds `archive` to its watcher's `-Ignore` - the
+watcher itself skips only `.claude`. The side that opens a job creates the other side's (empty) content file too and, in the same
+step, grants that side's account by SID (1.6) - created is not writable - then adds its own index row.
+⚠ Each side re-arms its watcher the moment a job folder opens, with its own file there and the job's
+`transfer/` added to `-Ignore` - ignore entries are literal paths, so a root-level entry does not cover the
+same name one level down.
 
 ---
 
@@ -421,7 +506,7 @@ source is to be removed (3.8).
 share BEFORE any key travelled; keys in their own folder with inheritance removed, checked on the
 FILES, not the folder (4.5); removed from the share as soon as the destination had proved them by
 connecting; then the whole share swept BY CONTENT for private-key headers, with a positive control on a
-key that still existed elsewhere.
+key that still existed elsewhere. ⚠ And switching it on is not enough by itself (3.15).
 
 ### 3.6 Hard-coded absolute paths are first-class migration items
 
@@ -462,17 +547,135 @@ abandoned and regenerable. A directory you could not read is a hole in that coun
 ⇒ Look outside the tree for what belongs to it: per-project agent memory and transcripts, scheduled
 tasks that point into it, certificate-store items, notes in a sibling folder. Measured: the project's
 own notes named a sibling file outside the project folder, holding a secret, that no list had carried.
+⇒ **A transfer copies; it does not move.** The source keeps its files until the owner says otherwise -
+say so when you close, so nobody reads "transferred" as "safe to delete".
 ⇒ ⛔ **Check what the tree IS before anyone deletes it.** Raised on that job from the project's own
 notes (not yet measured when this was written): the source path had once been a junction to a tree on
 another host. If it still is one, a recursive delete can remove the TARGET's contents. Read the folder's
 link type or reparse point, and its parent's, with a plain folder as the control; if it is a link,
 remove only the link (`rmdir` without `/s`).
 
+### 3.9 What a clone does not carry, and how to put what can go in the repository into it
+
+A repository that is fully pushed (`status --porcelain --untracked-files=all` empty, `rev-list
+--left-right --count origin/main...HEAD` = `0 0`, and `ls-remote` asked of the SERVER after a fetch) still
+does not hand a fresh clone everything. Measured on one project: **notes refs** (on the server only - `git
+fetch origin "refs/notes/*:refs/notes/*"`), **`.git/hooks/*`**, **`.git/info/exclude`** (git's comment
+template plus the added lines - the receiver appends the lines to its own template and compares hashes;
+writing just the lines would not match), and **empty directories the running code requires** (five,
+each named in source). Check `core.hooksPath` is unset before trusting an installed hook to run.
+
+⭐ **The owner's principle that settled it: put in the repository everything that can go there.** Three
+classes: (1) belongs in the repo - a source file an over-broad ignore rule had excluded, a `.gitkeep` per
+required empty directory - so every future clone is complete; (2) git cannot carry it - files inside
+`.git` - handed over or matched by hash; (3) could go in the repo and must NOT - captured real mail and
+its parsed output, the agent tool's per-project memory and transcripts (they held plaintext passwords,
+3.14) - because a commit is permanent and visible to everyone with access.
+⇒ An inventory finds defects in the repository itself: that excluded source file meant **a fresh clone
+did not build**, for anyone, migration or not - proved by a build from a fresh clone, not only by
+`check-ignore`, and the fix proved by the same build passing.
+
+⛔ **Two `.gitignore` traps, both measured in a throwaway repository with the project's real file:**
+`dir/` plus `!dir/.gitkeep` still ignores the keep file - git never descends into an excluded directory -
+so ignore the CONTENTS (`dir/*` + `!dir/.gitkeep`); and `x/*` contains a slash, which anchors it to the
+root, unlike an unanchored `x/`. "`check-ignore` says no" and "`git add` accepts it" are two claims - make
+both, and run regression probes that must stay ignored.
+⛔ **Line endings:** read the repository's `.gitattributes` and the file's current endings before editing a
+tracked file from the other machine. Measured: `* -text` (store exactly as written) plus an LF-only file
+plus a tool that writes CRLF would have rewritten every line, permanently; `git diff --ignore-cr-at-eol
+--stat` showed the real 12+/4- under a whole-file 40+/32-. Make the gate the exact figure (12+/4-, anything
+else is redone; `verification.md` Part 3, *A gate written as "about" refuses nothing*).
+
+### 3.10 Remote access is measured before anything is generated or installed
+
+⇒ For each remote the project uses, first try it from the destination with prompts off (`BatchMode=yes`,
+no terminal prompt) against the **exact URL**. Measured: the destination already had a key registered, and
+the planned "generate a key, the source installs it" would have been wasted - and could not have worked:
+a git forge registers keys per account in its web interface, not in an `authorized_keys` file the source
+can append to. Two hosts sharing one key file: success on one proves nothing about the other. A read
+(`ls-remote`) proves read; `push --dry-run` proves the receive connection; only a real push proves a ref
+update (3.11). An HTTPS URL with no stored credential fails non-interactively - clone the URL that is the
+source's `origin`, so both sides share one remote.
+⇒ Host keys: scan them on the destination without touching `known_hosts`, compare with the source's
+`known_hosts` before adding. ⚠ An entry for a non-default port is stored as `[host]:port` - a lookup by
+bare name reports "not found" for a host used daily (measured: the control failed for exactly this).
+⇒ A Windows OpenSSH host where the account is an administrator reads keys from the shared administrators
+key file, not the user's - a key in the wrong file is silently ignored. Measure the account's groups first
+(through the existing access, with a group everyone holds as the control); append, never overwrite, and
+prove it: byte count before and after, the original bytes unchanged, fingerprints read back from the file,
+the file's ACL compared as SDDL before and after. Take a baseline before the far side acts ("permission
+denied"), so the proof after ("exit 0") can only be the change.
+⇒ Quoting through `ssh` into a Windows `cmd.exe` mangles a remote PowerShell command line (measured: an
+option arrived as a different parameter). Copy the script over and run it by path. A far host without
+PowerShell 7 cannot re-exec under it: print `$PSVersionTable.PSVersion` as the script's first line, write
+for that version, and say so in the report.
+
+### 3.11 Acceptance is the source's full list of remote operations, each exercised from the destination
+
+⇒ Ask the source for the **complete** list of remote operations it performs for the project, and anything
+tied to its machine (mapped drives, hosts entries, VPN, stored credentials) - "the list, not a sample".
+Measured: answered by searching every executable file with a control - the project's own code made no
+remote call from a workstation; the source did exactly two things remotely, so acceptance was two proofs.
+Machine-tied items found were each traced to the project they belonged to.
+⇒ A capability is proved by the side that will use it, exercising it - the source pushing proves only that
+the source can push. A gap both agents accept is still the owner's to waive (`owner-and-reporting.md` 2.16);
+the proof offered was a commit the project wanted anyway (its own move note), never one made up to prove a
+push.
+
+### 3.12 The other side verifies; the side that will act rehearses on its own machine
+
+⇒ The source commits and pushes; the destination clones into a throwaway directory and checks from its own
+side - the server's HEAD, the exact paths changed, the hash of the file that mattered against the source's
+- before cloning the real destination. Not the source checking its own work.
+⇒ While waiting for the owner's word, the source rehearsed the exact edit on a throwaway clone **on its own
+machine** ("your rehearsal used your git config; this answers whether the command I will actually type, on
+my machine, produces what we agreed"): anchors asserted unique, CRLF refused, the gate hit exactly, exactly
+the expected paths staged, the build failing before and passing after. Nothing touched the real repository.
+That is how waiting time is spent without spending anything irreversible.
+
+### 3.13 Agent memory moves to a new folder name, and may carry facts true only on the old machine
+
+An agent tool that keeps per-project files under a folder named after the project path gives a project on
+another drive a different folder (the folder name embeds the drive letter). ⇒ Measure where the tool really
+looks on the destination (the agent tool's folder under the user profile was a link to another drive; a live
+transcript hashed the same through both paths) and place the files by relative path, keeping their structure. ⇒ Read what arrived: one memory file
+named the old machine's key. Append a dated note (the original bytes kept) rather than rewriting it, and say
+the file now differs from the manifest on purpose.
+
+### 3.14 The transfer handshake, verified at every hop - and a credential found on the way
+
+⇒ Source: every file hashed against its SOURCE as it is copied, then every manifest line re-read from the
+share and re-hashed; the manifest lists every file and not itself; the completion line carries the count and
+the byte total. Destination: manifest vs folder (nothing unlisted, nothing missing), staged copies vs
+manifest, placed copies re-hashed in a separate read, a recount some minutes later together with the
+antivirus detection log (2.3b) - run as a background timer (1.8). Then delete the staging copy carefully:
+the manifest copied out of the share first, links checked, exactly the listed files deleted by path, and the
+emptied folders removed **non-recursively**, so anything unexpected stops the run instead of vanishing.
+⇒ **Screen what you stage, and trace a finding before acting on it.** Measured: the agent memory held two
+plaintext database passwords. The next question - are they already exposed? - found the same values in four
+tracked files. So the transfer added no exposure beyond what the repository already carried, and went ahead, and the project-level fix (rotate the
+accounts, rewrite history) was put to the owner as a finding with a recommendation: destructive, outside a
+migration, theirs to decide. Tell the receiving side it now holds a copy.
+
+
+### 3.15 Transport encryption is proved per session, not per setting
+
+⛔ **Switching transport encryption on does not encrypt a session opened before the switch.** Measured on a
+later job: the setting went on and the server rejected new unencrypted connections, but the far side's
+session had been negotiated four hours earlier, and a packet capture read it as 82 plain messages, 0
+encrypted. "My access still works" was correctly refused as evidence - it is equally what a grandfathered
+plain session looks like - and the side that could not read its own session state (no elevation) labelled
+it UNKNOWN and staged nothing. ⇒ After the switch, prove it per session from a side that can see the
+traffic: the elevated side closed the old session from the server, the client reconnected by itself, and a
+second capture read the new session as encrypted (an SMB2/3 message starts `FE 'S' 'M' 'B'`, an
+encrypted one `FD 'S' 'M' 'B'`; the only plain ones left were the handshake, the tree connect, whose
+reply carried the encrypt-data flag, and one request retried from the dead session, which the server refused). The first capture is the control: the same instrument read the old
+session as all plain, so it can tell the two states apart. Nothing sensitive is staged before that.
 ---
 
 ## Part 4 - Instruments that lie during a migration
 
-These are three specific ways a check reported success or emptiness while measuring nothing.
+These are specific ways a check reported success or emptiness while measuring nothing.
 Part 3 of `verification.md` is the general treatment; these are the cross-machine instances.
 
 ### 4.1 A search tool that respects ignore rules cannot see the files a migration must fix
@@ -541,6 +744,16 @@ it, or the record itself trips the check for ever.
 ⚠ And a false positive is not grounds for distrusting the instrument. The same tool
 misreported and correctly reported inside one minute. Read every hit and judge it.
 
+⛔ **The channel version: a sweep finds its own report.** Measured three times in one afternoon, by both
+sides independently: a sweep of the share for the bare text of a private-key header found 1 file - the
+sweeper's own report of the previous sweep's "0"; the other side's sweep, independently and within minutes,
+found its own sentence describing the guard; then a bare key-body marker matched board prose both sides had
+written. Once written, the report contains the pattern. ⇒ Sweep for the SHAPE of the secret, not the
+word: the header anchored to the start of a line, or the marker followed by a key body
+(`marker[A-Za-z0-9+/=]{40,}`). ⇒ Give the sweep three columns: the result, a positive control (a real
+key, which must match), and a lookalike (the report file, which must NOT). An earlier "0" stays true as
+measured; do not rewrite it.
+
 ### 4.5 A believable number from a tool used slightly wrong
 
 Measured on one job, one session, three times in two hours, and none of them raised an error: (1) in an
@@ -557,6 +770,38 @@ object. A control built separately proves the separate thing. ⇒ Reconcile a to
 ⇒ Measure the object the claim is about, not its parent. ⇒ Every one of these was caught by a control or
 by the peer re-measuring (rule 8) - never by the number looking wrong.
 
+⚠ The same `[0]` trap in PowerShell, 5.1 and 7 alike (measured in both): a pipeline that emits ONE item
+returns the item, not an array, so `($text -split '\r?\n' | Where-Object {...})[0]` on a single match is the
+string's first CHARACTER, which has no `.Trim()`. `-split` alone always returns an array - the pipeline is
+what collapses it. Wrap the pipeline in `@()`. Measured on a far host's install script: it died before
+writing; the author re-read the baseline (same size, same hash) before retrying, and reported it - an
+append that half-ran is exactly what must be ruled out.
+
+### 4.6 A write test that creates the thing it tests
+
+Measured: to prove "an existing file is writable", a test opened a file with an append mode - the file did
+not exist, append mode creates it, so the test made an empty file and reported True. `git status` caught
+the stray file after the builds. ⇒ Test existing-file writability with a mode that cannot create (open an
+existing file read-write, and check its hash is unchanged); test creation with a mode that cannot
+overwrite (create-new). Add the negative control: the open-existing mode on a missing name must fail and
+create nothing. ⇒ Its cousin: "a wrong passphrase must fail" exited 0 - on a key with NO passphrase any
+passphrase is ignored, so that control cannot fail. A control that cannot fail is not a control.
+
+### 4.7 A redaction filter that was never tested prints the secret
+
+Measured: a session screening transcripts for credentials masked its output with a pattern that did not
+match, and two passwords appeared in its own terminal (the owner's screen, the owner's credentials, and
+nowhere else - stated that precisely when it was reported). ⇒ A redaction is an instrument like a search:
+run it on a known-bad sample, and see the mask, before it is trusted with real output.
+
+### 4.8 A byte offset read as a character offset can skip entries
+
+A handover said "re-read the board from byte N". Indexing a decoded string at N counts characters, and
+with non-ASCII text bytes and characters differ (54 248 bytes were 53 714 characters), so the reader
+started about 530 characters late, could skip a short entry, and was rescued twice by searching backwards
+for the next heading - luck, not a method. ⇒ Slice the bytes, then decode
+(`UTF8.GetString(bytes, N, len - N)`), and write "byte" next to every recorded offset.
+
 ---
 
 ## The checklist, in order
@@ -565,11 +810,14 @@ Before any cross-machine work:
 
 1. A shared directory outside any tree the task touches, holding ONE append-only board for
    claims and turns plus one author-named content file per writer (1.5). Looked for before it is
-   created, created at the root, watched whole-tree; two boards = the root one wins (1.3).
+   created, created at the root, watched whole-tree; two boards for the same scope = the root one wins
+   (1.3); a job board opened from the root board is not a second channel (1.10).
 2. Each side appends a dated channel-test line to the board AND creates its own dated
    channel-test file; **neither proceeds until both sides can see both.** A side that cannot
    write the board says so in its own file, and from then on speaks there.
-3. Both directions measured separately and named in the result; each side's clock posted once.
+3. Both directions measured separately and named in the result; each side's clock posted once. Which
+   PATH each test used is named (1.4); at every session start, each side re-measures which account it is
+   on the channel (1.2).
 4. First message declares the split: who owns which paths.
 5. Local machine-bound scheduled work cancelled, and said so; who covers stopped recurring work named.
 6. Destination ROOT: owner, ACL and the parent's inheritance listed; destination account granted by SID
@@ -584,21 +832,30 @@ After anything arrives:
 10. Rules and configuration files: diff both directions, find the superset, ignore timestamps.
 11. Only then hashes, builds, tests, and the project's own tooling.
 
+For a repository and its remotes:
+
+12. What a clone does not carry is listed (notes, hooks, `info/exclude`, required empty directories) and
+    what can go in the repository goes in it, verified by a build from a fresh clone (3.9).
+13. Every remote is tried from the destination, prompts off, against the exact URL, before any key is
+    generated (3.10); the full list of the source's remote operations is the acceptance list (3.11).
+14. The other side verifies a commit from a throwaway clone (3.12); transfers are hashed at every hop and
+    recounted minutes later (3.14). Encryption is proved per session, not per setting (3.15).
+
 Throughout:
 
-12. Far tree read-only; version control on your own tree only; `merge`, never `rebase`.
-13. Board messages written with the file tool, then scanned for control characters AND for the
+15. Far tree read-only; version control on your own tree only; `merge`, never `rebase`.
+16. Board messages written with the file tool, then scanned for control characters AND for the
     double-encoding signature (4.2).
-14. Migration scans run with ignore rules off, against a named known-hit control.
-15. Waiting on a peer: a wake-up armed on the channel ROOT, whole tree, your own files and check-in
+17. Migration scans run with ignore rules off, against a named known-hit control.
+18. Waiting on a peer: a wake-up armed on the channel ROOT, whole tree, your own files and check-in
     ignored; ONE WAITING line, silent re-arms (1.8). List the whole tree before posting WAITING or
     saying who is present or who has (not) answered (`coordination.md` 3.14).
-16. Moving the channel: announce it in the OLD place and keep watching there until all acknowledge
+19. Moving the channel: announce it in the OLD place and keep watching there until all acknowledge
     (`coordination.md` 3.9). Rules adopted mid-run go into the channel's standing file (`coordination.md` 3.15).
-17. Board stamps produced by the append command, never typed (1.7). Controls run through the same
+20. Board stamps produced by the append command, never typed (1.7). Controls run through the same
     invocation as the measurement (4.5).
 
 Before the source is deleted:
 
-18. Re-audit the whole source, every entry classified; look outside the tree for what belongs to it;
+21. Re-audit the whole source, every entry classified; look outside the tree for what belongs to it;
     check the tree is not a link to somewhere else (3.8).

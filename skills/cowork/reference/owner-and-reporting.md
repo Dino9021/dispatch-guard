@@ -39,7 +39,7 @@ material; the register is. **The register is the backup for that path, not a rep
 **Do:** record every ruling as: the owner's **verbatim** words, **which session's window** it
 was said in, and **when**. Keep separate areas for
 (a) ruled, with a source,
-(b) reported second-hand, not yet confirmed - **must not be acted on**,
+(b) reported second-hand, not yet confirmed - **not acted on**, except under the conditions in 1.4,
 (c) believed to have been ruled but no source can be found,
 (d) awaiting a ruling.
 
@@ -58,6 +58,20 @@ and say through whom. Upgrade it only when the owner says it in your own window.
 
 **Otherwise:** a chain of faithful summaries is indistinguishable from an invented rule, and the
 chain is invisible in the final text.
+
+⭐ **Relaying one, and acting on one, as measured across two machines.** The relaying side quoted the
+owner's question, its own options and the owner's one-word answer verbatim, mapped that answer onto
+each of the far side's open owner questions, and added "this is the owner's word relayed by me - if you
+want it from the owner in your own window first, that is your call". The far side acted, and said why:
+the whole exchange was verbatim (including the sentence that defined the option), and it matched what the
+owner had independently told it earlier - and it **told the owner in its own window that it had acted on a
+relay, quoting it, so a misrelay could be stopped** ("a revert is one commit").
+⇒ The one exception to 1.3 (b): act on a relayed ruling only when the relay is verbatim, it agrees with
+something the owner told you directly, and its effect can be undone - a revert undoes a commit's effect,
+not its presence in history, so nothing sensitive may ride on it (`cross-machine.md` 3.9). Never for an
+approval that the owner's or the project's instructions require to come from the owner directly. Keep it in
+area (b), tell the owner in your own window at once, quoting the relay, and move it to (a) only when they
+confirm.
 
 ### 1.5 Never use a pronoun when asking the owner
 
@@ -155,6 +169,24 @@ defensible options where the tie-breaker is a preference you cannot measure.
 `unattended-work` §15 is stricter - ask only when the owner must physically operate something -
 and it wins. The two are not in conflict; they are for two different rooms.
 
+⛔ **A decision the owner cannot place is not answered, however often it is asked.** Measured: the same
+two decisions ("agree to the commit of the ignore-file fix, the source file and five keep files?",
+"keep the three debug files?") went to the owner five times over three hours, each correct and complete
+in the agents' terms, and got no answer. Then the owner asked (translated): "isn't migrating a project
+just moving the files over as they are? Tell me the reason for each thing you need me to decide - why it
+has to be done." The reply that was settled in ONE minute:
+1. **the owner's goal first, in their words** ("yes - a working copy identical to the old one; we are only
+   choosing which route each file takes");
+2. **everything sorted into classes, saying which need no decision and why** (in the repository: clone;
+   regenerable: rebuild - copying it would carry the old machine's paths);
+3. **for each real decision, why it is THEIRS** ("this changes your repository", "it holds a real email")
+   and the options **with the end state each leaves** (fix the repository so every future clone is
+   complete / leave it and copy the file over - same result on the new machine, the defect stays);
+4. **the owner's likely principle mapped to a one-word reply** ("if your rule is 'move it as it is, repo
+   untouched', reply X; if you agree to fix the repo, reply Y").
+⇒ Repeating an unanswered question is not progress. When the owner has seen a question and still not
+answered it, assume first that it lacks the context you have - send that, not the question again.
+
 ### 2.7 When you are stuck, say what you tried and what it ruled out
 
 **Do:** report stuck as: the question, the approaches taken, what each eliminated, and what you
@@ -248,3 +280,27 @@ start point and nearly reported as a failure that had not happened.
 
 ⇒ Treat a rule as a thing to check against, not a thing you now possess. **Where a rule can be
 turned into something that refuses to continue, do that instead of remembering it.**
+
+### 2.15 Withdraw a request to the owner the moment it is overtaken
+
+**Do:** when something you asked the owner to do - especially something only they can physically do -
+has been made unnecessary by a peer, tell the owner in the window where you asked, at once.
+
+**Otherwise:** the owner performs a step that no longer matters, or keeps it on their list. Measured: one
+side put an elevated command to the owner as the one way out only they could operate; about five minutes
+later the other side solved it from its own end and asked the first side to withdraw the request in the
+owner's window there. (Whether it was withdrawn is not recorded.)
+
+### 2.16 The owner's definition of done is not the agents' to waive
+
+**Do:** close against the owner's stated goals, one line each, and write every gap as open "by choice, not
+by omission" together with who may waive it. A gap that both agents are willing to accept still goes to
+the owner if the owner's instructions define it as part of done.
+
+**Otherwise:** two agents agree a closure the owner would not have agreed. Measured: one side posted
+CLOSED and the other had proposed it, both while listing an unexercised capability as "open by choice";
+both withdrew within about two minutes of the posted CLOSED - one on re-reading its standing instructions,
+the other because "`UNCONFIRMED` and `CLOSED` do not go together" - and the choice went to the owner with a
+recommendation. Never manufacture the missing proof: a gap that is known and recorded is better than a fake
+that hides it. (`unattended-work` §14 asks the same of a stopping report: what you did NOT do is written
+down, with why.)

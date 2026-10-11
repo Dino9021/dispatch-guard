@@ -384,6 +384,14 @@ that answer would have looked complete.
 ⭐ Same family as the partition control above: **both make the instrument prove its own
 settings, instead of asking people to trust them.**
 
+### A gate written as "about" refuses nothing
+
+Measured: a review gate read "the diff should show about 13 changed lines"; once the other side had
+measured the real change, the gate became "exactly 12 insertions and 4 deletions - anything else is
+discarded and redone", and a near miss - say 13+/5-, one extra edited line or one stray line ending -
+could no longer pass as "about right". (13+/5- is an illustration, not a measured figure.) Write the
+number someone can fail.
+
 
 ### Verification has a third layer, and only the original author can do it
 

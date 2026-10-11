@@ -749,7 +749,7 @@ claude plugin install dispatch-guard@dispatch-guard --config announce_unattended
 ⭐ **幾個 session、一個主人 —— 一棵工作樹，或兩台機器。** 十三條規則，每一條都是幾個 session 共用
 同一個 repository 幾週之後付過代價學到的：先認領再產出、先報到、以角色為準（名字和 ref 都會變）、等同伴前先設喚醒、一份只能追加的共用紀錄、問主人的
 問題經單一窗口、問的時候不用代名詞、宣告東西不見之前先用內容搜、講清楚「沒答案」是哪一種……
-還有一張 31 列的**失效形狀目錄**，讓下一個 session 叫得出形狀的名字。
+還有一張 49 列的**失效形狀目錄**，讓下一個 session 叫得出形狀的名字。
 
 ⭐ **什麼時候該載入它：看到 cowork、teamwork、cooperate、collaborate、分工合作 這幾個字就載入（0.69.2）——
 眼前只有一個 session 也一樣，因為協作的另一方可能在另一台工作站、從這裡看不到；其餘看情境，不看字眼（0.64.0）。** 同一個 repo 不只一個 session（同時或接續）、
@@ -758,7 +758,9 @@ git、權限都一樣。**第 13 條**是跨機器的底線：依賴一條管道
 複製後第一個檢查是「我能不能寫」，不是雜湊。它來自第一次跨機搬家：溝通板一邊讀得到寫不進去，另一邊
 把沉默讀成「還沒開始」，**雙方都沒收到任何錯誤**。完整的跨機做法在 `reference/cross-machine.md`，
 **兩層**：一份只能追加的認領板（兩邊都過了寫入測試才能用）＋內容**一人一檔**；寫不進板子就用自己的檔
-說話；1:1／1:N／N:1 不改變本質。
+說話；1:1／1:N／N:1 不改變本質。0.73.0 起它也涵蓋 **git repository 的遷移**（3.9–3.15）：clone 帶不走
+什麼、能進 repo 的就進 repo、遠端存取先量再產生金鑰、驗收是舊機的每一項遠端操作都在新機做過、傳輸每一站
+都驗雜湊、加密要逐條連線證明 —— 全部來自一次實際旁觀的兩機遷移。
 
 ⭐ **給 session 取一個叫得到的名字（0.72.1）。** cowork 被叫到時，畫面上那行 `⭐ cowork ACTIVE` 後面會接一句
 提示：`/rename <project>-<role>`。session 的預設名字是 `<project>-<xx>`（專案資料夾名轉小寫，加兩位十六進位），
@@ -2569,7 +2571,7 @@ this switch silenced both).
 paid for by sessions that shared one repository for weeks: claim before you produce, check in first and identify by ROLE (names and refs
 change), arm a wake-up before waiting on a peer, one append-only shared record, funnel questions to the owner
 through one session, never a pronoun when you ask, search by content before declaring anything
-missing, say which kind of "no answer" you have … and a 31-row **catalogue of failure shapes**,
+missing, say which kind of "no answer" you have … and a 49-row **catalogue of failure shapes**,
 so the next session can name the shape instead of rediscovering it.
 
 ⭐ **When to load it: whenever the request says cowork, teamwork, cooperate, collaborate or 分工合作
@@ -2584,7 +2586,11 @@ comes from the first cross-machine move: one side could read the board and not w
 other read the silence as "not started yet", and **neither side got an error**. The full
 protocol is `reference/cross-machine.md`, in **two layers**: one append-only claims board
 (usable only after both sides pass the write-test) plus **one content file per writer**; a side
-that cannot write the board speaks through its own file; 1:1, 1:N and N:1 change nothing.
+that cannot write the board speaks through its own file; 1:1, 1:N and N:1 change nothing. Since
+0.73.0 it also covers **migrating a git repository** (3.9-3.15): what a clone does not carry, putting in
+the repository what can go there, measuring remote access before generating a key, acceptance as every
+remote operation of the source exercised from the destination, a hash at every hop of a transfer, and
+encryption proved per session - all from one observed two-machine migration.
 
 ⭐ **Give a session a name peers can call (0.72.1).** When cowork is invoked, the `⭐ cowork ACTIVE`
 line on the screen carries a tip: `/rename <project>-<role>`. A session's default name is

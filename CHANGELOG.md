@@ -33,6 +33,37 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.73.0
+
+擁有者 2026-10-11：「本機 Migration-New session 即將開始與舊機進行專案遷移，請你旁觀他們的過程，並記錄下 repo
+遷移的注意事項、跨機合作的情況，將他們遇到的問題或決定的做法記錄下來，更新本專案的 coworkskill」
+
+旁觀了一次實際的兩機專案遷移（新機一個 session、舊機一個 session，經共用資料夾協作），從開專案到傳輸完成，
+逐筆記錄在任務資料夾的 `OBSERVATIONS.md`（約 70 筆），再寫成通用規則（不提任何專案、機器、帳號）。
+
+- **`cross-machine.md` 溝通管道**：每次 session 開始重新量測自己在管道上的帳號（帳號會悄悄換掉，舊檔全部
+  寫不進去且不報錯）；本機路徑和網路路徑的權限不同；追加前比對讀到的長度；同機 `notify_when_idle` 對已閒置的
+  同伴會立刻觸發（重訂會空轉）；延遲步驟要排成背景工作才會叫醒你；共用消失時監看回報「沒變化」、連線被關時
+  監看什麼都看不到；新增 1.9（管道改名或改指後，先用內容確認是管道再寫）、1.10（一個管道重複用於多個工作）。
+- **`cross-machine.md` repository 遷移（新增 3.9–3.15）**：clone 帶不走什麼（notes、hooks、`info/exclude`、
+  程式需要的空目錄）與能進 repo 的就進 repo（三類）；`.gitignore` 的兩個陷阱與換行；遠端存取先量再產生金鑰
+  （forge 金鑰綁帳號、`[host]:port`、Windows 管理員金鑰檔、經 ssh 的引號）；驗收＝舊機每一項遠端操作都在
+  新機做過；由對方驗證、等待時在自己機器上預演；agent 記憶搬到新資料夾名；傳輸每一站驗雜湊、小心刪暫存、
+  發現的憑證先追查曝光；傳輸加密要逐條連線證明。
+- **`cross-machine.md` 量測工具**：掃描找到自己的報告（同一個下午三次）、寫入測試建立了自己要測的檔、沒測過
+  的遮罩印出機密、位元組偏移當字元偏移；PowerShell 單一項目 pipeline 的 `[0]` 陷阱。
+- **`owner-and-reporting.md`**：請擁有者決定時先講目標、哪些不用決定、為什麼是他的、各選項的結果、一個字的
+  回覆（同樣的問題問了五次三小時沒回，改寫後一分鐘回）；依轉達的裁示行動的唯一例外與條件（1.3 (b) 同步修改）；
+  新增 2.15（撤回已過時的請求）、2.16（「完成」的定義不是 agent 能豁免的）。
+- **`coordination.md` 3.19**（條目交錯時說明並只貼差異）、**`verification.md`**（寫成「大約」的關卡什麼都擋
+  不住）。
+- **SKILL.md**：第 13 條補「每次 session 開始再證明一次」；失效形狀表加 8 列（49 列，中文副本同步）。README
+  原本寫的「31 列」早已過時，改成 49。
+- **審查**：派一個審查子代理從反方檢查這批修改：ACCEPT WITH FIXES，11 條必修全改（含一條實測推翻的 PowerShell
+  說法、兩處和既有規則方向相反的寫法、幾個時間與次數不符紀錄的句子），17 條建議修大多採用。
+  ⚠ 擁有者需決定：使用者層級的 PowerShell 規則（沒有 7 就拒絕）沒有遠端主機的例外，而遷移中的遠端主機沒有
+  PowerShell 7；skill 目前寫「印出版本、照那個版本寫、在報告說明」。
+
 ## 0.72.2
 
 擁有者 2026-10-11：提示請加入顯示目前這個 session 的 name（「現在這個 session 的 name 是 oooo-xx」，用英文）。
@@ -3268,6 +3299,49 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.73.0
+
+Owner, 2026-10-11: watch the local Migration-New session migrate a project with the old machine, record
+the cautions for migrating a repository and how the cross-machine cooperation went - the problems they hit
+and the methods they settled on - and update this project's cowork skill.
+
+One real two-machine project migration was observed (one session on each machine, coordinating through a
+shared folder) from opening the project to the completed transfer, logged entry by entry in the task folder's
+`OBSERVATIONS.md` (about 70 entries), then written up as generic rules (no project, machine or account named).
+
+- **`cross-machine.md`, the channel:** re-measure the account you are on the channel at every session start
+  (it can change silently, leaving every older file unwritable with no error); the local and network paths to
+  one share have different permissions; the append command compares the length you read; a same-machine
+  `notify_when_idle` on an already-idle peer fires at once (re-subscribing loops); a delayed step must be armed
+  as a background job; a vanished share reads as "no change" and a closed session is invisible to the watcher;
+  new 1.9 (after a rename or re-point, confirm the channel by its content before writing) and 1.10 (one channel
+  reused for many jobs).
+- **`cross-machine.md`, migrating a repository (new 3.9-3.15):** what a clone does not carry (notes, hooks,
+  `info/exclude`, required empty directories) and putting in the repository what can go there (three classes);
+  two `.gitignore` traps and line endings; remote access measured before any key is generated (forge keys are
+  per account, `[host]:port`, the Windows administrators key file, quoting through ssh); acceptance = every
+  remote operation of the source exercised from the destination; the other side verifies, the acting side
+  rehearses on its own machine; agent memory moves to a new folder name; a hash at every hop, careful deletion
+  of the staging copy, a credential found on the way traced before acting; transport encryption proved per
+  session.
+- **`cross-machine.md`, instruments:** a sweep that finds its own report (three times in one afternoon), a
+  write test that creates the thing it tests, an untested redaction that printed the secret, a byte offset read
+  as characters; the PowerShell single-item pipeline `[0]` trap.
+- **`owner-and-reporting.md`:** a decision request starts from the owner's goal, says which items need no
+  decision, why each real one is theirs, the end state of each option, and a one-word reply (the same question
+  sent five times over three hours went unanswered; rewritten, it was settled in a minute); the one exception
+  for acting on a relayed ruling, with its conditions (1.3 (b) changed in the same edit); new 2.15 (withdraw an
+  overtaken request) and 2.16 (the owner's definition of done is not the agents' to waive).
+- **`coordination.md` 3.19** (crossed entries: say so, post the delta) and **`verification.md`** (a gate
+  written as "about" refuses nothing).
+- **SKILL.md:** rule 13 gains "prove it again at every session start"; eight failure-shape rows (49 in all;
+  the zh-TW copy in sync). README's "31 rows" was long stale and now says 49.
+- **Review:** an adversarial reviewer sub-agent: ACCEPT WITH FIXES; all 11 must-fixes applied (one PowerShell
+  claim disproved by execution, two passages that contradicted existing rules, several times and counts the
+  record did not support), most of the 17 should-fixes adopted.
+  ⚠ For the owner: the user-level PowerShell rule ("no 7, refuse") has no far-host exception, and the
+  migration's far host had no PowerShell 7; the skill currently says "print the version, write for it, say so".
 
 ## 0.72.2
 

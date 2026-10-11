@@ -87,7 +87,9 @@ If you read nothing else, these are the ones whose absence caused real damage.
     message - and waiting past a few minutes is a *permissions* hypothesis, not a patience
     problem. The same applies to anything that arrives: after a cross-machine copy the first
     check is "can I write here", not "is the hash right" - a bit-perfect unwritable tree fails
-    every later step, each with a different error, and reads as five unrelated bugs.
+    every later step, each with a different error, and reads as five unrelated bugs. **Prove it
+    again at every session start**: the account you are on a channel can change silently, leaving
+    every older file unwritable with no error until you write (`cross-machine.md` 1.2).
     ⛔ **And waiting for a peer is not stopping.** A session between turns runs nothing and
     nothing wakes it: "I am waiting" at the end of a turn means asleep until a human speaks.
     Before ending a turn to wait on a peer, arm a wake-up (`notify_when_idle` on the same
@@ -217,6 +219,14 @@ A catalogue, so the next session names the shape instead of rediscovering it.
 | Separate control | A dead pattern beside a control run with different flags, both "clean" | Run the control through the same invocation as the measurement (`cross-machine.md` 4.5) |
 | Sampled verdict | "Do not copy" decided from the first sixty lines of a thirty-thousand-file list | Classify every entry; before the source is deleted, re-audit it whole (`cross-machine.md` 3.5, 3.8) |
 | Delete through a link | The tree being deleted is a junction, and the recursive delete empties the target | Read the folder's link type first; remove a link with `rmdir`, never recursively (`cross-machine.md` 3.8) |
+| Re-pointed channel | The channel's name now points at another folder; it reads and writes like the channel, and a write-test lands in someone's private tree | After any rename or re-point, confirm the channel by its content before writing; disclose a stray write and have the folder's owner gone-check it (`cross-machine.md` 1.9) |
+| Silent account change | After a channel change, every older file refuses an append while new files work - no error until you write | Re-measure the account you are on the channel at every session start, today's files as the control (`cross-machine.md` 1.2) |
+| Grandfathered session | Encryption is switched on; the session opened before the switch carries on in plain text, and "my access still works" looks like proof | Prove it per session from a side that can see the traffic, with a before capture as the control (`cross-machine.md` 3.15) |
+| Sweep finds its own report | A search of the channel for a secret's marker matches the message that reported the last search | Search for the secret's shape, not its word; add a lookalike column that must not match (`cross-machine.md` 4.4) |
+| Write test creates its target | An append-mode "is it writable" test creates the missing file and reports True | Open-existing for writability, create-new for creation, and a negative control that must fail (`cross-machine.md` 4.6) |
+| Untested redaction | A masking filter that does not match prints the secret it was meant to hide | Run the redaction on a known-bad sample, and see the mask, before trusting it (`cross-machine.md` 4.7) |
+| Byte offset read as characters | "Re-read from byte N" applied to a decoded string starts late and can skip an entry | Slice bytes, then decode; write "byte" beside every offset (`cross-machine.md` 4.8) |
+| Unplaceable question | A correct decision request, repeated for hours, goes unanswered because the owner cannot see why it is theirs | Goal first, which items need no decision, why each real one is theirs, options with end states, one-word replies (`owner-and-reporting.md` 2.6) |
 
 ---
 
@@ -229,7 +239,7 @@ A catalogue, so the next session names the shape instead of rediscovering it.
 | `reference/verification.md` | claim that something is true; write to a file others share; build or trust a checking tool |
 | `reference/ownership-and-production.md` | share one working tree; change a live system; publish anything outward |
 | `reference/longrunning.md` | hand over; run out of budget; start something that runs for hours or days |
-| `reference/cross-machine.md` | coordinate with a session on ANOTHER MACHINE; move a project to new hardware; work with two checkouts of one repository; use a shared file as the channel; wait for a peer (1.8) |
+| `reference/cross-machine.md` | coordinate with a session on ANOTHER MACHINE; move a project to new hardware; work with two checkouts of one repository; use a shared file as the channel; wait for a peer (1.8); migrate a git repository and its remotes (3.9-3.15) |
 | `tools/watch-folder.ps1` | wait on peers you can reach only through files - run it in the background on the channel ROOT, it exits (and wakes you) when anything in the whole tree under it changes |
 
 Where a rule already lives in `unattended-work` or `dispatch-protocol`, these files point at it
