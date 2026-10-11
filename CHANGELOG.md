@@ -33,6 +33,21 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.72.2
+
+擁有者 2026-10-11：提示請加入顯示目前這個 session 的 name（「現在這個 session 的 name 是 oooo-xx」，用英文）。
+
+- **cowork 的 `/rename` 提示最後多一句：** `This session's name right now is <名字>.` 名字從 Claude Code 自己的
+  session 登記檔讀：`<CLAUDE_CONFIG_DIR 或 ~/.claude>/sessions/<pid>.json`，取 `sessionId` 等於這次呼叫的那一筆
+  （同一個 id 有好幾筆時取 `updatedAt` 最新的）。只讀 `*.json`、只用四個欄位，旁邊的 `*.key` 從不打開，檔案
+  內容不寫進 log。
+- **根據（實測，Claude Code 2.1.296）：** 這台機器上每份登記檔的 `name` 都和 ListAgents 顯示的名字一致（本
+  session 當下是 `dispatch-guard-09`，四天前還是 `-b6`）；改過名的是 `nameSource: "user"`，沒改過的是 `derived`。
+- **讀不到就說讀不到：** 這是沒有文件的內部格式，找不到檔案、格式變了、沒有這個 session 的紀錄，提示都照樣顯示，
+  最後一句改成 `This session's current name could not be read.`，不猜。
+- test_guards：假的登記檔（本 session 的現行紀錄、同 id 的舊紀錄、別的 session、壞掉的檔案），只顯示最新那筆；
+  沒有登記檔時顯示讀不到；突變檢查（拿掉查詢函式，名字必須消失）。
+
 ## 0.72.1
 
 擁有者 2026-10-11：「請在 cowork skill 啟動時提示使用者可以用 /rename ooooooo-xx 變更 session 代號方便呼叫」，
@@ -3253,6 +3268,27 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.72.2
+
+Owner, 2026-10-11: the tip should also show this session's current name ("this session's name is
+now oooo-xx", in English).
+
+- **cowork's `/rename` tip ends with one more sentence:** `This session's name right now is
+  <name>.` The name is read from Claude Code's own session registry,
+  `<CLAUDE_CONFIG_DIR or ~/.claude>/sessions/<pid>.json`, taking the entry whose `sessionId` is
+  this call's (the newest `updatedAt` when one id has several). Only `*.json` is read and only
+  four fields are used; the `*.key` files beside them are never opened, and nothing of the file is
+  logged.
+- **Basis (measured, Claude Code 2.1.296):** on this machine every registry file's `name` matched
+  the name ListAgents shows (this session's was `dispatch-guard-09`, four days after `-b6`); a
+  renamed session has `nameSource: "user"`, a default one `derived`.
+- **Unreadable means it says so:** this is an undocumented internal format, so with no file, a
+  changed format or no entry for the session, the tip still shows and ends with
+  `This session's current name could not be read.` - never a guess.
+- test_guards: a fake registry (this session's current entry, a stale entry for the same id,
+  another session, a broken file) shows only the newest entry; no registry shows "could not be
+  read"; a mutation check (the lookup removed, the name must disappear).
 
 ## 0.72.1
 

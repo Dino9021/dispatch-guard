@@ -3967,9 +3967,41 @@ COWORK_RENAME_TIP = ("Tip: /rename <project>-<role> (letters, digits, hyphens - 
                      "<project>-<xx>, whose last two characters can change while it sleeps.")
 
 
-def skill_active_notice(name):
+def current_session_name(session_id):
+    """This session's name as peers see it right now, or "" (0.72.2, owner 2026-10-11: the tip should
+    show the session's current name).
+
+    Read from Claude Code's session registry, `<config dir>/sessions/<pid>.json` - one file per live
+    process, holding `sessionId`, `name`, `nameSource` (`derived` for the default, `user` after
+    /rename) and `updatedAt` (measured, Claude Code 2.1.296). ⚠ An undocumented internal format: any
+    surprise returns "" and the tip says the name could not be read - never a guess. Only `*.json` is
+    read (the `*.key` files beside them are never opened), only those four fields are used, and
+    nothing of the file is logged. Several files for one session id (a stale one left by a dead
+    process): the most recently updated wins.
+    """
+    if not session_id:
+        return ""
+    root = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+    best, best_at = "", -1
+    for p in glob.glob(os.path.join(root, "sessions", "*.json")):
+        try:
+            with open(p, encoding="utf-8") as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(d, dict) or d.get("sessionId") != session_id:
+            continue
+        name, at = d.get("name"), d.get("updatedAt")
+        at = at if isinstance(at, (int, float)) else 0
+        if isinstance(name, str) and name.strip() and at > best_at:
+            best, best_at = name.strip(), at
+    return best
+
+
+def skill_active_notice(name, session_id=None):
     """The on-screen line for an invoked skill of THIS plugin, or "" (0.71.0, owner 2026-10-07:
-    every skill should announce itself with `⭐ <skill> ACTIVE` when it is invoked).
+    every skill should announce itself with `⭐ <skill> ACTIVE` when it is invoked). cowork's line
+    adds the /rename tip and this session's current name (0.72.1, 0.72.2) - looked up only for cowork.
 
     `dispatch-guard:cowork` and a bare `cowork` count; `other-plugin:cowork` does not - matched on
     the name as written, never through cmd_guards.skill_slug(), which strips every prefix.
@@ -3984,7 +4016,12 @@ def skill_active_notice(name):
     for own in OWN_SKILLS:
         if s in (own, "dispatch-guard:" + own):
             line = "⭐ %s ACTIVE — dispatch-guard saw the skill invoked" % own
-            return "%s. %s" % (line, COWORK_RENAME_TIP) if own == "cowork" else line
+            if own != "cowork":
+                return line
+            current = current_session_name(session_id)
+            now = ("This session's name right now is %s." % current if current
+                   else "This session's current name could not be read.")
+            return "%s. %s %s" % (line, COWORK_RENAME_TIP, now)
     return ""
 
 
@@ -4666,7 +4703,8 @@ def main():
         # ⭐ 0.71.0: one of THIS plugin's skills was invoked -> say so on the screen.
         try:
             ti = payload.get("tool_input")
-            notice = skill_active_notice(ti.get("skill") if isinstance(ti, dict) else None)
+            notice = skill_active_notice(ti.get("skill") if isinstance(ti, dict) else None,
+                                         payload.get("session_id"))
         except Exception as exc:
             log(root, "SKILL-NOTICE-FAILED %r" % (exc,))
             notice = ""
@@ -4939,8 +4977,9 @@ def selftest():
         for own in OWN_SKILLS:
             for spelled in (own, "dispatch-guard:" + own, "  dispatch-guard:%s " % own):
                 want = "⭐ %s ACTIVE — dispatch-guard saw the skill invoked" % own
-                if own == "cowork":             # 0.72.1: plus the /rename tip, on the same line
-                    want = "%s. %s" % (want, COWORK_RENAME_TIP)
+                if own == "cowork":             # 0.72.1: plus the /rename tip, on the same line;
+                    # 0.72.2: and the current name - no session id here, so "could not be read"
+                    want = "%s. %s This session's current name could not be read." % (want, COWORK_RENAME_TIP)
                 assert skill_active_notice(spelled) == want, spelled
         for other in ("other-plugin:cowork", "mattpocock-skills:tdd", "cowork-extra", "",
                       None, "dispatch-guard:install", "dispatch-guard:COWORK"):

@@ -764,7 +764,9 @@ git、權限都一樣。**第 13 條**是跨機器的底線：依賴一條管道
 提示：`/rename <project>-<role>`。session 的預設名字是 `<project>-<xx>`（專案資料夾名轉小寫，加兩位十六進位），
 後兩碼在 session 睡著期間會變，所以同伴記住的名字可能已經換人。用 `/rename` 自己取名（例如把
 `myapp-3f` 改成 `myapp-S4`），同伴就能用那個名字傳訊息。只能是英文字母、數字和連字號：實測含空格的名字
-不會被拿來當呼叫名稱，預設名會跑回來。`/rename` 只有人能下，agent 不能。
+不會被拿來當呼叫名稱，預設名會跑回來。`/rename` 只有人能下，agent 不能。提示最後會寫出這個 session
+**現在**的名字（0.72.2，例如 `This session's name right now is myapp-3f.`），從 Claude Code 自己的 session
+登記檔（`~/.claude/sessions/<pid>.json`）讀；那是沒有文件的內部格式，讀不到就寫讀不到，不猜。
 
 **`cowork` 的運作流程**（「第 N 條」是十三條規則的編號；紅框裡點名 hook 的那一句，是 hook 會拒絕的事，其餘靠 agent 自己遵守）：
 
@@ -2591,6 +2593,9 @@ characters change while the session sleeps, so the name a peer remembers may now
 someone else. Name it yourself with `/rename` (say, `myapp-3f` to `myapp-S4`) and peers can
 message it by that name. Letters, digits and hyphens only: measured, a name with a space was not
 used as the address and the default came back. Only a person can run `/rename`; the agent cannot.
+The tip ends with the session's name **right now** (0.72.2, e.g. `This session's name right now is
+myapp-3f.`), read from Claude Code's own session registry (`~/.claude/sessions/<pid>.json`); that
+is an undocumented internal format, so when it cannot be read the tip says so instead of guessing.
 
 **How `cowork` runs** ("rule N" is the number among the thirteen rules; in a red box, the sentence naming the hook is what the hook refuses — the rest is kept by the agent):
 

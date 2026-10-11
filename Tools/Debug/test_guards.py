@@ -913,16 +913,51 @@ def case_skill_active_notice(gate, sdir, root):
         return run_gate(gate, {"hook_event_name": "PostToolUse", "tool_name": "Skill",
                                "cwd": root, "session_id": sid, "tool_input": {"skill": name}})
 
-    for own in ("dispatch-protocol", "unattended-work", "cowork"):
-        for spelled in (own, "dispatch-guard:" + own):
-            r = invoked(spelled)
-            msg = r.get("systemMessage", "") if isinstance(r, dict) else ""
-            assert msg.startswith("⭐ %s ACTIVE" % own), (spelled, r)
-            # ⭐ 0.72.1: cowork's line - and only cowork's - tells the person how to name the session.
-            assert ("/rename <project>-<role>" in msg) == (own == "cowork"), (spelled, msg)
-            assert "\n" not in msg, "one screen line: %r" % (msg,)
-            # ...and the invocation is still RECORDED - the notice must not replace note_skill.
-            assert os.path.exists(gate.state_path(sdir, sid, "skill-seen-%s" % own)), spelled
+    # ⭐ 0.72.2: a fake Claude Code session registry (`<config dir>/sessions/<pid>.json`): this
+    # session's current entry, a STALE entry for the same session id, another session, a broken file.
+    with scratch_dir("claude-config") as cfgdir:        # kept after the case, like every scratch dir
+        pass
+    os.makedirs(os.path.join(cfgdir, "sessions"), exist_ok=True)
+    for pid, body in (("111", {"sessionId": sid, "name": "proj-ab", "nameSource": "derived", "updatedAt": 200}),
+                      ("222", {"sessionId": sid, "name": "proj-old", "nameSource": "derived", "updatedAt": 100}),
+                      ("333", {"sessionId": "s-someone-else", "name": "other-9f", "updatedAt": 900})):
+        with open(os.path.join(cfgdir, "sessions", pid + ".json"), "w", encoding="utf-8") as f:
+            json.dump(body, f)
+    with open(os.path.join(cfgdir, "sessions", "444.json"), "w", encoding="utf-8") as f:
+        f.write("{not json")
+    old_cfg = os.environ.get("CLAUDE_CONFIG_DIR")
+    os.environ["CLAUDE_CONFIG_DIR"] = cfgdir
+    try:
+        for own in ("dispatch-protocol", "unattended-work", "cowork"):
+            for spelled in (own, "dispatch-guard:" + own):
+                r = invoked(spelled)
+                msg = r.get("systemMessage", "") if isinstance(r, dict) else ""
+                assert msg.startswith("⭐ %s ACTIVE" % own), (spelled, r)
+                # ⭐ 0.72.1: cowork's line - and only cowork's - tells the person how to name the
+                # session; 0.72.2: and what it is called right now (the newest entry for this id).
+                assert ("/rename <project>-<role>" in msg) == (own == "cowork"), (spelled, msg)
+                assert ("This session's name right now is proj-ab." in msg) == (own == "cowork"), (spelled, msg)
+                assert "proj-old" not in msg and "other-9f" not in msg, msg
+                assert "\n" not in msg, "one screen line: %r" % (msg,)
+                # ...and the invocation is still RECORDED - the notice must not replace note_skill.
+                assert os.path.exists(gate.state_path(sdir, sid, "skill-seen-%s" % own)), spelled
+        # ⛔ MUTATION: the name must come from the registry lookup, not from anywhere else.
+        real_name = gate.current_session_name
+        gate.current_session_name = lambda *_a, **_k: ""
+        try:
+            msg = invoked("cowork").get("systemMessage", "")
+            assert "proj-ab" not in msg and "could not be read" in msg, msg
+        finally:
+            gate.current_session_name = real_name
+        # No registry at all (or a format Claude Code changed): the tip stays, the name is not guessed.
+        os.environ["CLAUDE_CONFIG_DIR"] = os.path.join(cfgdir, "not-there")
+        msg = invoked("cowork").get("systemMessage", "")
+        assert "/rename <project>-<role>" in msg and "current name could not be read" in msg, msg
+    finally:
+        if old_cfg is None:
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+        else:
+            os.environ["CLAUDE_CONFIG_DIR"] = old_cfg
     assert "SKILL-ACTIVE-NOTICE cowork" in gitlog(root), gitlog(root)[-300:]
     # ⛔ Another plugin's skill - even one sharing a bare name - gets no notice.
     for other in ("other-plugin:cowork", "mattpocock-skills:tdd", "dispatch-guard:install"):
@@ -931,7 +966,7 @@ def case_skill_active_notice(gate, sdir, root):
     # ⛔ MUTATION: take the notice away and the screen line must disappear. Without this the
     # assertions above could be passing on some other branch that happens to print.
     real = gate.skill_active_notice
-    gate.skill_active_notice = lambda _name: ""
+    gate.skill_active_notice = lambda *_a, **_k: ""
     try:
         r = invoked("dispatch-guard:cowork")
         assert not (isinstance(r, dict) and r.get("systemMessage")), \
