@@ -33,6 +33,20 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.72.1
+
+擁有者 2026-10-11：「請在 cowork skill 啟動時提示使用者可以用 /rename ooooooo-xx 變更 session 代號方便呼叫」，
+佔位符要寫對。
+
+- **cowork 被叫到時，畫面上那行 `⭐ cowork ACTIVE` 後面接一句提示：** `/rename <project>-<role>`（英文字母、
+  數字、連字號，不能有空格），讓 session 有一個自己取、同伴能拿來傳訊息的名字，取代預設的 `<project>-<xx>`。
+  同一行顯示，另外兩支 skill 的那行不變。`/rename` 只有人能下，所以提示是給人看的。
+- **佔位符的根據（這台機器的逐字稿實測）：** 預設名字是「專案資料夾名轉小寫、非英數字換成 `-`」加兩位十六進位
+  （例如 `dispatch-guard-b6`；資料夾名裡的點也換成 `-`），後兩碼在 session 睡著期間會換；`/rename` 寫入
+  `agent-name`，20 秒內 session 名稱就是新名字；改成一個含空格的名字之後，名稱退回預設的 `<project>-<xx>`。
+- test_guards：cowork 的那行（兩種寫法）有提示、另外兩支沒有、全在一行；selftest 釘住完整字串。
+- **沒量到的：** 自己取的名字在 session 重開（resume）之後是否還在。
+
 ## 0.72.0
 
 擁有者 2026-10-07（經 aiintroduction-95 轉來，原話在它的逐字稿裡核對過）：「plugin 的 hook 是固定的，
@@ -3239,6 +3253,25 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.72.1
+
+Owner, 2026-10-11: when the cowork skill starts, tell the user they can change the session's
+name with `/rename ooooooo-xx` so it is easy to call - with the placeholder written correctly.
+
+- **When cowork is invoked, the `⭐ cowork ACTIVE` line on the screen carries a tip:**
+  `/rename <project>-<role>` (letters, digits, hyphens - no spaces), giving the session a name of
+  your choosing that peers can message, instead of the default `<project>-<xx>`. Same line; the
+  other two skills' lines are unchanged. Only a person can run `/rename`, so the tip is for them.
+- **Where the placeholder comes from (measured in this machine's transcripts):** the default name
+  is the project folder name lower-cased, non-alphanumerics turned into `-`, plus two hex digits
+  (say `dispatch-guard-b6`; a dot in the folder name becomes `-` too), and the last two
+  characters changed while sessions slept; `/rename` writes an `agent-name` entry and within 20
+  seconds the session's name is the new one; renamed to a name with spaces, it fell back to the
+  default `<project>-<xx>`.
+- test_guards: cowork's line (both spellings) carries the tip, the other two do not, all on one
+  line; the selftest pins the full string.
+- **Not measured:** whether a chosen name survives a session resume.
 
 ## 0.72.0
 

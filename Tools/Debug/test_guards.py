@@ -918,6 +918,9 @@ def case_skill_active_notice(gate, sdir, root):
             r = invoked(spelled)
             msg = r.get("systemMessage", "") if isinstance(r, dict) else ""
             assert msg.startswith("⭐ %s ACTIVE" % own), (spelled, r)
+            # ⭐ 0.72.1: cowork's line - and only cowork's - tells the person how to name the session.
+            assert ("/rename <project>-<role>" in msg) == (own == "cowork"), (spelled, msg)
+            assert "\n" not in msg, "one screen line: %r" % (msg,)
             # ...and the invocation is still RECORDED - the notice must not replace note_skill.
             assert os.path.exists(gate.state_path(sdir, sid, "skill-seen-%s" % own)), spelled
     assert "SKILL-ACTIVE-NOTICE cowork" in gitlog(root), gitlog(root)[-300:]

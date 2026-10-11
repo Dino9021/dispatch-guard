@@ -686,7 +686,8 @@ claude plugin marketplace remove dispatch-guard
 ⭐ **`unattended-work` 什麼時候載入：看關鍵詞（0.71.0）。** 擁有者說了 無人職守、無人值守、無人模式、
 自動模式、做完再叫我 或 unattended，或直接指名它；「任務很長」本身不再是載入的理由。
 ⚠ 開場提醒（`announce_unattended_work`，預設開）仍會在每個 session 要求載入；想完全只靠關鍵詞，
-就照下面那節把它關掉。三支 skill 被叫到時，hook 都會在畫面上顯示 `⭐ <skill> ACTIVE`。
+就照下面那節把它關掉。三支 skill 被叫到時，hook 都會在畫面上顯示 `⭐ <skill> ACTIVE`；cowork 那行
+另外附一句 `/rename <project>-<role>` 的提示（0.72.1，見 cowork 那節）。
 
 **`unattended-work` 的運作流程**（§ 是 skill 裡的章節號；紅框裡點名 hook 或 gate 的那一句，是 hook 會拒絕、提醒或自動完成的事，其餘靠 agent 自己遵守）：
 
@@ -758,6 +759,12 @@ git、權限都一樣。**第 13 條**是跨機器的底線：依賴一條管道
 把沉默讀成「還沒開始」，**雙方都沒收到任何錯誤**。完整的跨機做法在 `reference/cross-machine.md`，
 **兩層**：一份只能追加的認領板（兩邊都過了寫入測試才能用）＋內容**一人一檔**；寫不進板子就用自己的檔
 說話；1:1／1:N／N:1 不改變本質。
+
+⭐ **給 session 取一個叫得到的名字（0.72.1）。** cowork 被叫到時，畫面上那行 `⭐ cowork ACTIVE` 後面會接一句
+提示：`/rename <project>-<role>`。session 的預設名字是 `<project>-<xx>`（專案資料夾名轉小寫，加兩位十六進位），
+後兩碼在 session 睡著期間會變，所以同伴記住的名字可能已經換人。用 `/rename` 自己取名（例如把
+`myapp-3f` 改成 `myapp-S4`），同伴就能用那個名字傳訊息。只能是英文字母、數字和連字號：實測含空格的名字
+不會被拿來當呼叫名稱，預設名會跑回來。`/rename` 只有人能下，agent 不能。
 
 **`cowork` 的運作流程**（「第 N 條」是十三條規則的編號；紅框裡點名 hook 的那一句，是 hook 會拒絕的事，其餘靠 agent 自己遵守）：
 
@@ -2494,7 +2501,8 @@ unread one does nothing.
 無人值守, 無人模式, 自動模式, 做完再叫我 or unattended, or names the skill; a long task alone is no
 longer a reason. ⚠ The SessionStart reminder (`announce_unattended_work`, on by default) still
 asks every session to load it; to rely on the words alone, switch it off as the next section
-shows. When any of the three skills is invoked, the hook shows `⭐ <skill> ACTIVE` on the screen.
+shows. When any of the three skills is invoked, the hook shows `⭐ <skill> ACTIVE` on the screen;
+cowork's line also carries a `/rename <project>-<role>` tip (0.72.1, see the cowork section).
 
 **How `unattended-work` runs** (§ is the skill's section number; in a red box, the sentence naming the hook or the gate is what the hook refuses, notes or carries out — the rest is kept by the agent):
 
@@ -2575,6 +2583,14 @@ other read the silence as "not started yet", and **neither side got an error**. 
 protocol is `reference/cross-machine.md`, in **two layers**: one append-only claims board
 (usable only after both sides pass the write-test) plus **one content file per writer**; a side
 that cannot write the board speaks through its own file; 1:1, 1:N and N:1 change nothing.
+
+⭐ **Give a session a name peers can call (0.72.1).** When cowork is invoked, the `⭐ cowork ACTIVE`
+line on the screen carries a tip: `/rename <project>-<role>`. A session's default name is
+`<project>-<xx>` (the project folder name lower-cased, plus two hex digits), and the last two
+characters change while the session sleeps, so the name a peer remembers may now belong to
+someone else. Name it yourself with `/rename` (say, `myapp-3f` to `myapp-S4`) and peers can
+message it by that name. Letters, digits and hyphens only: measured, a name with a space was not
+used as the address and the default came back. Only a person can run `/rename`; the agent cannot.
 
 **How `cowork` runs** ("rule N" is the number among the thirteen rules; in a red box, the sentence naming the hook is what the hook refuses — the rest is kept by the agent):
 

@@ -3956,6 +3956,16 @@ def claude_mem_check(payload, root, sdir):
 # ⭐ THIS PLUGIN'S SKILLS, for the on-screen notice when one is invoked (0.71.0).
 OWN_SKILLS = ("dispatch-protocol", "unattended-work", "cowork")
 
+# ⭐ cowork's notice also tells the PERSON how to give the session a name peers can call (0.72.1,
+# owner 2026-10-11). Only the person can run `/rename`; the agent cannot. Measured in this machine's
+# transcripts: `/rename X` writes an `agent-name` entry and within seconds X is the name ListAgents
+# reports and peers send to; the default is `<project folder, lower-cased>-<two hex digits>`, and its
+# last two characters changed while sessions slept; a name with spaces (three words) was not used -
+# the default came back. Hence letters, digits and hyphens.
+COWORK_RENAME_TIP = ("Tip: /rename <project>-<role> (letters, digits, hyphens - no spaces) gives this "
+                     "session a name you chose for peers to message, instead of the default "
+                     "<project>-<xx>, whose last two characters can change while it sleeps.")
+
 
 def skill_active_notice(name):
     """The on-screen line for an invoked skill of THIS plugin, or "" (0.71.0, owner 2026-10-07:
@@ -3973,7 +3983,8 @@ def skill_active_notice(name):
     s = str(name or "").strip()
     for own in OWN_SKILLS:
         if s in (own, "dispatch-guard:" + own):
-            return "⭐ %s ACTIVE — dispatch-guard saw the skill invoked" % own
+            line = "⭐ %s ACTIVE — dispatch-guard saw the skill invoked" % own
+            return "%s. %s" % (line, COWORK_RENAME_TIP) if own == "cowork" else line
     return ""
 
 
@@ -4927,8 +4938,10 @@ def selftest():
         # spelling, and never for another plugin's skill that happens to share a bare name.
         for own in OWN_SKILLS:
             for spelled in (own, "dispatch-guard:" + own, "  dispatch-guard:%s " % own):
-                assert skill_active_notice(spelled) == \
-                    "⭐ %s ACTIVE — dispatch-guard saw the skill invoked" % own, spelled
+                want = "⭐ %s ACTIVE — dispatch-guard saw the skill invoked" % own
+                if own == "cowork":             # 0.72.1: plus the /rename tip, on the same line
+                    want = "%s. %s" % (want, COWORK_RENAME_TIP)
+                assert skill_active_notice(spelled) == want, spelled
         for other in ("other-plugin:cowork", "mattpocock-skills:tdd", "cowork-extra", "",
                       None, "dispatch-guard:install", "dispatch-guard:COWORK"):
             assert skill_active_notice(other) == "", other
