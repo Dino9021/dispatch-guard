@@ -287,8 +287,7 @@ been says so, and the side that can still reach the folder runs the gone-check.
 ### 1.10 A channel reused for many jobs: one folder per job, and a standing file that indexes them
 
 The share was set up as the channel for migrating several projects in turn, and the layout used for the
-first of them (one migration, observed from opening through the transfer; the archive step had not yet
-been exercised when this was written) was: at the root, a **standing
+first of them (one migration, observed from opening to the archive) was: at the root, a **standing
 file** (rules adopted mid-run - `coordination.md` 3.15 - plus an index of jobs; both sides may edit it, but
 every change other than the opener's own index row is proposed on the board first, so the shared file never
 has a silent writer), a **channel-level board** (identity, channel tests, one line to OPEN and one to CLOSE
@@ -296,8 +295,11 @@ each job, nothing else), and the check-ins; per job, `jobs/<name>/` holding that
 board, one content file per writer and a `transfer/` folder with a manifest. A job board opened by an
 `OPENED` line on the root board, and listed in the index, is scoped to that job: it is not a second channel,
 and 1.3's "the root board wins" settles only two boards competing for the same scope. A finished job's folder
-is to move to `archive/` (not yet exercised); every side adds `archive` to its watcher's `-Ignore` - the
-watcher itself skips only `.claude`. The side that opens a job creates the other side's (empty) content file too and, in the same
+moves to `archive/` once BOTH sides have posted CLOSED on its board, and the move is announced on the root
+board; every side adds `archive` to its watcher's `-Ignore` - the watcher itself skips only `.claude`.
+Measured on the first close: nothing in the folder checked for links before the move; after it, every item
+present, every file's hash equal to its pre-move value, the old path gone, the archived board still carrying its
+`append-only` heading - re-measured by the other side - and nothing deleted from `archive/` without the owner. The side that opens a job creates the other side's (empty) content file too and, in the same
 step, grants that side's account by SID (1.6) - created is not writable - then adds its own index row.
 ⚠ Each side re-arms its watcher the moment a job folder opens, with its own file there and the job's
 `transfer/` added to `-Ignore` - ignore entries are literal paths, so a root-level entry does not cover the

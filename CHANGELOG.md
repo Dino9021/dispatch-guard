@@ -33,6 +33,17 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.73.1
+
+0.73.0 發布時，旁觀的那次遷移還在等擁有者裁示一次真正的 push；之後的經過補進 skill。
+
+- 擁有者 2026-10-12 回「b」：新機照 repo 自己的規範寫一筆換機記錄、篩檢後 commit 並真正 push 成功；舊機獨立重量後
+  無條件結案，新機把專案資料夾歸檔。`cross-machine.md` 1.10 原本寫「歸檔這一步還沒做過」，改成實際量到的做法：
+  雙方都貼 CLOSED 才搬、搬前查連結、搬後逐檔比雜湊、舊路徑消失、歸檔看板仍帶 `append-only` 標頭、另一方再量一次、
+  沒有擁有者同意不刪 `archive/`。`owner-and-reporting.md` 2.16 補上結局：擁有者選了專案本來就要的那個 commit，
+  push 補上缺口，雙方才結案。
+- 觀察紀錄補到 E32 並結束（任務資料夾 `Memory/tasks/20261011-161039-observe-workstation-migration/`）。
+
 ## 0.73.0
 
 擁有者 2026-10-11：「本機 Migration-New session 即將開始與舊機進行專案遷移，請你旁觀他們的過程，並記錄下 repo
@@ -3299,6 +3310,21 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.73.1
+
+When 0.73.0 shipped, the observed migration was still waiting for the owner's ruling on a real push; what
+followed is now in the skill.
+
+- The owner answered "b" on 2026-10-12: the new machine wrote a move note in the repository's own format,
+  screened it, committed and pushed for real; the old machine re-measured and closed unconditionally, and the new
+  machine archived the project folder. `cross-machine.md` 1.10 said the archive step had not been exercised; it now
+  gives the measured procedure: move only after both sides posted CLOSED, check for links first, hash every file
+  after, the old path gone, the archived board still carrying its `append-only` heading, re-measured by the other
+  side, nothing deleted from `archive/` without the owner. `owner-and-reporting.md` 2.16 gains the outcome: the
+  owner chose the commit the project wanted anyway, its push closed the gap, and only then did both sides close.
+- The observation log runs to E32 and is closed (task folder
+  `Memory/tasks/20261011-161039-observe-workstation-migration/`).
 
 ## 0.73.0
 

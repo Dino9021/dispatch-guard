@@ -301,6 +301,7 @@ the owner if the owner's instructions define it as part of done.
 CLOSED and the other had proposed it, both while listing an unexercised capability as "open by choice";
 both withdrew within about two minutes of the posted CLOSED - one on re-reading its standing instructions,
 the other because "`UNCONFIRMED` and `CLOSED` do not go together" - and the choice went to the owner with a
-recommendation. Never manufacture the missing proof: a gap that is known and recorded is better than a fake
+recommendation; the owner chose the commit the project wanted anyway, its push closed the gap, and only then
+did both sides close. Never manufacture the missing proof: a gap that is known and recorded is better than a fake
 that hides it. (`unattended-work` §14 asks the same of a stopping report: what you did NOT do is written
 down, with why.)
