@@ -1356,6 +1356,8 @@ def main():
     # ⛔ NO NETWORK IN TESTS: do_run now fetches before deciding (0.74.0); every case gets a failed fetch
     # unless it stubs its own, so the cached reading decides exactly as before.
     resume.usage.fetch = lambda *a, **k: "stubbed: no network in tests"
+    # ...and the gate's detached refresh is a fresh `usage.py` process the stub above never reaches.
+    gate.keep_clock_running = lambda _sdir: False
     case_live_reading_before_waking(resume)
     case_d3_stand_down_only_after_the_reset(resume)
     case_tool_path_arms_once_per_window(gate)

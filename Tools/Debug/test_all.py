@@ -197,6 +197,19 @@ def main():
                            "the run rewrote the USER'S %s in ~/.claude/dispatch-guard - a check "
                            "reached the real state dir. Put it back with the installed copy's "
                            "`python <plugin>/hooks/shim.py`.\n" % ", ".join(moved)))))
+    total += 1
+    # ⛔ NO REAL API CALL FROM A TEST. The gate writes clock.spawn just before it forks `usage.py
+    # --fetch-now`, a fresh process no stub reaches, which spends the owner's real usage calls
+    # (measured 2026-10-12: three per run, one answered HTTP 429).
+    forked = sorted(os.path.relpath(dp, DEBUG_DIR) for dp, _d, fns
+                    in os.walk(os.path.join(DEBUG_DIR, "scratch")) if "clock.spawn" in fns)
+    print("%-16s %s" % ("no real fetch", "FAIL" if forked else "PASS"))
+    if forked:
+        failed.append(("no real fetch", [os.path.join(DEBUG_DIR, "test_all.py")],
+                       subprocess.CompletedProcess([], 1, stdout="", stderr=(
+                           "the gate forked a real usage refresh in %d scratch dir(s) - stub "
+                           "dispatch_gate.keep_clock_running in that check: %s\n"
+                           % (len(forked), ", ".join(forked))))))
     for name, argv, r in failed:
         print("\n---- %s ----\n%s%s" % (name, r.stdout[-2000:], r.stderr[-2000:]))
         # ⭐ POINT AT WHAT IT WROTE. Every file a check produces is kept after the run, on

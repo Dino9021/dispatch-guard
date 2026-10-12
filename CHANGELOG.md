@@ -33,6 +33,18 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.74.1
+
+擁有者 2026-10-12：「麻煩請你修」——0.74.0 時發現，跑全套測試會用擁有者的真實憑證打用量 API。
+
+- **原因：** `test_net_zone` 有 5 個案例在同一個行程裡跑真的 gate，而 gate 在快取過期時會另開一個 `usage.py
+  --fetch-now` 背景行程去更新用量；那是全新的行程，測試裡的替換管不到它。實測每跑一次打 3 次 API，其中一次
+  收到真的 HTTP 429。
+- **修正：** `test_net_zone` 開頭把 `dispatch_gate.keep_clock_running` 換成假的，跟 `test_guards` 原本的做法一樣。
+- **以後不會再發生：** `test_all` 新增一項事後檢查「no real fetch」：gate 每次另開更新行程前都會寫 `clock.spawn`，
+  跑完全套後 scratch 底下只要有一個，就失敗並列出是哪個案例。先只加檢查時它失敗並點名那 5 個資料夾，修正後
+  通過（21/21）。
+
 ## 0.74.0
 
 擁有者 2026-10-12：「請你修改在叫醒前先真的打一次 API 取得用量」。
@@ -3325,6 +3337,19 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.74.1
+
+Owner, 2026-10-12: please fix it - found during 0.74.0: running the test suite called the usage API with
+the owner's real credentials.
+
+- **Cause:** five `test_net_zone` cases run the real gate in-process, and the gate forks a detached
+  `usage.py --fetch-now` when the cache is stale - a fresh process no stub reaches. Measured: three real
+  calls per run, one answered by a real HTTP 429.
+- **Fix:** `test_net_zone` stubs `dispatch_gate.keep_clock_running` first, as `test_guards` already did.
+- **Kept from coming back:** a new `test_all` post-run check, "no real fetch": the gate writes `clock.spawn`
+  just before every fork, so any such file under the scratch tree after a full run fails the check and names
+  the case. With only the check added it failed and named the five folders; after the fix it passes (21/21).
 
 ## 0.74.0
 
