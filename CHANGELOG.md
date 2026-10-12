@@ -33,6 +33,20 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.74.0
+
+擁有者 2026-10-12：「請你修改在叫醒前先真的打一次 API 取得用量」。
+
+- **續跑鬧鐘響起後、決定叫不叫醒之前，先真的打一次用量 API**（`resume.py` `do_run`）。以前只讀
+  `token_usage.json` 快取：重置前不久抓的快取按時間看還算新、內容卻是重置前的，判斷只能靠「重置時間已過」的推算。
+  現在用 `usage.ensure_fresh(sdir, cfg, force=True)`：`force` 只跳過「快取還新就不打」那道檢查，防止多個行程
+  同時打、以及失敗後退避的 `_claim_attempt` 照舊，不會為了這個撞限流。
+- **失敗就照快取判斷，並說明：** log 寫 `RUN-FETCHED`、`RUN-FETCH-FAILED <原因>` 或 `RUN-FETCH-SKIPPED`
+  （別的行程正在打或正在退避）。打到的數字若仍是 STOP，照舊延後重試、不叫醒。
+- 測試：`test_net_zone` 新案例——快取說已重置、即時讀數說 99% 到三小時後 → 延後不叫醒；API 失敗 → 照快取叫醒並
+  記錄原因；突變檢查（拿掉這次呼叫，就會在 STOP 時把視窗叫醒）。整支測試開頭把 `usage.fetch` 換成假的，
+  測試絕不打真的網路。
+
 ## 0.73.1
 
 0.73.0 發布時，旁觀的那次遷移還在等擁有者裁示一次真正的 push；之後的經過補進 skill。
@@ -72,8 +86,9 @@ GATE-ERROR NameError("name 'now' is not defined")
   原本寫的「31 列」早已過時，改成 49。
 - **審查**：派一個審查子代理從反方檢查這批修改：ACCEPT WITH FIXES，11 條必修全改（含一條實測推翻的 PowerShell
   說法、兩處和既有規則方向相反的寫法、幾個時間與次數不符紀錄的句子），17 條建議修大多採用。
-  ⚠ 擁有者需決定：使用者層級的 PowerShell 規則（沒有 7 就拒絕）沒有遠端主機的例外，而遷移中的遠端主機沒有
-  PowerShell 7；skill 目前寫「印出版本、照那個版本寫、在報告說明」。
+  ⚠ 擁有者需決定：使用者層級的 PowerShell 規則（沒有 7 就拒絕）沒有遠端主機的例外；遷移中舊機回報 production
+  伺服器（不是新機或舊機——兩台都有 PowerShell 7）是 Windows PowerShell 5.1 且「no pwsh」，但沒寫怎麼量的，
+  UNCONFIRMED。skill 目前寫「印出版本、照那個版本寫、在報告說明」。
 
 ## 0.72.2
 
@@ -3311,6 +3326,24 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.74.0
+
+Owner, 2026-10-12: before waking a session, really call the API once for the usage.
+
+- **When the resume alarm fires, it calls the usage API once before deciding whether to wake**
+  (`resume.py` `do_run`). It used to read only the `token_usage.json` cache, and a file fetched shortly
+  before a reset is fresh by age and stale by content, so the decision rested on "the reset time has
+  passed" arithmetic. It now uses `usage.ensure_fresh(sdir, cfg, force=True)`: `force` skips only the
+  "cache is fresh, spend no call" check; `_claim_attempt`, the pile-on guard and post-failure backoff,
+  still applies, so this cannot run into the rate limit on its own.
+- **A failure falls back to the cache, and says so:** the log writes `RUN-FETCHED`,
+  `RUN-FETCH-FAILED <reason>` or `RUN-FETCH-SKIPPED` (another process is fetching or backing off). A live
+  reading that still says STOP defers and retries as before, without waking.
+- Tests: a new `test_net_zone` case - the cache says the window reset, the live reading says 99% until a
+  reset three hours out → defer, no wake; the API fails → the cache decides, the reason is logged; a
+  mutation check (without the call, the window is woken into a STOP). The whole file stubs `usage.fetch`
+  first, so no test ever touches the real network.
+
 ## 0.73.1
 
 When 0.73.0 shipped, the observed migration was still waiting for the owner's ruling on a real push; what
@@ -3366,8 +3399,10 @@ shared folder) from opening the project to the completed transfer, logged entry 
 - **Review:** an adversarial reviewer sub-agent: ACCEPT WITH FIXES; all 11 must-fixes applied (one PowerShell
   claim disproved by execution, two passages that contradicted existing rules, several times and counts the
   record did not support), most of the 17 should-fixes adopted.
-  ⚠ For the owner: the user-level PowerShell rule ("no 7, refuse") has no far-host exception, and the
-  migration's far host had no PowerShell 7; the skill currently says "print the version, write for it, say so".
+  ⚠ For the owner: the user-level PowerShell rule ("no 7, refuse") has no far-host exception; in the
+  migration the old side reported the production server (not either workstation - both have PowerShell 7) as
+  Windows PowerShell 5.1 with "no pwsh", method not recorded - UNCONFIRMED. The skill currently says "print the
+  version, write for it, say so".
 
 ## 0.72.2
 

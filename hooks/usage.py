@@ -1063,8 +1063,12 @@ def _claim_attempt(sdir, due):
     return True
 
 
-def ensure_fresh(sdir, cfg):
+def ensure_fresh(sdir, cfg, force=False):
     """Refresh token_usage.json when the stored number is older than fetch_seconds.
+
+    `force` skips the age check only - resume.do_run() wants a live reading before it wakes a
+    window, because a file fetched just before a reset is "fresh" by age and stale by content.
+    _claim_attempt() still applies: forcing never bypasses the pile-on guard or the backoff.
 
     Returns None when nothing needed doing or the fetch succeeded, else the reason string.
 
@@ -1096,7 +1100,7 @@ def ensure_fresh(sdir, cfg):
     """
     due = _interval(cfg)                         # fetch_seconds + up to 30 s of jitter
     prev = read_json(cfg["token_usage_file"], None)
-    if isinstance(prev, dict) and isinstance(prev.get("ts"), (int, float)):
+    if not force and isinstance(prev, dict) and isinstance(prev.get("ts"), (int, float)):
         if (time.time() * 1000 - prev["ts"]) / 1000.0 < due:
             return prev, None                    # still fresh; spend no call
     if not _claim_attempt(sdir, due):

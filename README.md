@@ -1450,7 +1450,9 @@ reset     : ⛔ STALE - armed for 22:18 but the stored reset is now 00:18,
 
 ⛔ **它不會因為「醒過來了」就把自己刪掉。**
 用量可能其實還沒重置，執行也可能因為網路、憑證或 `PATH` 而失敗。
-它會先驗證、再執行，**只有乾淨結束才**移除排程；
+它會先驗證、再執行，**只有乾淨結束才**移除排程。⭐ 驗證時先**真的打一次用量 API**（0.74.0），不只依賴
+快取：重置前不久抓的快取按時間看還算新、內容卻是舊的。打不到（限流、離線、沒有憑證）就照快取判斷，
+log 會寫 `RUN-FETCH-FAILED` 和原因；防止多個行程同時打、以及失敗後退避的保護照舊；
 其他情況會一路重試到 `retry_window_min` 用完，然後徹底停手，
 並留下一個標記**讓下一個 Claude session 主動唸出來**。
 
@@ -3339,7 +3341,11 @@ rejected, because a resume that wakes with nothing to read spends an allowance t
 
 ⛔ **It does not delete itself just because it woke up.** The window may not actually have reset,
 and the run may fail on network, credentials or `PATH`. It verifies, runs, and removes the schedule
-**only on a clean exit**; anything else retries until `retry_window_min` elapses, then stops for
+**only on a clean exit**. ⭐ The verification **calls the usage API once** first (0.74.0) instead of
+trusting the cache alone: a file fetched shortly before a reset is fresh by age and stale by content. If
+the call fails (rate limit, offline, no credentials) the cached reading decides and the log says
+`RUN-FETCH-FAILED` with the reason; the pile-on guard and the post-failure backoff still apply. Anything
+else retries until `retry_window_min` elapses, then stops for
 good and leaves a marker **the next Claude session reads out loud**.
 
 ---

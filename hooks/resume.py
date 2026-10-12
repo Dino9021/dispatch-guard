@@ -1311,6 +1311,21 @@ def do_run(sdir, cfg, session_id=None):
     # ⭐ Bounded by elapsed time, not by attempt count.
     exhausted = (time.time() - first) > rc_["retry_window_min"] * 60
 
+    # ⭐ A LIVE READING BEFORE DECIDING (owner 2026-10-12: 「在叫醒前先真的打一次 API 取得用量」).
+    # The cached file may predate the reset and only the reset arithmetic below would vouch for
+    # it. Fail-open: a failed or skipped fetch leaves the cached reading, and the log says which.
+    try:
+        before = (usage.read_json(cfg["token_usage_file"], None) or {}).get("ts")
+        got, why = usage.ensure_fresh(sdir, cfg, force=True)
+        if why:
+            log_line("RUN-FETCH-FAILED %s - deciding on the cached reading" % why)
+        elif (got or {}).get("ts") == before:
+            log_line("RUN-FETCH-SKIPPED another process is fetching or backing off - deciding on "
+                     "the cached reading")
+        else:
+            log_line("RUN-FETCHED a live usage reading before deciding")
+    except Exception as exc:
+        log_line("RUN-FETCH-FAILED %r - deciding on the cached reading" % (exc,))
     # Has the window really turned over? Stored numbers read stale-HIGH after a reset,
     # so trust the verdict's reset arithmetic rather than the raw percentage.
     v = usage.verdict(sdir, cfg)

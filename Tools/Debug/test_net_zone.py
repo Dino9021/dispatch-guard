@@ -1308,10 +1308,55 @@ def case_relaxed_pace_dispatch_needs_a_handoff_for_real():
           "allows it with one")
 
 
+def case_live_reading_before_waking(resume):
+    """⭐ 0.74.0 (owner 2026-10-12: 「在叫醒前先真的打一次 API 取得用量」): do_run fetches a live
+    reading before its verdict. The cache below says the window reset (ts 3 h old, resets_at
+    passed), so the cached verdict would wake; the live reading says 99% until a reset 3 h out,
+    so the run must defer instead. A failed fetch falls back to the cache, and says so."""
+    now = time.time()
+    sock = chr(92) * 2 + "." + chr(92) + "pipe" + chr(92) + "LOCAL" + chr(92) + "cc-msg-" + "cd" * 16
+    rec = {"at": now, "armed_for_reset": now - 180, "msg_socket": sock, "attended": True}
+    live = {"ts": int(now * 1000), "five_hour": {"used_percentage": 99, "resets_at": int(now + 3 * 3600)}}
+
+    def drive(name, fetched):
+        with scratch_dir(name) as sdir:
+            cfg = resume.usage.config(sdir)
+            with open(cfg["token_usage_file"], "w", encoding="utf-8") as f:
+                json.dump({"ts": int((now - 3 * 3600) * 1000),
+                           "five_hour": {"used_percentage": 99, "resets_at": int(now - 180)}}, f)
+            saved = resume.usage.fetch
+            resume.usage.fetch = lambda *a, **k: fetched
+            del PROMPTS[:]
+            try:
+                return run_do_run(resume, sdir, rec, alive_at=now - 300, headless=False,
+                                  reply='{"success":true,"message":"queued there"}')
+            finally:
+                resume.usage.fetch = saved
+
+    log = drive("live-stop", dict(live))
+    assert "RUN-FETCHED" in log and "RUN-DEFERRED" in log and "RUN-WAKE-SENT" not in log, log
+    log = drive("live-failed", "HTTP 429 rate limited - backing off, NOT retrying")
+    assert "RUN-FETCH-FAILED HTTP 429" in log and "RUN-WAKE-SENT" in log, log
+    # ⛔ MUTATION: without the fetch the stale cache decides, and the window is woken into a STOP.
+    real = resume.usage.ensure_fresh
+    resume.usage.ensure_fresh = lambda *a, **k: (None, None)
+    try:
+        log = drive("live-mutated", dict(live))
+    finally:
+        resume.usage.ensure_fresh = real
+    assert "RUN-DEFERRED" not in log and "RUN-WAKE-SENT" in log, (
+        "the deferral did not come from the live reading: %s" % log)
+    print("ok - the alarm takes a live usage reading before deciding to wake; a failed fetch falls back")
+
+
 def main():
     fresh_scratch()
     os.environ["CLAUDE_DISPATCH_DIR"] = os.path.join(fresh_scratch(), "state-dir-for-the-log")
     resume, gate = load()
+    # ⛔ NO NETWORK IN TESTS: do_run now fetches before deciding (0.74.0); every case gets a failed fetch
+    # unless it stubs its own, so the cached reading decides exactly as before.
+    resume.usage.fetch = lambda *a, **k: "stubbed: no network in tests"
+    case_live_reading_before_waking(resume)
     case_d3_stand_down_only_after_the_reset(resume)
     case_tool_path_arms_once_per_window(gate)
     case_notes_never_claim_a_missing_resume(gate)
