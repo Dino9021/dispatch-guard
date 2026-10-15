@@ -33,6 +33,60 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.75.1
+
+擁有者 2026-10-15：在 Windows 開發機上跑 0.74.2–0.75.0 之後的 `test_all`，並把 0.75.0 發布出去。
+
+- Windows 上 `test_all` 21/22：唯一失敗的是 0.75.0 新增的 `test_resume_launchd`。它在 Windows 上模擬 macOS，而
+  模擬的 launchd 路徑呼叫 `os.getuid()`，Windows 的 Python 沒有這個函式。正式執行時 Windows 只走 `schtasks`，
+  碰不到那一行，所以壞的是測試，不是功能。
+- 修正只在測試：沒有 `os.getuid` 時用固定的 `gui/501`（假的 launchctl 不看這個值）。`resume.py` 沒改，Mac 上的
+  行為不變。修正後 Windows 22/22。
+
+## 0.75.0
+
+擁有者 2026-10-14：「兩個在 mac 上的問題也要修, 請維持同時支援 windows 與 mac 的方式」。
+
+- **macOS 的續跑鬧鐘改用 launchd（以前是 `at`，在 Mac 上從來沒響過）。** macOS 預設沒有載入
+  `com.apple.atrun`，`at` 排的工作永遠不會執行（2026-10-14 實測）。現在由 `scheduler_kind()` 在執行時判斷：
+  Windows 用 `schtasks`（不變）、macOS 用 launchd、其他 POSIX 用 `at`（不變）。
+- **每次上鬧鐘註冊一個使用者 launchd 工作**，label 是
+  `com.dispatch-guard.resume.<目錄>.<session>.<觸發時間>.<隨機碼>`；plist 放在狀態資料夾
+  `resume/launchd/`，**不放 `~/Library/LaunchAgents`**——那裡每上一次鬧鐘就跳一則「已加入背景項目」通知
+  （擁有者選擇）。代價：登出或重開機會讓還沒響的鬧鐘消失，下一個 session 會說出「有鬧鐘沒響」。不需要 sudo。
+- **實測決定的幾條規則**：job 在執行中被 `bootout` 會當場被砍（連自己也一樣），所以任何地方都不會卸載
+  `launchctl list` 顯示正在執行的 job；label 重複時 launchd 拒絕、回傳碼跟「檔案不存在」一樣，所以 label
+  帶隨機碼；觸發過的 job 會一直留著、明年同一天會再觸發，所以紀錄沒記載的觸發一律直接結束
+  （`RUN-STALE`），session 開始時依前綴清掉過期的 job（還沒到期的絕不清）；先寫紀錄再註冊。
+- **`--cancel`** 在 Mac 上也會清掉這個目錄裡沒在執行的 job（解除安裝不留東西）；帶 `--session` 只清那個
+  session 的。`--status` 讀 launchd 自己的狀態；`install.py --status` 也會列出 Mac 上的 job。
+- **ADR** `Memory/tasks/20261014-225156-mac-resume-and-tests/ADR.md`：第一輪 REJECT（先註冊後寫紀錄的競爭、
+  label 會撞名），修正後第二輪 ACCEPT WITH NON-BLOCKING FINDINGS。
+- **測試**：新增 `test_resume_launchd.py`（假的 launchctl，10 個案例，7 個突變全部被抓到）；`test_all` 的
+  「沒有留下排程」檢查在 Mac 上改問 launchd。Mac 上 `test_all` 22/22（之前 17/20）。Windows 沒有從 Mac 重跑。
+- **端對端（真的 launchd，拋棄式狀態資料夾）**：鬧鐘準時觸發、在 job 裡讀鑰匙圈抓到用量、STOP 時在 job 裡
+  重新註冊新 job（rc 0）、在 job 裡取消自己不會被砍、`--cancel` 後什麼都不留。
+- `.gitignore` 加上 `.DS_Store`、`Thumbs.db`、`desktop.ini`。
+
+## 0.74.2
+
+擁有者 2026-10-14：「讓這個 plugin 同時支援 windows 與 mac，並且要能自動判斷」——在 Mac 上 Claude Usage Watcher
+一個數字都沒有出現過。
+
+- **原因：** `usage.py` 只讀 `~/.claude/.credentials.json` 和 `$ANTHROPIC_TOKEN`。Windows 上 Claude Code 把憑證存在那個
+  檔案裡；macOS 上那個檔案不存在，憑證在鑰匙圈的 `Claude Code-credentials` 項目裡。所以 Mac 上每一次抓取都是
+  `no OAuth token`，watcher 從來沒有數字。
+- **修正：** 新的 `_read_credentials()` 依實際存在的東西自動判斷：先讀檔案（Windows、Linux 行為不變）；讀不到而且是
+  macOS，就用 `security find-generic-password` 讀鑰匙圈。只讀、不寫、不 refresh，`$ANTHROPIC_TOKEN` 照舊優先。
+  取 token 和取組織 ID（`_account_ids`）兩處都改用它。實測 2026-10-14：登入使用者讀鑰匙圈不會跳出授權視窗，
+  內容和檔案是同一份 JSON；改完後在 Mac 上真的抓到一次用量。
+- **測試：** `usage.py --selftest` 新增各平台 × 有無檔案 × 鑰匙圈失敗／內容錯誤 × `$ANTHROPIC_TOKEN` 的案例，假的
+  `security`，不碰真的鑰匙圈。突變檢查：拿掉 macOS 分支就失敗。
+- **`.gitattributes`：** 加上 `* text=auto`（不論各機器的 `core.autocrlf`，換行都由 repo 決定）、`*.bat` 用 CRLF、
+  `*.png`／`*.exe` 為二進位，並修正兩個存成 CRLF 的 `.cmd`。以三種設定 clone 驗證：Windows autocrlf=true、
+  autocrlf=false、macOS 都是乾淨的 `git status`。
+- ⚠ **Mac 上 `test_all` 是 13/20，改之前也是 13/20、失敗的是同樣七項**——那七項在 macOS 上本來就不過，不是這一版造成的。
+
 ## 0.74.1
 
 擁有者 2026-10-12：「麻煩請你修」——0.74.0 時發現，跑全套測試會用擁有者的真實憑證打用量 API。
@@ -3337,6 +3391,71 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.75.1
+
+Owner, 2026-10-15: run `test_all` on the Windows development machine after 0.74.2-0.75.0, and publish.
+
+- Windows `test_all` was 21/22: the one failure was 0.75.0's new `test_resume_launchd`, which simulates
+  macOS on Windows; the simulated launchd path calls `os.getuid()`, which Windows' Python does not have. In
+  real use Windows only takes the `schtasks` path and never reaches that line - the test was broken, not the
+  feature.
+- Fixed in the test only: without `os.getuid` it uses a fixed `gui/501` (the fake launchctl ignores it).
+  `resume.py` unchanged, macOS behaviour unchanged. Windows 22/22 after the fix.
+
+## 0.75.0
+
+Owner, 2026-10-14: fix the two Mac problems too, keeping one code base that supports Windows and Mac.
+
+- **The macOS resume alarm is a launchd job now (it used `at`, which never ran on a Mac).**
+  `com.apple.atrun` is not loaded by default, so `at` jobs never run (measured 2026-10-14).
+  `scheduler_kind()` decides at run time: Windows `schtasks` (unchanged), macOS launchd, other POSIX
+  `at` (unchanged).
+- **One per-user launchd job per registration**, labelled
+  `com.dispatch-guard.resume.<dir>.<session>.<fire epoch>.<nonce>`; the plist lives in the state
+  folder's `resume/launchd/`, **not `~/Library/LaunchAgents`**, where every arm raises a "Background
+  item added" notification (the owner's choice). The price: a logout or reboot drops an alarm that has
+  not fired, and the next session says so. No sudo.
+- **Rules the measurements forced**: a job booted out while it runs is killed on the spot (its own
+  process included), so nothing ever unloads a job `launchctl list` shows running; launchd refuses a
+  repeated label with the same rc as a missing file, so labels carry a nonce; a fired job stays loaded
+  and would fire again next year, so a fire its record does not name exits at once (`RUN-STALE`) and
+  session start sweeps spent jobs by prefix (never one still due); the record names the label before it
+  is registered.
+- **`--cancel`** on a Mac also unloads this directory's jobs that are not running (uninstall leaves
+  nothing); `--session` narrows that to the session. `--status` reads launchd's own answer;
+  `install.py --status` lists the Mac's jobs.
+- **ADR** `Memory/tasks/20261014-225156-mac-resume-and-tests/ADR.md`: round 1 REJECT (register-before-
+  record race, colliding labels), round 2 after the fix ACCEPT WITH NON-BLOCKING FINDINGS.
+- **Tests**: new `test_resume_launchd.py` (fake launchctl, 10 cases, all 7 mutants killed); test_all's
+  "no tasks left" asks launchd on a Mac. test_all on macOS 22/22 (17/20 before). Not re-run on Windows.
+- **End to end (real launchd, throwaway state folder)**: the alarm fired on time, read the keychain and
+  fetched usage inside the job, re-registered a new job from inside the job at STOP (rc 0), cancelled
+  itself from inside without being killed, and `--cancel` left nothing loaded.
+- `.gitignore` gains `.DS_Store`, `Thumbs.db`, `desktop.ini`.
+
+## 0.74.2
+
+Owner, 2026-10-14: make the plugin support both Windows and Mac, and detect which on its own - on a Mac
+the Claude Usage Watcher had never shown a number.
+
+- **Cause:** `usage.py` read only `~/.claude/.credentials.json` and `$ANTHROPIC_TOKEN`. Claude Code keeps
+  its credentials in that file on Windows; on macOS the file does not exist and they live in the keychain
+  item `Claude Code-credentials`. Every fetch on a Mac was `no OAuth token`.
+- **Fix:** a new `_read_credentials()` decides from what exists: the file first (Windows and Linux
+  unchanged); when it gives nothing and this is macOS, the keychain via `security find-generic-password`.
+  Read only, never written or refreshed; `$ANTHROPIC_TOKEN` still wins. Both readers - the token and the
+  org id (`_account_ids`) - use it. Measured 2026-10-14: the login user reads the item with no prompt, and
+  it holds the same JSON as the file; with the fix a Mac fetched real usage.
+- **Tests:** `usage.py --selftest` covers each platform x file present or not x keychain refusing or
+  answering garbage x `$ANTHROPIC_TOKEN`, against a fake `security` - the real keychain is never touched.
+  Mutation check: removing the macOS branch fails it.
+- **`.gitattributes`:** `* text=auto` (line endings decided by the repository, whatever a machine's
+  `core.autocrlf` says), CRLF for `*.bat`, `*.png`/`*.exe` binary, and two `.cmd` files stored as CRLF
+  normalised. Verified by cloning three ways - Windows autocrlf=true, autocrlf=false, macOS - each with a
+  clean `git status`.
+- ⚠ **`test_all` on a Mac is 13/20, and was 13/20 with the same seven failing before this change** - those
+  seven do not pass on macOS at all, independent of this release.
 
 ## 0.74.1
 

@@ -42,6 +42,8 @@ CHECKS = [
     ("install",       [os.path.join(DEBUG_DIR, "test_install.py")]),
     ("resume cancel", [os.path.join(DEBUG_DIR, "test_resume_cancel.py")]),
     ("resume launch", [os.path.join(DEBUG_DIR, "test_resume_launch.py")]),
+    # ⚠ The macOS alarm (launchd, 0.75) against a FAKE launchctl - it never registers a real job.
+    ("resume launchd", [os.path.join(DEBUG_DIR, "test_resume_launchd.py")]),
     ("net zone",      [os.path.join(DEBUG_DIR, "test_net_zone.py")]),
     ("cmd guards",    [os.path.join(DEBUG_DIR, "test_guards.py")]),
     # ⛔ 0.64.0 shipped a cowork SKILL.md whose frontmatter was invalid YAML, and the skill
@@ -88,7 +90,19 @@ def _resume_tasks():
     `ClaudeDispatchGuardResume-<dir>-slot-lifecycle` entries, registered by a check whose gate
     auto-armed against the machine's real usage, pointing into temp folders that no longer
     existed. No single check can see that; only a count before and after the whole run can.
+    ⭐ macOS (0.75): the same question asked of launchd - every loaded `com.dispatch-guard.resume.`
+    label. A check that registered a real job would otherwise leave it loaded, pointing into a
+    scratch folder, until the next logout.
     """
+    if sys.platform == "darwin":
+        try:
+            r = subprocess.run(["launchctl", "list"], capture_output=True, text=True, timeout=30,
+                               stdin=subprocess.DEVNULL)
+        except Exception:
+            return None
+        if r.returncode != 0:
+            return None
+        return set(re.findall(r"\t(com\.dispatch-guard\.resume\.\S+)", r.stdout))
     if os.name != "nt":
         return None
     try:
@@ -187,7 +201,7 @@ def main():
                                "scheduler (or a live session armed meanwhile; the name says "
                                "which): %s\n" % (len(left), ", ".join(left))))))
     else:
-        print("%-16s %s" % ("no tasks left", "not checked (no Windows scheduler to ask)"))
+        print("%-16s %s" % ("no tasks left", "not checked (no Task Scheduler or launchd to ask)"))
     total += 1
     moved = sorted(n for n, b in _real_shims().items() if b != shims_before.get(n))
     print("%-16s %s" % ("real shim kept", "FAIL" if moved else "PASS"))

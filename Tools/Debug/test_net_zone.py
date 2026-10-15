@@ -1353,6 +1353,12 @@ def main():
     fresh_scratch()
     os.environ["CLAUDE_DISPATCH_DIR"] = os.path.join(fresh_scratch(), "state-dir-for-the-log")
     resume, gate = load()
+    # ⭐ ONE SCHEDULER ON EVERY PLATFORM. These cases pin the wake and stand-down DECISIONS, and they
+    # model the scheduler by stubbing subprocess.run to fail - which means "no task, nothing to
+    # cancel" under schtasks, but "cannot tell, keep the record" under launchd (macOS, 0.75). So the
+    # scheduler is pinned, and a Mac runs exactly the cases Windows runs. launchd's own outcomes are
+    # pinned in test_resume_launchd.py.
+    resume.scheduler_kind = lambda: "schtasks"
     # ⛔ NO NETWORK IN TESTS: do_run now fetches before deciding (0.74.0); every case gets a failed fetch
     # unless it stubs its own, so the cached reading decides exactly as before.
     resume.usage.fetch = lambda *a, **k: "stubbed: no network in tests"

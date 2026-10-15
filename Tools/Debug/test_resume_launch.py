@@ -61,9 +61,18 @@ def case_line_names_the_session(mod):
     # ⛔ THE CALLER'S STATE DIRECTORY, not whatever usage.state_dir() resolves: review 2 drove
     # do_arm(sdir=<scratch>) and it registered a task named for the REAL default directory.
     with scratch_dir("line-sdir") as sdir:
-        cmd, _ = mod.schedule(time.localtime(time.time() + 3600), True, SID, sdir=sdir)
-    assert mod.task_name(sdir, SID) in cmd and mod.dir8(sdir) in " ".join(cmd), (
-        "schedule() did not use the state directory it was given: %s" % " ".join(cmd))
+        cmd, plist = mod.schedule(time.localtime(time.time() + 3600), True, SID, sdir=sdir)
+    if plist:
+        # ⭐ launchd (macOS): the job's NAME is its label, which carries the directory and the
+        # session, and its LINE is in the plist - the same two properties, where launchd keeps them.
+        label = plist["Label"]
+        assert label.startswith("%s%s.%s." % (mod.LAUNCHD_PREFIX, mod.dir8(sdir), SID)), (
+            "schedule() did not use the state directory it was given: %s" % label)
+        assert cmd[-1] == mod.launchd_plist_path(sdir, label), cmd
+        assert sdir.replace("\\", "/") in " ".join(plist["ProgramArguments"]), plist
+    else:
+        assert mod.task_name(sdir, SID) in cmd and mod.dir8(sdir) in " ".join(cmd), (
+            "schedule() did not use the state directory it was given: %s" % " ".join(cmd))
     print("ok - the scheduler's line is not `bash ...`, names the session and the caller's state dir")
 
 

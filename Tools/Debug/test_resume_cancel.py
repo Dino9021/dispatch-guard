@@ -259,7 +259,7 @@ def case_posix_cancels_one_job_not_all():
     ⇒ The job NUMBER is recorded at arm time and only that job is removed. ADR
     20260917-132015, D7.
 
-    ⚠ THIS RUNS ON WINDOWS, by replacing `os.name` inside the module under test. The real
+    ⚠ THIS RUNS ON EVERY PLATFORM, by pinning `scheduler_kind()` to "at". The real
     `at` is never called on either platform - there is none on this machine (ADR A1) - so
     what is pinned is the DECISION (which command, and which of the three outcomes), never
     that `at` behaves as documented.
@@ -281,14 +281,15 @@ def case_posix_cancels_one_job_not_all():
         with scratch_dir("posix-%s-%s" % (record.get("at_job"), all_jobs)) as sdir:
             mod.write_record(sdir, SID, record)
             saved_run, mod.subprocess.run = mod.subprocess.run, fake_run
-            saved_name, mod.os.name = mod.os.name, "posix"
+            # ⚠ The scheduler is picked by scheduler_kind(), not by os.name, since macOS got launchd.
+            saved_kind, mod.scheduler_kind = mod.scheduler_kind, (lambda: "at")
             here = os.getcwd()
             os.chdir(sdir)
             try:
                 rc = mod.do_cancel(sdir, quiet=True, all_jobs=all_jobs, session_id=SID)
             finally:
                 os.chdir(here)
-                mod.os.name = saved_name
+                mod.scheduler_kind = saved_kind
                 mod.subprocess.run = saved_run
             left = os.path.exists(mod.record_path(sdir, SID))
         return rc, left, calls
@@ -806,10 +807,13 @@ def case_scheduled_command_names_its_state_dir():
     with scratch_dir("scheduled-dir") as sdir:
         saved, mod.usage.state_dir = mod.usage.state_dir, lambda argv=None, _d=sdir: _d
         try:
-            cmd, _ = mod.schedule(_t.localtime(_t.time() + 3600), True)
+            cmd, plist = mod.schedule(_t.localtime(_t.time() + 3600), True)
         finally:
             mod.usage.state_dir = saved
-        line = " ".join(cmd)
+        # ⭐ launchd (macOS) does not put the line on its command: it goes into the plist, whose
+        # ProgramArguments are what fires. The same assertions run against THAT line - the
+        # property is "the line that fires names its state directory", wherever it is carried.
+        line = " ".join(plist["ProgramArguments"]) if plist else " ".join(cmd)
         assert "--dir" in line, (
             "the scheduled command names no state directory, so it will fire against the "
             "default one: %s" % line)

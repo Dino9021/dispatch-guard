@@ -62,6 +62,7 @@ import os
 import random
 import re
 import shutil
+import subprocess
 import sys
 import time
 import unicodedata
@@ -649,6 +650,46 @@ def _interval(cfg):
     return cfg["fetch_seconds"] + random.uniform(0, max(0, jitter))
 
 
+# The macOS keychain item Claude Code keeps its credentials in. Same JSON as the file.
+KEYCHAIN_SERVICE = "Claude Code-credentials"
+
+
+def _keychain_credentials():
+    """The credentials blob from the macOS keychain, or None. READ ONLY.
+
+    ⚠ `security` is run with no shell and a timeout, and its output is never logged or
+    returned as text: on failure the caller gets None and degrades to "no data", the same
+    answer a missing file gives. Measured 2026-10-14: readable by the login user with no
+    prompt, 583 bytes, keys `claudeAiOauth` and `organizationUuid`.
+    """
+    try:
+        r = subprocess.run(["security", "find-generic-password", "-s", KEYCHAIN_SERVICE,
+                            "-w"], capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            return None
+        blob = json.loads(r.stdout)
+        return blob if isinstance(blob, dict) else None
+    except Exception:
+        return None
+
+
+def _read_credentials():
+    """Claude Code's credentials blob, wherever this platform keeps it, or {}.
+
+    ⭐ PICKED BY WHAT EXISTS, NOT BY A SETTING. The file `~/.claude/.credentials.json` is
+    read first on every platform - that is where Windows and Linux keep it, so their
+    behaviour is unchanged. Only when the file gives nothing AND this is macOS is the
+    keychain asked, which is where Claude Code keeps it there: before this, every fetch on a
+    Mac failed with "no OAuth token" and the watcher never showed a number.
+    ⚠ Re-read on every call, file and keychain alike - see _token_and_expiry().
+    """
+    blob = read_json(os.path.join(os.path.expanduser("~"), ".claude",
+                                  ".credentials.json"), None)
+    if not isinstance(blob, dict) and sys.platform == "darwin":
+        blob = _keychain_credentials()
+    return blob if isinstance(blob, dict) else {}
+
+
 def _token_and_expiry():
     """(token, expiry epoch seconds or None). READ ONLY - never written, never refreshed.
 
@@ -659,10 +700,10 @@ def _token_and_expiry():
     process is running and rewriting the same file, and it would mean a hook writing
     credentials. Deliberately accepted trade: a 429 here reports no number and waits.
 
-    ⚠ Only the JSON file and $ANTHROPIC_TOKEN are read. onWatch also reads the macOS
-    keychain and the Linux keyring, neither of which is implemented here - so on a machine
-    where the token lives only in a keychain this returns (None, None), and the caller
-    degrades to "no data" rather than to a wrong number.
+    ⚠ $ANTHROPIC_TOKEN, then _read_credentials(): the JSON file, or on macOS the keychain.
+    The Linux keyring onWatch also reads is not implemented - on a machine where the token
+    lives only there this returns (None, None), and the caller degrades to "no data"
+    rather than to a wrong number.
 
     ⭐ The file is re-read on EVERY call, deliberately. That is what makes a long-running
     `--watch` survive a token rotation with no restart: whichever Claude client is running
@@ -677,10 +718,7 @@ def _token_and_expiry():
     env = os.environ.get("ANTHROPIC_TOKEN")      # onWatch uses the same variable name
     if env and env.strip():
         return env.strip(), None                 # supplied by hand; no expiry to read
-    blob = read_json(os.path.join(os.path.expanduser("~"), ".claude",
-                                  ".credentials.json"), {}) or {}
-    if not isinstance(blob, dict):
-        return None, None
+    blob = _read_credentials()
     inner = blob.get("claudeAiOauth")
     inner = inner if isinstance(inner, dict) else blob
     token = inner.get("accessToken")
@@ -888,7 +926,8 @@ def fetch(cfg=None, sdir=None):
     """
     token, expires = _token_and_expiry()
     if not token:
-        return "no OAuth token (~/.claude/.credentials.json or $ANTHROPIC_TOKEN)"
+        return ("no OAuth token (~/.claude/.credentials.json, the macOS keychain "
+                "or $ANTHROPIC_TOKEN)")
     # ⭐ Do not spend one of the five calls on a token we can already see is dead. The
     # request would return 401, arm the same backoff, and tell us nothing the file did not.
     if expires is not None and expires <= time.time():
@@ -1464,8 +1503,8 @@ def _account_ids():
     if env and env.strip():
         return None, None
     home = os.path.expanduser("~")
-    cred = read_json(os.path.join(home, ".claude", ".credentials.json"), {}) or {}
-    org = cred.get("organizationUuid") if isinstance(cred, dict) else None
+    cred = _read_credentials()
+    org = cred.get("organizationUuid")
     org = org if isinstance(org, str) and org else None
     prof = read_json(os.path.join(home, ".claude.json"), {}) or {}
     acct = prof.get("oauthAccount") if isinstance(prof, dict) else None
@@ -3740,6 +3779,58 @@ def selftest():
         finally:
             urllib.request.urlopen = _saved_open
     finally:
+        globals()["read_json"] = _saved_reader
+        if _saved_env is not None:
+            os.environ["ANTHROPIC_TOKEN"] = _saved_env
+
+    # ⭐ WHERE THE CREDENTIALS COME FROM IS DECIDED BY THE PLATFORM AND BY WHAT EXISTS.
+    # ⛔ Nothing here runs the real `security` or reads the real file: both are replaced,
+    # and every case counts the keychain calls it made.
+    _saved_env = os.environ.pop("ANTHROPIC_TOKEN", None)
+    _saved_reader, _saved_run, _saved_platform = read_json, subprocess.run, sys.platform
+    _kc = {"calls": 0, "rc": 0, "out": ""}
+
+    class _Done:
+        def __init__(self, rc, out):
+            self.returncode, self.stdout = rc, out
+
+    def _fake_run(cmd, **kw):
+        assert cmd[:2] == ["security", "find-generic-password"], cmd
+        assert "shell" not in kw, "the keychain read must not go through a shell"
+        _kc["calls"] += 1
+        return _Done(_kc["rc"], _kc["out"])
+
+    def _case(platform, file_blob, rc=0, out=""):
+        sys.platform = platform
+        _kc.update(calls=0, rc=rc, out=out)
+        globals()["read_json"] = lambda path, fallback=None: (
+            (file_blob if file_blob is not None else fallback)
+            if path.endswith(".credentials.json") else _saved_reader(path, fallback))
+        return _token_and_expiry()[0], _read_credentials().get("organizationUuid"), _kc["calls"]
+
+    _kc_blob = json.dumps({"claudeAiOauth": {"accessToken": "sk-FAKE-kc"}, "organizationUuid": "o-kc"})
+    _file_blob = {"claudeAiOauth": {"accessToken": "sk-FAKE-file"}, "organizationUuid": "o-file"}
+    try:
+        subprocess.run = _fake_run
+        # The file wins wherever it exists, and the keychain is then never asked.
+        for plat in ("win32", "darwin", "linux"):
+            assert _case(plat, _file_blob, out=_kc_blob) == ("sk-FAKE-file", "o-file", 0), plat
+        # No file on a Mac: the keychain answers - token AND org id, the two readers.
+        assert _case("darwin", None, out=_kc_blob) == ("sk-FAKE-kc", "o-kc", 2)
+        # No file elsewhere: the keychain is not a thing there, so it is never asked.
+        assert _case("win32", None, out=_kc_blob) == (None, None, 0)
+        assert _case("linux", None, out=_kc_blob) == (None, None, 0)
+        # A keychain that refuses, or answers with something that is not the blob: no token,
+        # no exception - the same "no data" a missing file gives.
+        assert _case("darwin", None, rc=44, out="") == (None, None, 2)
+        assert _case("darwin", None, out="not json") == (None, None, 2)
+        assert _case("darwin", None, out="[1, 2]") == (None, None, 2)
+        # $ANTHROPIC_TOKEN still wins, and the keychain is not asked for the token.
+        os.environ["ANTHROPIC_TOKEN"] = "sk-env"
+        assert _case("darwin", None, out=_kc_blob)[0] == "sk-env"
+    finally:
+        os.environ.pop("ANTHROPIC_TOKEN", None)
+        subprocess.run, sys.platform = _saved_run, _saved_platform
         globals()["read_json"] = _saved_reader
         if _saved_env is not None:
             os.environ["ANTHROPIC_TOKEN"] = _saved_env

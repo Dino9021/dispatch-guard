@@ -6,7 +6,7 @@
     resume.py --cancel --session <id>   cancel ONE session's resume (what a session means by "mine")
     resume.py --cancel --legacy    cancel only the pre-0.60 record that carries no session id
     resume.py --cancel [--all]     cancel EVERY session's resume in this state directory
-                                   (--all: POSIX only, removes EVERY `at` job you have)
+                                   (--all: with `at` (Linux), removes EVERY `at` job you have)
     resume.py --run                 (the scheduler calls this; not for humans)
     resume.py --launch-check        (arm runs it through the scheduler's own line; changes nothing)
 
@@ -32,7 +32,8 @@ protocol rather than ported as-is. Four deliberate differences:
     An empty or placeholder file is refused, because a resume that wakes up with nothing
     to read burns an allowance to produce nothing - the exact waste this whole plugin
     exists to prevent.
- 3. **One code path for Windows and Unix.** `schtasks` or `at`, chosen at run time.
+ 3. **One code path for Windows, macOS and other Unix.** `schtasks`, launchd or `at`,
+    chosen at run time by scheduler_kind() - never by a setting.
  4. **It logs to the same gate log** as everything else, so one file answers "what
     happened while nobody was watching".
 
@@ -131,6 +132,188 @@ def task_name(sdir, session_id):
     return "%s-%s-%s" % (TASK_NAME, dir8(sdir), dispatch_gate.safe_session(session_id))
 
 
+def scheduler_kind():
+    """Which OS scheduler registers the alarm: "schtasks", "launchd" or "at". Decided here only.
+
+    ⛔ macOS IS NOT "POSIX, SO `at`". `at` jobs never run there: `com.apple.atrun` is not loaded
+    unless root loads it - measured 2026-10-14, `launchctl print system/com.apple.atrun` -> "Could
+    not find service" - so every macOS alarm armed with `at` was silently dead. launchd is what a
+    Mac runs a per-user job with. ADR Memory/tasks/20261014-225156-mac-resume-and-tests, D1.
+    ⭐ ONE SEAM: every scheduling branch asks this, and tests patch this to pick a scheduler.
+    Linux and every other POSIX keep `at`, unchanged.
+    """
+    if os.name == "nt":
+        return "schtasks"
+    if sys.platform == "darwin":
+        return "launchd"
+    return "at"
+
+
+# ⭐ launchd (macOS). Every job this plugin registers is named
+#     com.dispatch-guard.resume.<dir8>.<session>.<fire epoch>.<nonce>
+# so the state directory and the session it belongs to are read from the label itself, and the
+# reaper can sweep by prefix (`launchctl list` costs ~3 ms - measured). `safe_session` keeps only
+# letters, digits, `-` and `_`, so the dots are unambiguous separators.
+# ⛔ THE NONCE IS NOT DECORATION. Two arms of one session for the same second are ordinary (`--at`
+# rounds to the minute; the gate re-arms another task folder against the same reset), and launchd
+# REFUSES a label that is already loaded - with rc 5, the same rc as a missing file (measured,
+# probe6 M3) - so a collision would read as an ordinary failure while the old job stayed armed.
+LAUNCHD_PREFIX = "com.dispatch-guard.resume."
+LAUNCHD_DIR = "launchd"          # under <sdir>/resume/ - NOT ~/Library/LaunchAgents (ADR D3)
+# The environment a job is given (written into its plist) and the arm-time probe runs with.
+LAUNCHD_ENV = ("PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG")
+
+
+def launchd_label(sdir, session_id, when_epoch):
+    """A new, unique launchd label for one registration of this session's alarm."""
+    return "%s%s.%s.%d.%s" % (LAUNCHD_PREFIX, dir8(sdir), dispatch_gate.safe_session(session_id),
+                              int(when_epoch), os.urandom(4).hex())
+
+
+def launchd_epoch(label):
+    """The fire time a label carries, or None for a label that is not ours or is malformed."""
+    if not isinstance(label, str) or not label.startswith(LAUNCHD_PREFIX):
+        return None
+    parts = label.rsplit(".", 2)
+    try:
+        return int(parts[1]) if len(parts) == 3 else None
+    except ValueError:
+        return None
+
+
+def launchd_plist_path(sdir, label):
+    """Where a label's plist lives: `<sdir>/resume/launchd/<label>.plist`.
+
+    ⚠ DELIBERATELY NOT ~/Library/LaunchAgents (owner's choice, ADR D3). There, every arm puts a
+    macOS "Background item added" notification in front of the owner and leaves a Background Task
+    Management record (measured, probe5 K); from here launchd fires it the same and records
+    nothing (probe5 J). The price: launchd reloads only the LaunchAgents folders at login, so a
+    logout or reboot drops a pending alarm - announce_missed() says so at the next session start.
+    """
+    return os.path.join(sdir, RESUME_DIR, LAUNCHD_DIR, label + ".plist")
+
+
+def _gui_domain():
+    return "gui/%d" % os.getuid()
+
+
+def _launchctl(args):
+    """Run `launchctl <args>`: (rc, stdout, stderr). rc None when it could not be run at all.
+
+    ⭐ The one place this file calls launchctl, so tests stub one function and never reach the
+    real one.
+    """
+    try:
+        r = subprocess.run(["launchctl"] + list(args), capture_output=True, text=True, timeout=30)
+        return r.returncode, r.stdout or "", r.stderr or ""
+    except Exception as exc:
+        return None, "", repr(exc)
+
+
+def _launchd_rows(prefix):
+    """{label: pid column} for every loaded label starting with `prefix`; None if unknowable.
+
+    The pid column is a number while the job RUNS and `-` once it has exited (measured, probe6
+    M4/M5) - the one signal D4 rests on.
+    """
+    rc, out, _err = _launchctl(["list"])
+    if rc != 0:
+        return None
+    rows = {}
+    for line in out.splitlines()[1:]:           # header: PID Status Label
+        cols = line.split("\t")
+        if len(cols) >= 3 and cols[2].startswith(prefix):
+            rows[cols[2]] = cols[0].strip()
+    return rows
+
+
+def _rm(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _launchd_remove(sdir, label):
+    """Unload one launchd job, NEVER one that is running. "not there"/"running"/"deleted"/"refused".
+
+    ⛔ `launchctl bootout` OF A RUNNING JOB KILLS IT ON THE SPOT - including the job this very
+    process runs in: measured (probes B, H), a job that boots out its own label never executes
+    the next line. do_run and wake_window cancel and re-arm from INSIDE the firing job, and a
+    hand-run `--cancel` can meet a wake in flight. ⇒ A job `launchctl list` shows with a PID is
+    left loaded: its plist is deleted, D5 makes any later fire of it a no-op, and the next sweep
+    unloads it once it has exited. ADR D4.
+    ⚠ "refused" keeps the record, exactly like a schtasks /Delete that refuses: something may
+    still fire. A listing that could not be read is "refused" too - unknown is not "gone".
+    """
+    plist = launchd_plist_path(sdir, label)
+    rows = _launchd_rows(label)
+    if rows is None:
+        return "refused"
+    pid = rows.get(label)
+    if pid is None:
+        _rm(plist)
+        return "not there"
+    if pid != "-":
+        _rm(plist)
+        return "running"
+    rc, _out, _err = _launchctl(["bootout", "%s/%s" % (_gui_domain(), label)])
+    if rc == 0:
+        _rm(plist)
+        return "deleted"
+    if rc == 3:                                 # "No such process": gone meanwhile (probe6 M1)
+        _rm(plist)
+        return "not there"
+    rc2, _out, _err = _launchctl(["print", "%s/%s" % (_gui_domain(), label)])
+    if rc2 == 113:                              # "Could not find service"
+        _rm(plist)
+        return "not there"
+    return "refused"
+
+
+def launchd_sweep(sdir, mode="reap", session_id=None, now=None):
+    """Unload this directory's spent launchd jobs and delete their stray plists. Returns a count.
+
+    ⛔ `reap` (session start) NEVER TOUCHES A LABEL THAT IS STILL DUE - its epoch ahead, or less
+    than the retry window ago - WHATEVER THE RECORDS SAY. A label is written into its record before
+    it is registered (D2), but a sibling session starting between two lines must not be able to
+    reap an alarm armed a moment ago: that is the race the record-first rule closed on Windows
+    (ADR 20260917-132015 §9b I-N2), and the epoch in the label closes it here independently.
+    ⭐ `cancel` (a human `--cancel`, and uninstall) skips the epoch test: everything not running.
+    ⚠ `session_id` narrows the prefix to that session - cancelling one session never removes
+    another's alarm. A running job is never unloaded (see _launchd_remove). NEVER RAISES.
+    """
+    now = time.time() if now is None else now
+    prefix = "%s%s." % (LAUNCHD_PREFIX, dir8(sdir))
+    if session_id:
+        prefix += dispatch_gate.safe_session(session_id) + "."
+    try:
+        keep_for = rcfg(sdir)["retry_window_min"] * 60
+
+        def due(label):
+            ep = launchd_epoch(label)
+            return mode == "reap" and (ep is None or now - ep < keep_for)
+
+        rows = _launchd_rows(prefix)
+        if rows is None:
+            return 0
+        done = 0
+        for label, pid in sorted(rows.items()):
+            if pid != "-" or due(label):
+                continue
+            if _launchd_remove(sdir, label) in ("deleted", "not there"):
+                done += 1
+                log_line("REAPED the launchd job %s" % label)
+        # Plists whose job is not loaded any more - dropped by a logout or a reboot.
+        for path in glob.glob(os.path.join(sdir, RESUME_DIR, LAUNCHD_DIR, "*.plist")):
+            label = os.path.basename(path)[:-len(".plist")]
+            if label.startswith(prefix) and label not in rows and not due(label):
+                _rm(path)
+        return done
+    except Exception:
+        return 0
+
+
 def write_record(sdir, session_id, state):
     """Write one session's record, creating `<sdir>/resume/` on the way."""
     path = record_path(sdir, session_id)
@@ -185,13 +368,18 @@ def reap_records(sdir, now=None):
             if not isinstance(at, (int, float)) or (now - at) < keep_for:
                 continue                       # in the future, or still inside its retries
             sid = state.get("session_id") or os.path.basename(rec)[:-len(".json")]
-            if os.name == "nt" and _run(["schtasks", "/Query", "/TN", task_name(sdir, sid)]):
+            if (scheduler_kind() == "schtasks"
+                    and _run(["schtasks", "/Query", "/TN", task_name(sdir, sid)])):
                 continue                       # the scheduler still holds it; not spent
             os.remove(rec)
             removed += 1
             log_line("REAPED the spent record for session %s" % str(sid)[:8])
         except Exception:
             continue                           # housekeeping never breaks a hook
+    # ⭐ macOS: a fired launchd job stays loaded (no Year key - it would fire again next year), and
+    # a job never boots itself out (it would be killed). So spent jobs are unloaded HERE, by prefix.
+    if scheduler_kind() == "launchd":
+        removed += launchd_sweep(sdir, "reap", now=now)
     return removed
 
 
@@ -209,9 +397,11 @@ def upgrade_records(sdir, now=None):
     registered again under its own name (`/F` replaces the task in place).
     ⚠ Windows only: `at` has no names, and replacing a job there means removing the old one by
     number first - unmeasured on this plugin's development machine (ADR 20260917-132015, A1),
-    so a POSIX alarm armed by an older version needs a hand re-arm. NEVER RAISES.
+    so a POSIX alarm armed by an older version needs a hand re-arm. ⚠ On macOS such an alarm is an
+    `at` job that never ran at all (atrun is not loaded): not re-registered either - announce_missed
+    names it after its time, and the next cancel clears its record (ADR 20261014 D9). NEVER RAISES.
     """
-    if os.name != "nt":
+    if scheduler_kind() != "schtasks":
         return 0
     now = time.time() if now is None else now
     done = 0
@@ -816,9 +1006,15 @@ def scheduler_env():
     resolve for Task Scheduler, which starts a task from the user's REGISTERED environment.
     ⇒ Windows: PATH = the Machine PATH then the User PATH from the registry, expanded. POSIX:
     `at` keeps the submitting shell's environment, so the inherited one is the right one.
+    macOS (launchd): a job gets launchd's bare default (`PATH=/usr/bin:/bin:/usr/sbin:/sbin`, no
+    `claude` - measured) plus what its plist sets. ⇒ This returns the small set below, AND
+    schedule() writes exactly this set into the plist, so the probe and the fire share one
+    environment by construction - a variable only this shell has cannot make the probe pass (ADR D8).
     Returns None when the registry cannot be read - the caller then says "not verified".
     """
     env = dict(os.environ)
+    if scheduler_kind() == "launchd":
+        return {k: env[k] for k in LAUNCHD_ENV if env.get(k)}
     if os.name != "nt":
         return env
     import winreg
@@ -912,8 +1108,38 @@ def do_launch_check(sdir, session_id):
     return 0
 
 
-def schedule(when, dry_run, session_id=None, headless=False, sdir=None):
+class _Ran(object):
+    """A subprocess-shaped result (bytes streams) for the launchd branch of schedule()."""
+
+    def __init__(self, returncode, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = (stdout or "").encode("utf-8", "replace")
+        self.stderr = (stderr or "").encode("utf-8", "replace")
+
+
+def launchd_plist(sdir, label, when, line):
+    """The plist for one registration: a one-shot calendar job running `line` with /bin/sh.
+
+    ⚠ {Month, Day, Hour, Minute} in LOCAL time - measured to fire at that minute (:05 s) after a
+    normal boot (PROBES.md run 2). There is no Year key, so a fired job would fire again on the
+    same date next year: do_run's stale-fire guard and launchd_sweep() exist for that.
+    ⚠ No RunAtLoad, no KeepAlive. EnvironmentVariables = scheduler_env(), the set the probe used.
+    """
+    return {"Label": label,
+            "ProgramArguments": ["/bin/sh", "-c", line],
+            "StartCalendarInterval": {"Month": when.tm_mon, "Day": when.tm_mday,
+                                      "Hour": when.tm_hour, "Minute": when.tm_min},
+            "EnvironmentVariables": scheduler_env() or {}}
+
+
+def schedule(when, dry_run, session_id=None, headless=False, sdir=None, label=None):
     """Register a ONE-SHOT task at `when` (a struct_time). Returns the command run.
+
+    ⭐ launchd (macOS): `label` is the caller's - do_arm and _rearm write it into the record
+    BEFORE calling this (ADR D2: record first). Without one a fresh label is made. The plist is
+    written beside the records and bootstrapped; a refused bootstrap deletes it again. On a
+    dry run nothing is written and the second element is the plist as a dict, so a caller can
+    see the line that WOULD fire (an `at` dry run shows only the time - its line goes on stdin).
 
     ⛔ THE COMMAND LINE GOES THROUGH THE SHIM, and of everything this plugin writes, this is
     the one where a versioned path hurts most. The task is registered with the OS NOW and
@@ -941,18 +1167,37 @@ def schedule(when, dry_run, session_id=None, headless=False, sdir=None):
     # directory with a space in it is ordinary. `state_dir()` calls abspath on whatever it
     # receives, so either separator arrives correctly.
     inner = scheduled_line(sdir, "--run", session_id, headless=headless)
-    if os.name == "nt":
+    kind = scheduler_kind()
+    plist = None
+    if kind == "schtasks":
         cmd = ["schtasks", "/Create", "/TN", task_name(sdir, session_id), "/SC", "ONCE",
                "/ST", time.strftime("%H:%M", when), "/SD", time.strftime("%m/%d/%Y", when),
                "/TR", inner, "/F"]
+    elif kind == "launchd":
+        label = label or launchd_label(sdir, session_id, time.mktime(when))
+        plist = launchd_plist(sdir, label, when, inner)
+        cmd = ["launchctl", "bootstrap", _gui_domain(), launchd_plist_path(sdir, label)]
     else:
         # `at` reads the command on stdin; keep it to one line for the same reason.
         cmd = ["at", time.strftime("%H:%M %Y-%m-%d", when)]
     if dry_run:
-        return cmd, None
+        return cmd, plist
     shim.write(sdir, os.path.dirname(os.path.dirname(me)))
+    if kind == "launchd":
+        import plistlib
+        path = cmd[-1]
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as f:
+                plistlib.dump(plist, f)
+        except Exception as exc:
+            return cmd, exc
+        rc, out, err = _launchctl(cmd[1:])
+        if rc != 0:
+            _rm(path)                  # a refused registration leaves nothing behind
+        return cmd, _Ran(rc if rc is not None else 1, out, err)
     try:
-        if os.name == "nt":
+        if kind == "schtasks":
             r = subprocess.run(cmd, capture_output=True, timeout=60)
         else:
             r = subprocess.run(cmd, input=(inner + "\n").encode(), capture_output=True,
@@ -1098,6 +1343,13 @@ def do_arm(argv, sdir, cfg):
     # window in which a sibling session's start sweep can delete an alarm that was armed
     # one line ago - the same silent loss the record's placement was chosen to avoid.
     # ADR 20260917-132015, D6 ⟨round 2, I-N2⟩.
+    # ⭐ launchd: the label is part of what goes down first (ADR 20261014 D2). The label this
+    # session's PREVIOUS alarm used is read before the record is overwritten, so it can be
+    # removed once the new one is registered - the launchd counterpart of `schtasks /F`.
+    old_label = None
+    if scheduler_kind() == "launchd":
+        old_label = (usage.read_json(record_path(sdir, sid), {}) or {}).get("launchd_label")
+        state["launchd_label"] = launchd_label(sdir, sid, when_epoch)
     if not dry:
         write_record(sdir, sid, state)
     # ⛔ REGISTERED IS NOT RUNNABLE - see launch_probe(). So the line is PROBED BEFORE it is
@@ -1110,7 +1362,7 @@ def do_arm(argv, sdir, cfg):
     if not dry:
         import shim
         shim.write(sdir, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        for headless in ((True, False) if os.name == "nt" else (False,)):
+        for headless in ((True, False) if scheduler_kind() == "schtasks" else (False,)):
             good, detail = launch_probe(sdir, sid, headless=headless)
             if good is not False:
                 break
@@ -1133,7 +1385,8 @@ def do_arm(argv, sdir, cfg):
             return 1
         state["headless"] = headless
         write_record(sdir, sid, state)
-    cmd, result = schedule(when, dry, sid, headless=headless, sdir=sdir)
+    cmd, result = schedule(when, dry, sid, headless=headless, sdir=sdir,
+                           label=state.get("launchd_label"))
     if headless and not dry and getattr(result, "returncode", 1) != 0:
         # ⚠ The headless prefix costs 23 characters and `schtasks /TR` stops at 261 (measured
         # by review): a long state path can fit plain and not wrapped. A window beats no alarm.
@@ -1154,10 +1407,13 @@ def do_arm(argv, sdir, cfg):
 
     ok = hasattr(result, "returncode") and result.returncode == 0
     if ok:
-        # ⭐ POSIX only: the job number `at` announced is the ONE handle that lets
+        # ⭐ `at` only: the job number `at` announced is the ONE handle that lets
         # do_cancel() remove this job without removing every other `at` job the user has.
-        state["at_job"] = at_job_id(result)
+        if scheduler_kind() == "at":
+            state["at_job"] = at_job_id(result)
         write_record(sdir, sid, state)
+        if old_label and old_label != state.get("launchd_label"):
+            _launchd_remove(sdir, old_label)         # replaced; a running one is left to finish
         print("launch check  : %s%s" % (("OK - " + detail) if good else
                                          "⚠ NOT VERIFIED - " + detail,
                                          " (no window)" if headless else ""))
@@ -1211,6 +1467,18 @@ def do_run(sdir, cfg, session_id=None):
     # then the only record it can mean is the pre-0.60 single slot. ⚠ With neither, this
     # REFUSES rather than picking one of several records - running somebody else's task is
     # the failure this whole change exists to stop. ADR 20260917-132015, D8.
+    # ⛔ launchd: A FIRE ITS RECORD DOES NOT NAME IS A NO-OP (ADR 20261014 D5). A launchd calendar
+    # job has no Year key, so a spent job still loaded fires again on that date next year; a job a
+    # re-arm replaced, or one orphaned between two lines of do_arm, can fire too. The record names
+    # the ONE label that is this alarm; anything else exits before touching the record. ⚠ Only
+    # a label with this plugin's prefix counts: XPC_SERVICE_NAME is also set in ordinary processes.
+    xpc = os.environ.get("XPC_SERVICE_NAME", "")
+    if scheduler_kind() == "launchd" and xpc.startswith(LAUNCHD_PREFIX):
+        named = (usage.read_json(record_path(sdir, session_id), {}) or {}).get("launchd_label")
+        if named != xpc:
+            log_line("RUN-STALE %s - the record names %s, so this is not the armed alarm"
+                     % (xpc, named or "no launchd job"))
+            return 0
     if session_id:
         state = usage.read_json(record_path(sdir, session_id), {}) or {}
     else:
@@ -1611,6 +1879,8 @@ def wake_window(sdir, state, path, my_sid, rc_, exhausted):
 def _rearm(sdir, state, minutes):
     """Push the one-shot schedule out by `minutes`, keeping the attempt count."""
     when_epoch = time.time() + minutes * 60
+    if scheduler_kind() == "launchd":
+        return _rearm_launchd(sdir, state, when_epoch)
     _cmd, result = schedule(time.localtime(when_epoch), False, state.get("session_id"),
                             headless=bool(state.get("headless")), sdir=sdir)
     # ⚠ A retry registers a NEW `at` job, so the id recorded at arm time is stale from here
@@ -1622,6 +1892,41 @@ def _rearm(sdir, state, minutes):
         write_record(sdir, state.get("session_id"), state)
     except OSError:
         pass
+
+
+def _rearm_launchd(sdir, state, when_epoch):
+    """_rearm on macOS: a NEW label, recorded first, then registered - and its result is checked.
+
+    ⛔ IT RUNS INSIDE THE JOB IT REPLACES. Booting that job out would kill this process on the spot
+    (measured), so the old label goes through _launchd_remove(), which sees it running and only
+    deletes its plist; the sweep unloads it after it exits, and do_run's stale guard makes any later
+    fire of it a no-op. ⚠ A refused bootstrap restores the old values and is ANNOUNCED: unchecked,
+    it moved `at` forward with nothing loaded, and only announce_missed would ever have noticed.
+    """
+    sid = state.get("session_id")
+    old_label, old_at = state.get("launchd_label"), state.get("at")
+    label = launchd_label(sdir, sid, when_epoch)
+    state["launchd_label"], state["at"] = label, when_epoch
+    try:
+        write_record(sdir, sid, state)
+    except OSError:
+        pass
+    _cmd, result = schedule(time.localtime(when_epoch), False, sid,
+                            headless=bool(state.get("headless")), sdir=sdir, label=label)
+    rc = getattr(result, "returncode", None)
+    log_line("REARMED launchd %s rc=%s" % (label, rc))
+    if rc != 0:
+        state["launchd_label"], state["at"] = old_label, old_at
+        try:
+            write_record(sdir, sid, state)
+        except OSError:
+            pass
+        announce_failure(sdir, "a retry of the resume for %s could NOT be registered with launchd "
+                               "(rc=%s), so nothing will fire again for it"
+                         % (state.get("task"), rc), sid, state.get("task"))
+        return
+    if old_label and old_label != label:
+        _launchd_remove(sdir, old_label)
 
 
 def _run(cmd):
@@ -1675,16 +1980,35 @@ def do_cancel(sdir, quiet=False, all_jobs=False, session_id=None, legacy=False):
     three outcomes exist to prevent.
     """
     legacy_at = False
+    still_running = False
     if legacy:
         record, tname = os.path.join(sdir, LEGACY_RECORD), TASK_NAME
     else:
         record, tname = record_path(sdir, session_id), task_name(sdir, session_id)
-    if os.name == "nt":
+    kind = scheduler_kind()
+    if kind == "schtasks":
         registered = _run(["schtasks", "/Query", "/TN", tname])
         if registered:
             gone = _run(["schtasks", "/Delete", "/TN", tname, "/F"])
         else:
             gone = True                       # nothing to fire; see the docstring
+    elif kind == "launchd":
+        # ⭐ The record names its one label. _launchd_remove() never boots out a RUNNING job - this
+        # process may BE that job (do_run and wake_window cancel from inside it), and a wake in
+        # flight must not be killed by a hand-run --cancel (ADR 20261014 D4).
+        state = usage.read_json(record, {}) or {}
+        tname = state.get("launchd_label")
+        if tname:
+            outcome = _launchd_remove(sdir, tname)
+            registered = outcome != "not there"
+            gone = outcome != "refused"
+            still_running = outcome == "running"
+        else:
+            # ⚠ armed by <=0.74 with `at`, which never runs on macOS: nothing can fire. Its `at`
+            # job is removed by number when one was recorded, so the dead queue does not grow.
+            if state.get("at_job"):
+                _run(["atrm", str(state.get("at_job"))])
+            registered, gone = False, True
     elif all_jobs:
         _run(["atrm", "-a"])                  # asked for by name; see the docstring
         registered, gone = False, True
@@ -1711,6 +2035,9 @@ def do_cancel(sdir, quiet=False, all_jobs=False, session_id=None, legacy=False):
             print("   this user has - including jobs this plugin never created.")
         elif not registered:
             print("nothing registered to cancel - any record was cleared")
+        elif still_running:
+            print("cancelled - but a run is in progress and was NOT stopped; it finishes on its")
+            print("   own and nothing will start it again (launchd job %s)." % tname)
         elif gone:
             print("cancelled")
         else:
@@ -1801,6 +2128,33 @@ def do_status(sdir, cfg):
     return 0
 
 
+def task_readback_launchd(state):
+    """`scheduler:` line for a macOS record, from `launchctl print gui/<uid>/<label>` (ADR D7)."""
+    label = (state or {}).get("launchd_label") if isinstance(state, dict) else None
+    if not label:
+        return ("scheduler: ⛔ NO launchd job recorded - armed by a version that used `at`, which "
+                "never runs on macOS. Re-arm: `resume.py --arm --task <folder>`.")
+    rc, out, err = _launchctl(["print", "%s/%s" % (_gui_domain(), label)])
+    if rc == 113:
+        return ("scheduler: ⛔ NO JOB loaded (%s) - nothing will fire for this record. A logout or a "
+                "reboot drops a macOS alarm." % label)
+    if rc != 0:
+        return "scheduler: could not ask launchd (rc=%s): %s" % (rc, " ".join(err.split())[:120])
+    fields = {}
+    for line in out.splitlines():
+        key, sep, value = line.strip().partition(" = ")
+        if sep and key in ("state", "runs", "last exit code"):
+            fields.setdefault(key, value.strip())
+    if fields.get("state") == "running":
+        return "scheduler: RUNNING now (%s)" % label
+    if fields.get("runs", "0") == "0":
+        return "scheduler: has not fired yet (%s)" % label
+    code = fields.get("last exit code", "?")
+    if code == "0":
+        return "scheduler: fired and its program exited 0 (%s)" % label
+    return "scheduler: ⛔ FIRED and exited %s (%s)" % (code, label)
+
+
 def task_readback(sdir, session_id, state=None):
     """One line: what the OS scheduler itself says about this session's task. None off Windows.
 
@@ -1813,8 +2167,12 @@ def task_readback(sdir, session_id, state=None):
     quotes inside it, so a state directory with a comma in its path splits it - measured by
     review, a current line was then flagged as old. "Armed by an older version" is read from the
     RECORD's own `launcher` field instead, which the scheduler's formatting cannot touch.
+    ⭐ macOS: launchd's own answer for the record's label (task_readback_launchd). `at`: None.
     """
-    if os.name != "nt":
+    kind = scheduler_kind()
+    if kind == "launchd":
+        return task_readback_launchd(state)
+    if kind != "schtasks":
         return None
     import csv
     import io
@@ -1873,7 +2231,7 @@ def _status_one(sdir, cfg, state):
     print("retrying : every %d min, for up to %d min from the first attempt"
           % (rc_["retry_every_min"], rc_["retry_window_min"]))
     print()
-    print("⚠ The `scheduler:` line is Task Scheduler's own answer (Windows); the rest is what")
+    print("⚠ The `scheduler:` line is the scheduler's own answer (Task Scheduler / launchd); the rest is what")
     print("  was REGISTERED, not that it will succeed. The schedule is")
     print("  removed only after a run exits cleanly; a failure, or a window that had not")
     print("  actually reset, re-arms it. When the window above runs out it stops for good")
@@ -1903,43 +2261,12 @@ def main():
     if "--run" in argv and migrated():
         return do_run(sdir, cfg, arg(argv, "--session"))
     if "--cancel" in argv and migrated():
-        # ⚠ `--all` is the POSIX blunt instrument, and it is opt-in for that reason: it
-        # removes every `at` job this user has. See do_cancel's docstring.
-        # ⛔ A BARE `--cancel` STILL CLEARS EVERYTHING IN THIS DIRECTORY, and it has to:
-        # it is the documented repair in `install.py --status`, in do_cancel's own
-        # docstring and in the README, and quietly narrowing it to one session would leave
-        # the other records with no command named for clearing them.
-        # ADR 20260917-132015, D8 ⟨round 2, I-N3⟩.
-        sid = arg(argv, "--session")
-        if sid:
-            return do_cancel(sdir, all_jobs="--all" in argv, session_id=sid)
-        legacy_path = os.path.join(sdir, LEGACY_RECORD)
-        if "--legacy" in argv:
-            if not os.path.exists(legacy_path):
-                print("no pre-0.60 record (%s) - nothing to cancel" % LEGACY_RECORD)
-                return 0
-            return do_cancel(sdir, all_jobs="--all" in argv, legacy=True)
-        rc = 0
-        records = record_paths(sdir)
-        has_legacy = os.path.exists(legacy_path)
-        if not records and not has_legacy:
-            return do_cancel(sdir, all_jobs="--all" in argv)
-        # ⛔ SAY IT BEFORE DOING IT. A bare `--cancel` is machine-wide by design (D8), and a
-        # session that meant "cancel MY alarm" ran it on 2026-09-25 and retired every other
-        # session's resume. The line cannot undo that, but it makes it visible - and names the
-        # scoped form for next time.
-        print("⚠ no --session: cancelling ALL %d resume record(s) in this state directory - every "
-              "session's. To cancel one: `resume.py --cancel --session <id>`."
-              % (len(records) + (1 if has_legacy else 0)))
-        for rec in records:
-            state = usage.read_json(rec, {}) or {}
-            print("-- %s" % os.path.basename(rec))
-            rc |= do_cancel(sdir, all_jobs="--all" in argv,
-                            session_id=state.get("session_id") or
-                            os.path.basename(rec)[:-len(".json")])
-        if has_legacy:
-            print("-- %s (pre-0.60, no session id)" % LEGACY_RECORD)
-            rc |= do_cancel(sdir, all_jobs="--all" in argv, legacy=True)
+        rc = _cancel_command(argv, sdir)
+        # ⭐ launchd: a cancel also unloads every job of this directory that is not running -
+        # spent ones, and any no record names - so uninstall (a bare --cancel) leaves nothing
+        # loaded behind. `--session` narrows it to that session's own jobs (ADR 20261014 D4).
+        if scheduler_kind() == "launchd" and "--legacy" not in argv:
+            launchd_sweep(sdir, "cancel", session_id=arg(argv, "--session"))
         return rc
     if "--status" in argv and migrated():
         return do_status(sdir, cfg)
@@ -1950,6 +2277,49 @@ def main():
           " | --cancel --session <id> | --cancel --legacy | --cancel [--all]"
           "  (a bare --cancel clears EVERY session's resume)")
     return 2
+
+
+def _cancel_command(argv, sdir):
+    """`--cancel [--session <id> | --legacy] [--all]`. Returns do_cancel's verdict.
+
+    ⚠ `--all` is the `at` blunt instrument, and it is opt-in for that reason: it removes every
+    `at` job this user has. See do_cancel's docstring.
+    ⛔ A BARE `--cancel` STILL CLEARS EVERYTHING IN THIS DIRECTORY, and it has to: it is the
+    documented repair in `install.py --status`, in do_cancel's own docstring and in the README,
+    and quietly narrowing it to one session would leave the other records with no command named
+    for clearing them. ADR 20260917-132015, D8 ⟨round 2, I-N3⟩.
+    """
+    sid = arg(argv, "--session")
+    if sid:
+        return do_cancel(sdir, all_jobs="--all" in argv, session_id=sid)
+    legacy_path = os.path.join(sdir, LEGACY_RECORD)
+    if "--legacy" in argv:
+        if not os.path.exists(legacy_path):
+            print("no pre-0.60 record (%s) - nothing to cancel" % LEGACY_RECORD)
+            return 0
+        return do_cancel(sdir, all_jobs="--all" in argv, legacy=True)
+    rc = 0
+    records = record_paths(sdir)
+    has_legacy = os.path.exists(legacy_path)
+    if not records and not has_legacy:
+        return do_cancel(sdir, all_jobs="--all" in argv)
+    # ⛔ SAY IT BEFORE DOING IT. A bare `--cancel` is machine-wide by design (D8), and a
+    # session that meant "cancel MY alarm" ran it on 2026-09-25 and retired every other
+    # session's resume. The line cannot undo that, but it makes it visible - and names the
+    # scoped form for next time.
+    print("⚠ no --session: cancelling ALL %d resume record(s) in this state directory - every "
+          "session's. To cancel one: `resume.py --cancel --session <id>`."
+          % (len(records) + (1 if has_legacy else 0)))
+    for rec in records:
+        state = usage.read_json(rec, {}) or {}
+        print("-- %s" % os.path.basename(rec))
+        rc |= do_cancel(sdir, all_jobs="--all" in argv,
+                        session_id=state.get("session_id") or
+                        os.path.basename(rec)[:-len(".json")])
+    if has_legacy:
+        print("-- %s (pre-0.60, no session id)" % LEGACY_RECORD)
+        rc |= do_cancel(sdir, all_jobs="--all" in argv, legacy=True)
+    return rc
 
 
 def _utf8_console():

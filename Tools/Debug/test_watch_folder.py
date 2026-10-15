@@ -47,8 +47,17 @@ def _write(path, text):
         f.write(text)
 
 
+# ⭐ HIDDEN MEANS A DIFFERENT THING PER PLATFORM, so the hidden file's NAME does too. Windows
+# hides by attribute; PowerShell on macOS and Linux treats a leading dot as hidden, and an
+# attribute does not exist there. Either way `-Force` is what lists it.
+HIDDEN_REL = ("sub/deep/b.txt" if os.name == "nt" else "sub/deep/.b.txt")
+
+
 def _hide(path):
-    """Set the Windows hidden attribute; refuse to run the case without it."""
+    """Make `path` hidden the platform's way; refuse to run the case without it."""
+    if os.name != "nt":
+        assert os.path.basename(path).startswith("."), "not a dot name: %s" % path
+        return
     import ctypes
     FILE_ATTRIBUTE_HIDDEN = 0x2
     assert ctypes.windll.kernel32.SetFileAttributesW(path, FILE_ATTRIBUTE_HIDDEN), "cannot hide %s" % path
@@ -58,13 +67,15 @@ def case_whole_tree_with_exclusions(pwsh):
     with scratch_dir("whole-tree") as d:
         chan = os.path.join(d, "chan")
         for rel in ("BOARD.md", "OWN.md", os.path.join("checkin", "OWN.md"),
-                    os.path.join("sub", "deep", "b.txt"), os.path.join(".claude", "x.log"),
+                    HIDDEN_REL, os.path.join(".claude", "x.log"),
                     os.path.join("Memory", "t.md")):
             _write(os.path.join(chan, rel), "seed\n")
 
-        deep = os.path.join(chan, "sub", "deep", "b.txt")
+        deep = os.path.join(chan, *HIDDEN_REL.split("/"))
         _hide(deep)
-        cmd = [pwsh, "-NoProfile", "-WindowStyle", "Hidden", "-File", WATCHER,
+        # ⚠ -WindowStyle exists only in Windows PowerShell's host; pwsh on macOS rejects it.
+        cmd = [pwsh, "-NoProfile"] + (["-WindowStyle", "Hidden"] if os.name == "nt" else []) + [
+               "-File", WATCHER,
                "-Folder", chan + os.sep, "-Every", "1", "-MaxMinutes", "1",
                "-Ignore", "./OWN.md, \\CHECKIN\\own.md ,memory/"]
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -102,7 +113,7 @@ def case_whole_tree_with_exclusions(pwsh):
             out = "".join(lines)
             assert rc == 0, "a change two folders deep did not wake it (exit %r): %r" % (rc, out)
             changed = out.split("CHANGED", 1)[-1]
-            assert "sub/deep/b.txt" in changed, "the wake does not name the file: %r" % out
+            assert HIDDEN_REL in changed, "the wake does not name the file: %r" % out
             for quiet in (".claude", "OWN.md", "Memory"):
                 assert quiet not in changed, "excluded %s reported: %r" % (quiet, out)
         finally:

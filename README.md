@@ -1354,12 +1354,13 @@ python hooks/resume.py --cancel                      # ⚠ 取消這個狀態目
   ⚠ **而它不是比較省的那條**，這是最容易誤讀的地方。留住 session 留不住 token：
   需要 resume 的等待一定比 prompt cache 活得久，所以醒來後的第一個請求會把整段對話
   重送一次、全額計費（實測 `cache_read` 是 **0**）。它買到的是**正確性**，不是比較少的帳單。
-- **作業系統的一次性排程**（`schtasks` / `at`） — 備援：0.69 起它叫醒上鬧鐘的那個視窗；視窗沒活下來時只告訴下一個 session、不在背景跑，
+- **作業系統的一次性排程**（Windows `schtasks`、macOS launchd、其他 `at`，執行時自動判斷） — 備援：0.69 起它叫醒上鬧鐘的那個視窗；視窗沒活下來時只告訴下一個 session、不在背景跑，
   ⚠ **而讓 session 死掉的，常常正是你在等的那個上限。**
   不需要系統管理員權限：在非提權帳號實測過，`schtasks` 建立、列出、刪除都沒跳任何提示。
   ⛔ **但它撐不過登出。** 2026-08-26 實測：`schtasks /Create` 沒帶 `/RU` / `/IT` 建出來的工作，
   Logon Mode 是 **`Interactive only`** — 只在使用者互動登入時執行。
   關終端機、關編輯器沒問題；**登出或切換使用者就不會觸發**。
+  ⭐ **macOS（0.75 起）用 launchd，不用 `at`**：macOS 預設沒有載入 `com.apple.atrun`，`at` 的工作永遠不會執行（2026-10-14 實測），所以 0.75 以前 Mac 上的鬧鐘全都是死的。現在每次上鬧鐘註冊一個使用者 launchd 工作，plist 放在狀態資料夾（不放 `~/Library/LaunchAgents`，所以不會跳「已加入背景項目」通知），不需要 sudo。⛔ **登出或重開機會讓還沒響的鬧鐘消失**，下一個 session 會說出「有鬧鐘沒響」。
   ⛔ **0.65.2 以前，在 PATH 上沒有 `bash` 的 Windows 上，這條路從來沒起來過。** 排程執行的指令以
   `bash` 開頭，Claude Code 找得到自己的 bash，工作排程器找不到 —— 2026-09-28 實測，一台機器上
   09-22 到 09-28 的 8 個排程全部準時觸發、全部 `0x80070002`（找不到檔案），而且沒有任何地方報錯。
@@ -3232,13 +3233,14 @@ Two routes exist, and the gate offers both when it refuses a dispatch:
   session does not keep the tokens: a wait long enough to need a resume outlives the prompt
   cache, so the first request after the wake re-sends the whole conversation at full price
   (measured `cache_read` of **zero**). It buys **correctness**, not a smaller bill.
-- **A one-shot OS scheduled task** (`schtasks` / `at`) — the backup: since 0.69 it WAKES the window
+- **A one-shot OS scheduled task** (Windows `schtasks`, macOS launchd, otherwise `at` — picked at run time) — the backup: since 0.69 it WAKES the window
   that armed it; when that window did not survive, it tells the next session instead of running
   anything in the background, and ⚠ **the thing that ends a session is often the very limit you are waiting
   on.** ⛔ **But it does not survive a logoff.** Measured 2026-08-26: a task created by
   `schtasks /Create` without `/RU` or `/IT` has Logon Mode **`Interactive only`**, so it runs
   only while the user is logged on interactively. Closing the terminal and the editor is fine;
   logging out or switching user means it never fires.
+  ⭐ **macOS (since 0.75) uses launchd, not `at`**: `com.apple.atrun` is not loaded by default, so `at` jobs never run there (measured 2026-10-14) - every Mac alarm before 0.75 was dead. Each arm now registers a per-user launchd job whose plist lives in the state folder (not `~/Library/LaunchAgents`, so no "Background item added" notification); no sudo. ⛔ **A logout or reboot drops an alarm that has not fired yet**; the next session says so.
   No elevation needed: measured on a non-elevated account, `schtasks` created, listed and
   deleted a task with no prompt.
   ⛔ **Up to 0.65.2, on a Windows machine with no `bash` on PATH, this route never started.** The

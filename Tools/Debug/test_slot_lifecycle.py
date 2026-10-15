@@ -106,8 +106,10 @@ def main():
         # The log said DENY(slots-full); the dispatch went through. This is that exact path,
         # through the real process. ⚠ `None` here IS the fail-open, so it is named before the
         # decision is read - otherwise the failure reads as an AttributeError in this file.
+        # ⚠ 10**16 minutes, not 10**9: macOS formats year ~3928 without raising (see the same
+        # injection in dispatch_gate.py's selftest).
         with open(os.path.join(sdir, "config.json"), "w", encoding="utf-8") as f:
-            json.dump({"slot_ttl_min": 1000000000}, f)
+            json.dump({"slot_ttl_min": 10 ** 16}, f)
         fourth = dispatch("toolu_HUGE", "huge ttl probe")
         assert fourth is not None, \
             "FAIL-OPEN: the gate printed nothing with slot_ttl_min huge - the dispatch is allowed"

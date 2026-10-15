@@ -5482,8 +5482,11 @@ def selftest():
         # The wrapper returns "" and logs HELD-NOTE-FAILED instead. ⚠ The bare function is
         # asserted to raise on purpose: if a future Python stops raising here, this check
         # stops proving anything and must find a different failure to inject.
+        # ⚠ 10**16 MINUTES, NOT 10**9: the range differs by platform. Measured 2026-10-14:
+        # 10**9 minutes (year ~3928) raises on Windows but macOS formats it happily, so the
+        # check failed there; 10**16 raises OSError on both (Windows 22, macOS 84 EOVERFLOW).
         assert claim_slot(sd, sd, cfg_s, "s1", 1, "tool_D", "F", "huge ttl")
-        huge = dict(cfg_s, slot_ttl_min=1000000000)
+        huge = dict(cfg_s, slot_ttl_min=10 ** 16)
         try:
             held_slots_note(sd, huge, "s1", 1)
             raise AssertionError("the bare note no longer raises on a huge slot_ttl_min - "

@@ -496,7 +496,20 @@ def resume_status():
                  for ln in (probe.stdout or b"").decode("utf-8", "replace").splitlines()]
         ours = [n for n in names if RESUME_TASK_PREFIX in n]
         registered = bool(ours) if probe.returncode == 0 else False
+        shown = RESUME_TASK_PREFIX
+    elif sys.platform == "darwin":
+        # ⭐ macOS (0.75): the alarm is a launchd job labelled com.dispatch-guard.resume.<...>;
+        # `launchctl list` answers in milliseconds. A spent job stays listed until the next
+        # session start sweeps it, so "registered" here means loaded, not necessarily pending.
+        shown = "com.dispatch-guard.resume."
+        try:
+            probe = subprocess.run(["launchctl", "list"], capture_output=True, text=True, timeout=30)
+            ours = [ln.split("\t")[-1] for ln in probe.stdout.splitlines() if shown in ln]
+            registered = bool(ours) if probe.returncode == 0 else False
+        except Exception:
+            ours, registered = [], None
     else:
+        shown = RESUME_TASK_PREFIX
         # `at` has no named jobs, so presence cannot be probed the same way. Say so rather
         # than reporting a guess as a measurement.
         registered = None
@@ -504,7 +517,7 @@ def resume_status():
     if not state:
         if registered:
             print("resume armed        : ⚠ NO record, but the OS still holds %d task(s)" % len(ours))
-            print("                      named %s* - ORPHANS. They will" % RESUME_TASK_PREFIX)
+            print("                      named %s* - ORPHANS. They will" % shown)
             print("                      abort harmlessly when they fire, but nothing will")
             print("                      ever remove them. Run `resume.py --cancel` - it clears EVERY session's")
             print("                      resume in this state directory.")
