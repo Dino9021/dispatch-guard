@@ -232,6 +232,24 @@ was waiting; nobody was watching; the owner was the only thing moving.
   while the peer is busy (`ListAgents` shows it); while it is idle, wait on the channel watcher. The
   subscription can also be "only logged" when the peer runs in another permission class - keep a
   watcher as the second wake.
+- ⭐ **Peer on another machine, BOTH sessions on Remote Control** (each shows the other in `ListAgents`
+  with kind "Remote Control"): **the peer's `SendMessage` is your wake-up - nothing to arm.** Measured
+  2026-10-15: a message sent while `ListAgents` showed the receiver idle (its turn ended, nobody typing)
+  woke it on the other machine with no human in between; it read its clock on waking and answered
+  (1.1). ⇒ The rule changes on BOTH sides:
+  - **Waiting side:** post your ONE waiting line in the channel file and end the turn. Say in it that
+    you are waiting on a `SendMessage`, so the finisher knows it must send one.
+  - **Finishing side:** land the result in the channel files and push FIRST, then `SendMessage` the
+    waiting peer by the name `ListAgents` shows now (never a code name, `coordination.md` 2.2) - one
+    line: what is done, the commit or file. ⛔ **A push or a file wakes nobody**: finishing without the
+    message leaves the peer asleep exactly as before this rule existed.
+  - ⚠ No read receipt ("this route reports nothing back"), and a session can hold or refuse
+    cross-session messages. No answer within a few minutes = the message did not wake anyone: fall
+    back to the watcher below, or ask the owner to relay. ⚠ Measured once per direction at most -
+    re-measure (one ping while the peer shows idle, answered with the time seen) when a new pair of
+    machines starts working this way.
+  - Same storm rule as the watchers: never send a "still waiting" or "nothing new" message - every
+    message wakes the receiver.
 - **Peer on another machine, or reachable only through files:** run the shipped watcher in the
   background - `pwsh -NoProfile -WindowStyle Hidden -File <plugin>/skills/cowork/tools/watch-folder.ps1
   -Folder <channel root> -Ignore "<your file>,checkin/<your role>.md,<observer file>"` (Bash

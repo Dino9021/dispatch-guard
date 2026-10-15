@@ -189,6 +189,29 @@ def adopt_statusline_if_empty():
     return COMMAND
 
 
+def refresh_if_unset():
+    """Give OUR statusline its refresh timer when it has none. Returns the seconds, or None.
+
+    ⭐ THE SESSION-START HALF OF ensure_refresh(). repoint_statusline() and
+    adopt_statusline_if_empty() add the timer only when they WRITE the line, so a line that
+    is already right but has no timer was never repaired - and every fresh `install.py --all`
+    up to 0.75.1 left exactly that (MAC-1 M1, measured on macOS and Windows 2026-10-15). The
+    numbers then froze between turns, reading LOW, until somebody ran install.py again.
+
+    ⛔ Ours only, like repoint: a statusline belonging to something else is install.py's to
+    decide, behind a person running it.
+    """
+    if not readable(SETTINGS):
+        return None
+    settings = load(SETTINGS, {})
+    if not statusline_is_ours(settings.get("statusLine")):
+        return None
+    if not ensure_refresh(settings, []):
+        return None
+    save(SETTINGS, settings)
+    return settings["statusLine"]["refreshInterval"]
+
+
 _SEED_NOTE = (
     "Every setting is explained below, and NONE of them is set. That is deliberate: a value "
     "written here PINS it, so a later version's new default would never reach you. Add only "

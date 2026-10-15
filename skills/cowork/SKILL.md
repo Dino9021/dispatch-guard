@@ -11,7 +11,8 @@ person - if a rule cannot be applied elsewhere, it does not belong in this file.
 
 ⛔ **Across MACHINES, the mechanisms the rest of this page assumes do not exist** - no shared
 session directory, no peer heartbeat, and no `SendMessage` unless both sessions are connected
-through Remote Control (then it works both ways, live but not stored: `cross-machine.md` 1.1) -
+through Remote Control (then it works both ways, live but not stored, and it wakes an idle peer:
+`cross-machine.md` 1.1, 1.8) -
 and the channel you build to replace them can fail in a direction that raises no error on either side. Rule 13 is the floor;
 `reference/cross-machine.md` is the whole of it, and it is worth reading BEFORE the move
 rather than during it.
@@ -96,6 +97,12 @@ If you read nothing else, these are the ones whose absence caused real damage.
     Before ending a turn to wait on a peer, arm a wake-up (`notify_when_idle` on the same
     machine; the shipped folder watcher across machines) and post ONE waiting line; a wake-up
     with nothing for you writes nothing, or every watcher wakes every other one.
+    ⭐ **Over Remote Control the peer's own `SendMessage` IS the wake-up** - measured: it woke an
+    idle session on the other machine, no human in between (`cross-machine.md` 1.8). So when
+    both sides show in `ListAgents` as Remote Control, the waiting side may end its turn after
+    its one waiting line, and **the side that finishes MUST `SendMessage` the waiting peer** after
+    landing the result in the files - a push or a file wakes nobody. No read receipt: no answer
+    within a few minutes means fall back to the watcher or the owner.
 
 **Where each rule is worked out in full** - go to the named section, not to the directory:
 
@@ -197,7 +204,7 @@ A catalogue, so the next session names the shape instead of rediscovering it.
 | Relay single point | All communication funnelled through one session | Keep a durable written path alongside the relay |
 | Recycled name | A message to a known name is delivered - to a different session, with no error | Look the ROLE up: read `checkin/<role>.md` for the holder's current runtime name, find it in the live list, send to it; a `[ref]` only when fresh from that list |
 | Name collision | Your code name is also the name of an unrelated (even offline) session in the list | Never send to a code name; look the role up in its check-in file, then send to its current runtime name. No `@` in code names |
-| Asleep while waiting | "Waiting for the other side" ends a turn, and nothing ever wakes the session | Arm a wake-up before ending the turn: `notify_when_idle` (same machine) or the folder watcher (across machines) |
+| Asleep while waiting | "Waiting for the other side" ends a turn, and nothing ever wakes the session | Arm a wake-up before ending the turn: `notify_when_idle` (same machine), the folder watcher (across machines), or - both on Remote Control - the finisher's `SendMessage`, which wakes an idle peer (`cross-machine.md` 1.8) |
 | Wake storm | Every waiter posts "woke, nothing for me" on each wake, and each post wakes every other waiter | A wake with nothing for you writes nothing; watchers ignore your own and the observer's files |
 | Moved channel | Work moves to a new board; the party watching the old one is never woken | Announce the move in the OLD place and keep watching it until everyone acknowledges there |
 | Split channel | Two parties each create a channel in a different folder of one share, each watches only its own, and each answers where the other is not looking - "they have not replied" | Look for a board before creating one; watch the share ROOT, whole tree; two boards = the one at the root wins |

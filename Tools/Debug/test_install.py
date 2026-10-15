@@ -604,10 +604,53 @@ def selfheal():
             assert dispatch_gate.maybe_adopt_statusline({"auto_statusline": False}) == (None, None)
             with open(install.SETTINGS, encoding="utf-8") as f:
                 assert "statusLine" not in json.load(f), "adopted while switched off"
+
+            # ⭐ OURS AND RIGHT, BUT NO TIMER - what every fresh `install.py --all` up to 0.75.1
+            # left (MAC-1 M1). Repoint and adopt both return early on it, so this is the only
+            # path that ever repairs it. ⚠ $CLAUDE_DISPATCH_DIR goes to scratch: log() also
+            # writes to the state directory, which is otherwise the machine's real one.
+            saved_dd = os.environ.get("CLAUDE_DISPATCH_DIR")
+            gate_log = os.path.join(tmp, "gate-log")
+            os.makedirs(gate_log, exist_ok=True)
+            os.environ["CLAUDE_DISPATCH_DIR"] = gate_log
+            try:
+                with open(install.SETTINGS, "w", encoding="utf-8") as f:
+                    json.dump({"statusLine": {"type": "command", "command": install.COMMAND}}, f)
+                note, seen = dispatch_gate.maybe_refresh_statusline(None)
+                assert note and seen and "refresh timer" in seen, (note, seen)
+                with open(install.SETTINGS, encoding="utf-8") as f:
+                    sl = json.load(f)["statusLine"]
+                assert sl == {"type": "command", "command": install.COMMAND,
+                              "refreshInterval": install.REFRESH_SECONDS}, sl
+                assert dispatch_gate.maybe_refresh_statusline(None) == (None, None), "must not repeat"
+                with open(os.path.join(gate_log, "dispatch_gate.log"), encoding="utf-8") as f:
+                    assert "STATUSLINE-REFRESH-ADDED %ds" % install.REFRESH_SECONDS in f.read(), \
+                        "the repair was not logged"
+
+                # A timer somebody chose is theirs.
+                mine = {"type": "command", "command": install.COMMAND, "refreshInterval": 15}
+                with open(install.SETTINGS, "w", encoding="utf-8") as f:
+                    json.dump({"statusLine": mine}, f)
+                assert dispatch_gate.maybe_refresh_statusline(None) == (None, None)
+                with open(install.SETTINGS, encoding="utf-8") as f:
+                    assert json.load(f)["statusLine"] == mine, "a chosen timer was changed"
+
+                # ⛔ A foreign statusline with no timer is NOT the gate's: only install.py, run by a
+                # person, adds one there.
+                with open(install.SETTINGS, "w", encoding="utf-8") as f:
+                    json.dump({"statusLine": theirs}, f)
+                assert dispatch_gate.maybe_refresh_statusline(None) == (None, None)
+                with open(install.SETTINGS, encoding="utf-8") as f:
+                    assert json.load(f)["statusLine"] == theirs, "it added a timer to a foreign one"
+            finally:
+                if saved_dd is None:
+                    os.environ.pop("CLAUDE_DISPATCH_DIR", None)
+                else:
+                    os.environ["CLAUDE_DISPATCH_DIR"] = saved_dd
         finally:
             install.SETTINGS, install.STATE_DIR, install.CONFIG_PATH = saved
 
-    print("ok - the gate repairs a stale statusline and leaves a foreign one alone")
+    print("ok - the gate repairs a stale statusline and a missing refresh timer, and leaves a foreign one alone")
 
 
 def uninstall_then_install():

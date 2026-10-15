@@ -33,6 +33,21 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.75.3
+
+- **已經裝好、但狀態列沒有 `refreshInterval` 的機器，session 開始時自己補上。** 0.75.2 只修了「全新安裝」那條路；
+  在 0.75.1 以前全新安裝過的機器（Windows 開發機和 Mac 都是，2026-10-15 實測 `--status` 顯示 `⛔ NOT SET`）
+  指令早就正確，gate 的 repoint / adopt 都在「不必改寫」時直接返回，所以計時器永遠補不回來，數字在兩輪之間凍住、
+  而且讀起來偏低。現在 gate 在 session 開始時，對**本外掛的**狀態列補上計時器，並在 log 寫一行
+  `STATUSLINE-REFRESH-ADDED`；別人的狀態列不碰，你自己設的秒數不動。⚠ 這台 Windows 機器上計時器是怎麼沒的
+  沒有查到 —— 如果同一行在 log 裡一再出現，就是有別的東西在拿掉它。
+- cowork（MAC）：透過 Remote Control，`SendMessage` 也叫得醒閒置的同伴 —— 等待的一方寫一行等待後可以結束這一輪；
+  做完的一方把結果落地之後**一定要** `SendMessage` 給等待的同伴（push 或寫檔叫不醒任何人）；沒有已讀回條，
+  幾分鐘沒回應就改用 watcher 或找擁有者。
+- 驗證：新的檢查在 `test_install` 的 gate 自我修復那一段（補上、不重複、有記 log、選過的秒數不動、別人的不碰），
+  五個突變（拿掉擁有權檢查、不存檔、蓋掉選過的秒數、不回傳、不記 log）全部被抓到。⚠ 接到 SessionStart 的那一行
+  只能在真的開新 session 時驗證：更新後開一個新 session，`--status` 應該顯示 `statusline refresh : every 60s`。
+
 ## 0.75.2
 
 擁有者 2026-10-15：「請與他協作完成 Mac 版的 Dispatch-Guard Plugin 讓這個專案可以在 Windows 或 Mac 系統環境運作,
@@ -41,6 +56,7 @@ MAC 照 README「安裝 A」從 GitHub 0.75.1 在 macOS 上真的裝一次、移
 
 - **全新安裝的狀態列沒有 `refreshInterval`（兩個平台都一樣）。** `install.py --all` 在狀態列寫進去**之前**就檢查
   refreshInterval，找不到指令所以什麼都沒加；數字只在有互動的回合才會動，要再跑一次才補上。現在寫入狀態列的同一步就設好。
+  ⚠ 只修了全新安裝；已經裝好的機器要到 0.75.3 才會自己補上。
 - **移除再安裝之後，狀態列和 VS Code 工作不再自動維護。** `--all --uninstall` 把 `auto_statusline`、`auto_vscode_task`
   設成 false 寫進 `config.json`，畫面卻說 `none is created`；之後的 `install.py --all` 也從不改回來。現在移除時在
   `dispatch._switched_off_by_uninstall` 留記號，下一次安裝只打開移除關掉的那幾個（你自己設的 false 不動），
@@ -3419,6 +3435,24 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.75.3
+
+- **A machine already installed, whose statusline has no `refreshInterval`, gets it back at session start.**
+  0.75.2 fixed only the fresh-install path; a machine installed fresh on 0.75.1 or earlier (the Windows
+  development machine and the Mac both, `--status` showing `⛔ NOT SET`, measured 2026-10-15) already had the
+  right command, the gate's repoint and adopt both return early when nothing needs rewriting, so the timer never
+  came back and the numbers froze between turns, reading LOW. The gate now adds the timer to THIS PLUGIN'S
+  statusline at session start and logs `STATUSLINE-REFRESH-ADDED`; a foreign statusline is untouched, a timer you
+  chose is kept. ⚠ How the timer went missing on that Windows machine was not found - if the same line keeps
+  appearing in the log, something else is removing it.
+- cowork (MAC): over Remote Control a `SendMessage` also wakes an idle peer - the waiting side may end its turn
+  after one waiting line; the side that finishes MUST `SendMessage` the waiting peer after landing the result (a
+  push or a file wakes nobody); there is no read receipt, so no answer within a few minutes means watcher or owner.
+- Verified: new cases in `test_install`'s gate self-heal section (added, not repeated, logged, a chosen timer
+  kept, a foreign line untouched); five mutants (ownership check removed, save dropped, chosen timer overwritten,
+  no return value, not logged) all killed. ⚠ The SessionStart wiring can only be checked by a real new session:
+  after updating, open one, and `--status` should say `statusline refresh : every 60s`.
+
 ## 0.75.2
 
 Owner, 2026-10-15: "work with [the Mac session] to finish the Mac version of the Dispatch-Guard plugin, so this project runs
@@ -3428,7 +3462,8 @@ macOS from GitHub 0.75.1, following README "Install A", and found the following.
 
 - **A fresh install's statusline had no `refreshInterval` (both platforms).** `install.py --all` checked
   refreshInterval BEFORE writing the statusline, found no command and added nothing; numbers then moved only on
-  interactive turns until a second run. It is now set in the same step that writes the line.
+  interactive turns until a second run. It is now set in the same step that writes the line. ⚠ Fresh installs
+  only; a machine already installed is repaired by 0.75.3.
 - **After uninstall and reinstall, the statusline and the VS Code task were no longer maintained.**
   `--all --uninstall` wrote `auto_statusline` and `auto_vscode_task` false into `config.json` while printing
   `none is created`, and no later `install.py --all` turned them back. The uninstall now marks them in

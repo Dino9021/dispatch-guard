@@ -987,6 +987,28 @@ def maybe_repoint_statusline(sdir=None):
             "running one." % moved[0])
 
 
+def maybe_refresh_statusline(root, sdir=None):
+    """Add the refresh timer to OUR statusline when it is right but has none.
+
+    ⚠ Logged, so a timer that keeps vanishing shows up as the same line session after
+    session - the cause of one such machine was never found (2026-10-15).
+    """
+    if not touches_real_state(sdir):
+        return None, None
+    try:
+        sys.path.insert(0, os.path.dirname(HERE))
+        import install
+        seconds = install.refresh_if_unset()
+    except Exception:
+        return None, None                               # never break a session over a statusline
+    if not seconds:
+        return None, None
+    log(root, "STATUSLINE-REFRESH-ADDED %ds" % seconds)
+    return (" ⭐ The statusline had no refresh timer, so its numbers froze between turns; "
+            "`refreshInterval` = %ds was added to it. Nothing else was changed." % seconds,
+            "your statusline had no refresh timer - added one (every %ds)." % seconds)
+
+
 def effort_level(payload):
     """The reasoning effort for this turn, lowercased, or "".
 
@@ -3689,6 +3711,7 @@ def on_session_start(payload, root, sdir, cfg):
     pairs = [maybe_install_vscode_task(root, cfg, sdir),
              maybe_repoint_statusline(sdir),
              maybe_adopt_statusline(cfg, sdir),
+             maybe_refresh_statusline(root, sdir),
              # ⭐ resumed / cleared / compacted: re-check-in on the cowork board (0.68, D8)
              cowork_wake_note(payload, root, sdir, cfg)]
     notes = [failed_resume_note(sdir) if attended() else "",
