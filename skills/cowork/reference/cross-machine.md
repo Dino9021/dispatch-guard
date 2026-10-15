@@ -26,8 +26,9 @@ connected through Remote Control: each listed the other in `ListAgents` (kind "R
 a `SendMessage` to that name arrived in real time in each direction and was handled by a receiver
 that was mid-turn. What it does NOT give you: no read receipt (the send reports "this route reports
 nothing back"), nothing stored, and `notify_when_idle` is same-machine only. It also woke an IDLE
-receiver: sent while `ListAgents` showed the other session idle, answered 7 seconds later (one probe,
-2026-10-15). ⇒ Coordinate live by `SendMessage`, but land every decision,
+receiver: sent while `ListAgents` showed the other session idle, seen about 7 s later one way and about
+12 s the other (both directions, one probe each, 2026-10-15 - what to do with it: 1.8). ⇒ Coordinate
+live by `SendMessage`, but land every decision,
 claim and measurement in the channel's files too; a session not on Remote Control is unreachable
 that way. ⚠ A git repository as the channel (one file per writer, pushed) works the same as a shared
 folder except that a message arrives only when the other side pulls - nothing in git wakes anyone.
@@ -234,9 +235,11 @@ was waiting; nobody was watching; the owner was the only thing moving.
   watcher as the second wake.
 - ⭐ **Peer on another machine, BOTH sessions on Remote Control** (each shows the other in `ListAgents`
   with kind "Remote Control"): **the peer's `SendMessage` is your wake-up - nothing to arm.** Measured
-  2026-10-15: a message sent while `ListAgents` showed the receiver idle (its turn ended, nobody typing)
-  woke it on the other machine with no human in between; it read its clock on waking and answered
-  (1.1). ⇒ The rule changes on BOTH sides:
+  2026-10-15 in BOTH directions, one probe each (a Windows and a macOS session): a message sent while
+  `ListAgents` showed the receiver idle (its turn ended, nobody typing) woke it on the other machine with
+  no human in between; it read its clock on waking and answered - seen about 7 s after the send one way,
+  about 12 s the other (send times read from the sender's clock, the two clocks not cross-checked; 1.1).
+  ⇒ The rule changes on BOTH sides:
   - **Waiting side:** post your ONE waiting line in the channel file and end the turn. Say in it that
     you are waiting on a `SendMessage`, so the finisher knows it must send one.
   - **Finishing side:** land the result in the channel files and push FIRST, then `SendMessage` the
@@ -245,9 +248,9 @@ was waiting; nobody was watching; the owner was the only thing moving.
     message leaves the peer asleep exactly as before this rule existed.
   - ⚠ No read receipt ("this route reports nothing back"), and a session can hold or refuse
     cross-session messages. No answer within a few minutes = the message did not wake anyone: fall
-    back to the watcher below, or ask the owner to relay. ⚠ Measured once per direction at most -
-    re-measure (one ping while the peer shows idle, answered with the time seen) when a new pair of
-    machines starts working this way.
+    back to the watcher below, or ask the owner to relay. ⚠ One probe per direction is all the evidence
+    there is - re-measure (one ping while the peer shows idle, answered with the time seen) when a new
+    pair of machines starts working this way.
   - Same storm rule as the watchers: never send a "still waiting" or "nothing new" message - every
     message wakes the receiver.
 - **Peer on another machine, or reachable only through files:** run the shipped watcher in the

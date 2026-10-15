@@ -33,6 +33,11 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.75.4
+
+- cowork（MAC）：`cross-machine.md` 1.1 與 1.8 改寫為「透過 Remote Control 叫醒閒置的同伴，兩個方向各實測一次」
+  （Windows → Mac 約 7 秒、Mac → Windows 約 12 秒，2026-10-15，兩台時鐘沒有互相校對）。只有文件，程式沒變。
+
 ## 0.75.3
 
 - **已經裝好、但狀態列沒有 `refreshInterval` 的機器，session 開始時自己補上。** 0.75.2 只修了「全新安裝」那條路；
@@ -3434,6 +3439,12 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.75.4
+
+- cowork (MAC): `cross-machine.md` 1.1 and 1.8 now say waking an idle peer over Remote Control was measured in
+  both directions, one probe each (Windows -> Mac ~7 s, Mac -> Windows ~12 s, 2026-10-15, clocks not
+  cross-checked). Text only; no code changed.
 
 ## 0.75.3
 
