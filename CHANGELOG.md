@@ -33,6 +33,33 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.75.2
+
+擁有者 2026-10-15：「請與他協作完成 Mac 版的 Dispatch-Guard Plugin 讓這個專案可以在 Windows 或 Mac 系統環境運作,
+自動辨識作業系統, 安裝並完成相關設定」。Windows（WIN）和 macOS（MAC）兩個 session 分工完成，往來紀錄在 `Memory/cowork/`。
+MAC 照 README「安裝 A」從 GitHub 0.75.1 在 macOS 上真的裝一次、移除一次，找到下面的問題。
+
+- **全新安裝的狀態列沒有 `refreshInterval`（兩個平台都一樣）。** `install.py --all` 在狀態列寫進去**之前**就檢查
+  refreshInterval，找不到指令所以什麼都沒加；數字只在有互動的回合才會動，要再跑一次才補上。現在寫入狀態列的同一步就設好。
+- **移除再安裝之後，狀態列和 VS Code 工作不再自動維護。** `--all --uninstall` 把 `auto_statusline`、`auto_vscode_task`
+  設成 false 寫進 `config.json`，畫面卻說 `none is created`；之後的 `install.py --all` 也從不改回來。現在移除時在
+  `dispatch._switched_off_by_uninstall` 留記號，下一次安裝只打開移除關掉的那幾個（你自己設的 false 不動），
+  `config.json` 沒有別的內容就刪掉。⚠ 0.75.1 以前的移除沒有記號，那些 false 要手動刪。
+- 拿掉一則過時的警告（從 `cache/` 執行時說「路徑帶版本號，更新後狀態列會安靜失效」）：實際寫入的是不帶版本的啟動器。
+- **`Tools/clean-dispatch-guard.ps1` 可以在 macOS 用。** 專案內 `.claude` / `.vscode` 改比對資料夾名稱（`*\.claude`
+  樣式在 `/` 路徑上永遠不中）；hook 的備援 log 改從 `GetTempPath()` 找（macOS 沒有 `$env:TEMP`）；會列出並 bootout
+  0.75 的 launchd 續跑工作，正在執行的保留。新檢查 `Tools/Debug/test_clean.py`（`test_all` 的 `cleaner`）；
+  Windows 上只跑到「列計畫、回答 no」，因為確認那一步會動到真的工作排程器。
+- **`Tools/ShowClaudeCodePricing.ps1` 可以在 macOS 用。** 設定目錄用 `$HOME`、路徑用 `/`、python 照 `hooks/run.sh`
+  的方式找（python3、python、py，每個都先實際執行過）。
+- README：VS Code 使用者設定檔在 Windows / macOS / Linux 的路徑；`watch-folder.ps1` 需要 PowerShell 7；
+  `claude plugin install` 印的 `1 userConfig option not yet set` 是什麼；VS Code 已經開著時怎麼裝；移除第 1 步改正為
+  使用者層級 `tasks.json`、跑一次就夠；「它不會替你刪的東西」加上啟動器和舊版本資料夾；`claude plugin uninstall`
+  會刪掉你設過的外掛選項。cowork skill：`SendMessage` 透過 Remote Control 跨機器雙向可用，也叫得醒閒置的 session（各量一次）。
+- 驗證：macOS `test_all` 23/23、Windows `test_all` 23/23；Windows 上 `install.py` 的各種 `--check` 組合對本機真實設定
+  執行，相關檔案前後雜湊完全相同。⚠ Windows 上沒有跑真的（非 `--check`）移除：它呼叫 `resume.py --cancel`，會清掉
+  狀態目錄裡每個 session 的續跑，而那台機器當時有一個在等的鬧鐘。
+
 ## 0.75.1
 
 擁有者 2026-10-15：在 Windows 開發機上跑 0.74.2–0.75.0 之後的 `test_all`，並把 0.75.0 發布出去。
@@ -3391,6 +3418,41 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.75.2
+
+Owner, 2026-10-15: "work with [the Mac session] to finish the Mac version of the Dispatch-Guard plugin, so this project runs
+on Windows or Mac, detects the operating system, installs and finishes the settings". Split between a Windows
+(WIN) and a macOS (MAC) session; the exchange is in `Memory/cowork/`. MAC installed and uninstalled for real on
+macOS from GitHub 0.75.1, following README "Install A", and found the following.
+
+- **A fresh install's statusline had no `refreshInterval` (both platforms).** `install.py --all` checked
+  refreshInterval BEFORE writing the statusline, found no command and added nothing; numbers then moved only on
+  interactive turns until a second run. It is now set in the same step that writes the line.
+- **After uninstall and reinstall, the statusline and the VS Code task were no longer maintained.**
+  `--all --uninstall` wrote `auto_statusline` and `auto_vscode_task` false into `config.json` while printing
+  `none is created`, and no later `install.py --all` turned them back. The uninstall now marks them in
+  `dispatch._switched_off_by_uninstall`; the next install turns on exactly those (a false you set yourself is
+  left alone) and deletes `config.json` when nothing else is in it. ⚠ An uninstall from 0.75.1 or earlier left
+  no mark: delete those falses by hand.
+- A stale warning is gone ("a marketplace install, so that path carries the VERSION ... fails SILENTLY" when run
+  from `cache/`): the line written names the version-free launcher.
+- **`Tools/clean-dispatch-guard.ps1` works on macOS.** Project `.claude` / `.vscode` folders are matched by name
+  (the `*\.claude` pattern never matched a `/` path); the hook's fallback log is looked for in `GetTempPath()`
+  (macOS has no `$env:TEMP`); the 0.75 launchd resume jobs are listed and booted out, a running one kept. New
+  check `Tools/Debug/test_clean.py` (`cleaner` in `test_all`); on Windows it stops at the plan and `no`, since
+  the confirm step touches the real Task Scheduler.
+- **`Tools/ShowClaudeCodePricing.ps1` works on macOS.** Config root from `$HOME`, `/` paths, and python found
+  the way `hooks/run.sh` does (python3, python, py, each RUN before it is trusted).
+- README: the VS Code user settings path on Windows / macOS / Linux; `watch-folder.ps1` needs PowerShell 7; what
+  `claude plugin install`'s `1 userConfig option not yet set` is; installing with VS Code already open; uninstall
+  step 1 corrected to the user-level `tasks.json`, run once; "what it will not delete" gains the launcher and the
+  old version folders; `claude plugin uninstall` deletes the plugin options you set. cowork skill: `SendMessage`
+  crosses machines both ways over Remote Control and wakes an idle session too (one measurement each).
+- Verified: macOS `test_all` 23/23, Windows `test_all` 23/23; on Windows every `install.py` `--check` combination
+  ran against the machine's real config with identical file hashes before and after. ⚠ No real (non `--check`)
+  uninstall on Windows: it calls `resume.py --cancel`, which clears every session's resume in the state
+  directory, and that machine had an alarm waiting.
 
 ## 0.75.1
 

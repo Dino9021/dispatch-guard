@@ -244,6 +244,66 @@ def set_dispatch_config(key, value):
 
 CONFIG_PATH = os.path.join(STATE_DIR, "config.json")
 
+# ⭐ Which `auto_*` switches the UNINSTALL turned off, recorded beside them, so a later install
+# turns back on exactly those - and never a switch the person set to false on purpose. An
+# underscore key: the gate reads only the keys it knows (dispatch_gate.gate_config), as the
+# `_`-comments in config.example.json rely on.
+UNINSTALL_MARK = "_switched_off_by_uninstall"
+
+
+def switch_off_for_uninstall(key):
+    """set_dispatch_config(key, False), and record that the UNINSTALL did it. Returns the path.
+
+    ⛔ THE PIN OUTLIVED THE UNINSTALL. Measured 2026-10-15 on a Mac, README 移除 then 安裝 A:
+    `--uninstall` wrote auto_statusline / auto_vscode_task = false (needed, see its caller),
+    and the reinstall never cleared them - `--status` then read "pinned settings: 2 NO LONGER
+    MATCH THE DEFAULT" and the hook stopped maintaining the statusline and the task for good.
+    """
+    path = set_dispatch_config(key, False)
+    data = load(path, {}) or {}
+    block = data["dispatch"]
+    marks = block.get(UNINSTALL_MARK)
+    marks = [m for m in marks if isinstance(m, str)] if isinstance(marks, list) else []
+    if key not in marks:
+        marks.append(key)
+    block[UNINSTALL_MARK] = marks
+    save(path, data)
+    return path
+
+
+def undo_uninstall_switch(key, check_only=False):
+    """Turn `key` back on if, and only if, an uninstall turned it off. A line to print, or None.
+
+    ⭐ The key is REMOVED rather than set to true, so the plugin's default reaches this machine
+    again - which is the state before the uninstall. A config.json left holding nothing at all
+    is deleted: the uninstall created it, and no file is what "follow every default" looks like.
+    ⚠ A value the person changed since (anything but false) is left alone; only the mark goes.
+    """
+    if not os.path.exists(CONFIG_PATH) or not readable(CONFIG_PATH):
+        return None
+    data = load(CONFIG_PATH, {}) or {}
+    block = data.get("dispatch")
+    if not isinstance(block, dict):
+        return None
+    marks = block.get(UNINSTALL_MARK)
+    if not isinstance(marks, list) or key not in marks:
+        return None
+    if check_only:
+        return "would turn %s back on - an uninstall switched it off (--check: kept)" % key
+    if block.get(key) is False:
+        del block[key]
+    marks.remove(key)
+    if not marks:
+        del block[UNINSTALL_MARK]
+    if not block:
+        del data["dispatch"]
+    if data:
+        save(CONFIG_PATH, data)
+        return "%s back on (follows the default) - an uninstall had switched it off" % key
+    os.remove(CONFIG_PATH)
+    return ("%s back on - an uninstall had switched it off; %s held nothing else, so it is "
+            "gone again" % (key, CONFIG_PATH))
+
 
 def seed_config():
     """Deliberately writes NOTHING. Returns None, always. config.json is the user's to make.
@@ -1462,10 +1522,21 @@ def statusline_install(argv):
         print("refresh             : %s%s" % (c, "" if not check_only else "  (--check: not written)"))
     print("settings.json       : %s" % SETTINGS)
     print("state directory     : %s" % STATE_DIR)
+    # ⭐ An install undoes what an earlier uninstall switched off - and only that (see
+    # switch_off_for_uninstall). Before the config.json line, which may then be gone.
+    if "--uninstall" not in argv:
+        undone = undo_uninstall_switch("auto_statusline", check_only)
+        if undone:
+            print("auto_statusline     : %s" % undone)
     if check_only:
         print("config.json         : %s" % ("yours, left alone"
                                             if os.path.exists(CONFIG_PATH)
                                             else "none - every setting follows the default"))
+    elif "--uninstall" in argv:
+        # ⛔ NOT "none is created": the uninstall below writes the switches that keep it
+        # removed into this file, and says so there. Measured 2026-10-15: this line said
+        # "none, and none is created" and the next block created it.
+        pass
     else:
         # ⛔ NOTHING IS CREATED, deliberately - see seed_config(). No file means no value
         # is pinned, so every future default reaches this machine.
@@ -1494,15 +1565,17 @@ def statusline_install(argv):
             # an uninstall that undoes itself before the person has finished reading its
             # output. Turning the two automatic behaviours off is part of removing them.
             try:
-                set_dispatch_config("auto_statusline", False)
+                switch_off_for_uninstall("auto_statusline")
                 done = "auto_statusline"
                 # ⚠ Only when the task half is going too. Somebody removing the statusline
                 # alone did not ask for their VS Code tasks to stop being maintained.
                 if "--all" in argv:
-                    set_dispatch_config("auto_vscode_task", False)
+                    switch_off_for_uninstall("auto_vscode_task")
                     done += " and auto_vscode_task"
-                print("                      %s set to false," % done)
-                print("                      so the hook does not put it back")
+                print("                      %s set to false in" % done)
+                print("                      %s," % CONFIG_PATH)
+                print("                      so the hook does not put it back. Installing")
+                print("                      again (install.py) switches them back on.")
             except Exception as exc:
                 print("                      ⚠ could not switch off auto_statusline (%r)." % exc)
                 print("                      The hook WILL reinstall the line next session.")
@@ -1589,18 +1662,24 @@ def statusline_install(argv):
         return 0
 
     else:
+        # ⛔ THE REFRESH TIMER GOES IN WITH THE LINE. ensure_refresh() above ran while the slot
+        # was still empty, so it had nothing to add to - measured 2026-10-15 on a fresh macOS
+        # install: statusLine written WITHOUT refreshInterval, and `--status` then flagged
+        # "statusline refresh : ⛔ NOT SET". A second --all would have added it.
+        added = []
         if check_only:
             print("statusLine          : MISSING - would install")
         else:
             settings["statusLine"] = {"type": "command", "command": COMMAND}
+            ensure_refresh(settings, added)
             save(SETTINGS, settings)
             print("statusLine          : installed")
         print("                      %s" % COMMAND)
-        if os.sep + "cache" + os.sep in HERE:
-            print("                      ⚠ a marketplace install, so that path carries the")
-            print("                        VERSION. `claude plugin update` moves it and the")
-            print("                        statusline then fails SILENTLY - re-run this from")
-            print("                        the new path, and use --status to check.")
+        for c in added:
+            print("refresh             : %s" % c)
+        # ⚠ No "a marketplace path carries the VERSION" warning any more: COMMAND names the
+        # version-free shim (0.32.0), so `claude plugin update` cannot break it. That warning
+        # was still printed on every marketplace install until 0.75.2 (measured 2026-10-15).
 
     print()
     print("Hooks are NOT installed by this script - enable the plugin and Claude Code")
@@ -1665,8 +1744,14 @@ def main():
         # of what one word in the command line asked for.
         # ⭐ THE USER-LEVEL FILE IS THE DEFAULT NOW - one write, every project, no reopen
         # cycle per project and nothing placed in anybody's repository.
-        for line in vscode_user_task(remove="--uninstall" in argv or "--remove" in argv,
-                                     check_only="--check" in argv):
+        removing = "--uninstall" in argv or "--remove" in argv
+        if not removing:
+            # ⭐ the task half's switch, undone the same way as the statusline's (see
+            # switch_off_for_uninstall) - and only if an uninstall turned it off.
+            undone = undo_uninstall_switch("auto_vscode_task", "--check" in argv)
+            if undone:
+                print("auto_vscode_task    : %s" % undone)
+        for line in vscode_user_task(remove=removing, check_only="--check" in argv):
             print("VS Code task        : %s" % line)
         rc2 = 0
         # ⚠ A per-project file from an earlier version is still REMOVED by an uninstall, and

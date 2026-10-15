@@ -28,13 +28,14 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
 
 # ---- where the plugin lives ----
 $configRoot = $env:CLAUDE_CONFIG_DIR
-if (-not $configRoot) { $configRoot = Join-Path $env:USERPROFILE '.claude' }
+# $HOME is set by PowerShell 7 on Windows and macOS alike ($env:USERPROFILE is Windows-only).
+if (-not $configRoot) { $configRoot = Join-Path $HOME '.claude' }
 Write-Host "config root : $configRoot" -ForegroundColor DarkGray
 
 $script = $null
 $patterns = @(
-    'plugins\marketplaces\dispatch-guard\hooks\model_pricing.py',
-    'plugins\cache\dispatch-guard\dispatch-guard\*\hooks\model_pricing.py'
+    'plugins/marketplaces/dispatch-guard/hooks/model_pricing.py',
+    'plugins/cache/dispatch-guard/dispatch-guard/*/hooks/model_pricing.py'
 )
 foreach ($p in $patterns) {
     $hit = Get-Item -Path (Join-Path $configRoot $p) -ErrorAction SilentlyContinue |
@@ -57,10 +58,19 @@ if (-not $script) {
     exit 1
 }
 
-$py = Get-Command python -CommandType Application -ErrorAction SilentlyContinue |
-      Select-Object -First 1 -ExpandProperty Source
+# Same rule as hooks/run.sh: try each name and RUN it - on Windows `python3` can be the Store stub that
+# resolves and then fails; on macOS there is often no bare `python`.
+$py = $null
+foreach ($name in 'python3', 'python', 'py') {
+    $cand = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1 -ExpandProperty Source
+    if ($cand) {
+        & $cand -c 'import sys' *> $null
+        if ($LASTEXITCODE -eq 0) { $py = $cand; break }
+    }
+}
 if (-not $py) {
-    Write-Host "python is not on PATH." -ForegroundColor Red
+    Write-Host "no working python (python3, python or py) on PATH." -ForegroundColor Red
     Wait-AnyKey
     exit 1
 }

@@ -15,10 +15,22 @@ in a direction that produces no error on either side.
 
 ## Part 1 - The channel
 
-### 1.1 There is no cross-machine messaging. The board is a file, and it is not free
+### 1.1 Cross-machine messaging exists only over Remote Control. The board is a file, and it is not free
 
-`SendMessage` and `ListAgents` see sessions on **one machine, one account**. Across machines
-they show nothing, and "nobody is there" and "I cannot see who is there" look identical.
+`SendMessage` and `ListAgents` see sessions on **one machine, one account** - unless the sessions
+are connected through Remote Control. Without it, across machines they show nothing, and "nobody
+is there" and "I cannot see who is there" look identical.
+
+⭐ **Over Remote Control they do work, both ways - measured.** Two sessions on two machines, both
+connected through Remote Control: each listed the other in `ListAgents` (kind "Remote Control"), and
+a `SendMessage` to that name arrived in real time in each direction and was handled by a receiver
+that was mid-turn. What it does NOT give you: no read receipt (the send reports "this route reports
+nothing back"), nothing stored, and `notify_when_idle` is same-machine only. It also woke an IDLE
+receiver: sent while `ListAgents` showed the other session idle, answered 7 seconds later (one probe,
+2026-10-15). ⇒ Coordinate live by `SendMessage`, but land every decision,
+claim and measurement in the channel's files too; a session not on Remote Control is unreachable
+that way. ⚠ A git repository as the channel (one file per writer, pushed) works the same as a shared
+folder except that a message arrives only when the other side pulls - nothing in git wakes anyone.
 
 So the channel becomes files in a shared directory, reached over whatever the two machines
 have between them. That works, and it costs: polling instead of events, no delivery
@@ -223,7 +235,9 @@ was waiting; nobody was watching; the owner was the only thing moving.
 - **Peer on another machine, or reachable only through files:** run the shipped watcher in the
   background - `pwsh -NoProfile -WindowStyle Hidden -File <plugin>/skills/cowork/tools/watch-folder.ps1
   -Folder <channel root> -Ignore "<your file>,checkin/<your role>.md,<observer file>"` (Bash
-  `run_in_background`). `-WindowStyle Hidden` keeps a console window from popping up on the owner's
+  `run_in_background`). ⚠ It needs PowerShell 7 (`pwsh`) on the PATH: Windows usually has it, macOS and
+  Linux do not ship it - install it from Microsoft's PowerShell install guide for that OS first.
+  `-WindowStyle Hidden` keeps a console window from popping up on the owner's
   desktop, where a stray click on its close button would kill the watcher silently; output and exit code
   are still captured. It watches the WHOLE TREE under the folder and skips any `.claude` folder; an
   `-Ignore` entry is a relative path or a folder. It exits when any file changes, and its exit wakes you.

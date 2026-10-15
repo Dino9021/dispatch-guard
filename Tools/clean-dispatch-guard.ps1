@@ -5,7 +5,8 @@
 .DESCRIPTION
   Run it with no arguments:
 
-      .\clean-dispatch-guard.ps1
+      .\clean-dispatch-guard.ps1                 (Windows)
+      pwsh ./Tools/clean-dispatch-guard.ps1       (macOS / Linux - needs PowerShell 7)
 
   It asks whether to include project files, prints everything it intends to do, and then waits
   for you to type `confirm`. ⭐ Anything else aborts, and the default is to do nothing.
@@ -32,7 +33,12 @@
   PowerShell 7+ (uses -EscapeHandling so JSON edits do not mangle non-ASCII text).
   Never touches Memory/ or Memory/tasks - that is your work log, not this plugin's state.
 
-  ⚠ DG_CLEAN_HOME and DG_CLEAN_VSCODE are TEST HOOKS, not options. They exist so the checks can
+  ⭐ Windows and macOS (and Linux). Measured on macOS 2026-10-15 (pwsh 7): Join-Path turns `\` into `/`,
+  so the `plugins\cache\...` paths did resolve; what did NOT work there was the `*\.claude` / `*\.vscode`
+  project patterns (macOS paths use `/`), $env:TEMP for the hook's fallback log (unset on macOS), and the
+  0.75 launchd resume jobs (not looked for). Paths are written with `/` anyway - one form everywhere.
+
+  ⚠ DG_CLEAN_HOME, DG_CLEAN_VSCODE and DG_CLEAN_TMP are TEST HOOKS, not options. They exist so the checks can
   aim this at a fixture directory, and they exist because relying on `$HOME` once let a test run
   against a real install and uninstall a working plugin. Leave them unset.
 #>
@@ -171,13 +177,14 @@ if ($projectRoot -and -not (Test-Path -LiteralPath $projectRoot)) {
 
 Write-Host ""
 Write-Host "1. folders to delete" -ForegroundColor White
-Plan-Delete (Join-Path $claude 'plugins\cache\dispatch-guard')        'the installed copies, one folder per version'
-Plan-Delete (Join-Path $claude 'plugins\marketplaces\dispatch-guard') 'the marketplace git clone (the SOURCE, never runs)'
+Plan-Delete (Join-Path $claude 'plugins/cache/dispatch-guard')        'the installed copies, one folder per version'
+Plan-Delete (Join-Path $claude 'plugins/marketplaces/dispatch-guard') 'the marketplace git clone (the SOURCE, never runs)'
 Plan-Delete (Join-Path $claude 'dispatch-guard') @'
 token_usage.json, logs/ (token_usage_history_*.jsonl, API_response_usage_*.jsonl),
            config.json, session stamps, clock.spawn, fetch.claim, fetch.log, watch.alive,
            renders.log, resume.json, asked_vscode_task, model_pricing.json + .status +
-           model_pricing.spawn, and run.sh / run.cmd - the version-free launcher the
+           model_pricing.spawn, resume/ (per-session records, and on macOS resume/launchd/*.plist),
+           and run.sh / run.cmd - the version-free launcher the
            statusline and the VS Code task point at (both are rewritten on reinstall).
            ⛔ config.json is the one that matters, and it matters MORE from 0.32.0: every
            renamed key is now IGNORED rather than read, so a config written by an older
@@ -189,7 +196,10 @@ Write-Host ""
 Write-Host "2. files to delete" -ForegroundColor White
 $settings = Join-Path $claude 'settings.json'
 Plan-Delete "$settings.statusline-backup.json" 'only exists if --take-statusline was used'
-if ($env:TEMP) { Plan-Delete (Join-Path $env:TEMP 'dispatch_gate_error.log') 'the fallback log for hook errors' }
+# ⚠ The hook writes it to Python's tempfile.gettempdir(): %TEMP% on Windows, $TMPDIR on macOS. $env:TEMP
+# alone found nothing on a Mac. DG_CLEAN_TMP is a test hook, so a test never deletes the real one.
+$tmpDir = if ($env:DG_CLEAN_TMP) { $env:DG_CLEAN_TMP } else { [System.IO.Path]::GetTempPath() }
+if ($tmpDir) { Plan-Delete (Join-Path $tmpDir 'dispatch_gate_error.log') 'the fallback log for hook errors' }
 if (Test-Path -LiteralPath $claude) {
     Get-ChildItem -LiteralPath $claude -Filter '*.bak-dispatch-guard' -ErrorAction SilentlyContinue |
         ForEach-Object { Plan-Delete $_.FullName 'a backup this plugin made before editing' }
@@ -212,9 +222,9 @@ if ($s -and $s -ne 'UNPARSEABLE') {
 }
 Plan-Modify $settings @('enabledPlugins', 'dispatch-guard@dispatch-guard') 'the enable flag'
 Plan-Modify $settings @('marketplaces', 'dispatch-guard')                  'a marketplace declaration, if one was added here'
-Plan-Modify (Join-Path $claude 'plugins\known_marketplaces.json') @('dispatch-guard')                          'the marketplace record'
-Plan-Modify (Join-Path $claude 'plugins\installed_plugins.json') @('plugins', 'dispatch-guard@dispatch-guard') 'the install record'
-Plan-Modify (Join-Path $claude 'plugins\installed_plugins.json') @('dispatch-guard@dispatch-guard')            'the install record, pre-v2 layout'
+Plan-Modify (Join-Path $claude 'plugins/known_marketplaces.json') @('dispatch-guard')                          'the marketplace record'
+Plan-Modify (Join-Path $claude 'plugins/installed_plugins.json') @('plugins', 'dispatch-guard@dispatch-guard') 'the install record'
+Plan-Modify (Join-Path $claude 'plugins/installed_plugins.json') @('dispatch-guard@dispatch-guard')            'the install record, pre-v2 layout'
 
 Write-Host ""
 Write-Host "4. VS Code, user level" -ForegroundColor White
@@ -257,8 +267,29 @@ if ($IsWindows -or $env:OS -eq 'Windows_NT') {
             }
         }
     }
+} elseif ($IsMacOS) {
+    # ⭐ macOS (0.75): the resume is a per-user launchd job, labelled com.dispatch-guard.resume.<...>;
+    # its plist lives in the state folder (step 1). A fired job stays LOADED until something unloads it.
+    # ⛔ A RUNNING job is never booted out: launchd kills it on the spot (measured) - it is a wake in
+    # flight. It is listed as KEEP; run this again once it has finished.
+    $lc = & launchctl list 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        foreach ($line in $lc) {
+            $cols = $line -split "`t"
+            if ($cols.Count -ge 3 -and $cols[2] -like 'com.dispatch-guard.resume.*') {
+                if ($cols[0].Trim() -eq '-') {
+                    $plan.Add(@{ Kind = 'launchd'; Path = $cols[2] })
+                    Note 'DELETE' "launchd job $($cols[2])" 'unloaded with launchctl bootout'
+                } else {
+                    Note 'KEEP' "launchd job $($cols[2])" "RUNNING now (pid $($cols[0].Trim())) - run this again when it has finished"
+                }
+            }
+        }
+    } else {
+        Note 'INFO' 'launchctl list failed - launchd jobs NOT checked' 'list them with: launchctl list | grep dispatch-guard'
+    }
 } else {
-    Note 'INFO' 'on macOS/Linux the resume uses `at`' 'list with `atq`, remove with `atrm <id>`'
+    Note 'INFO' 'on Linux the resume uses `at`' 'list with `atq`, remove with `atrm <id>`'
 }
 
 Write-Host ""
@@ -270,10 +301,11 @@ if (-not $projectRoot) {
         Plan-Delete $f.FullName 'a log this plugin wrote'
     }
     foreach ($f in Get-ChildItem -LiteralPath $projectRoot -Recurse -Depth 3 -Force -Filter 'dispatch-guard.json' -ErrorAction SilentlyContinue) {
-        if ($f.DirectoryName -like '*\.claude') { Plan-Delete $f.FullName 'a per-project config override' }
+        # ⚠ The folder NAME, not a `*\.claude` pattern: macOS paths use `/`, and the pattern never matched there.
+        if ((Split-Path -Leaf $f.DirectoryName) -eq '.claude') { Plan-Delete $f.FullName 'a per-project config override' }
     }
     foreach ($f in Get-ChildItem -LiteralPath $projectRoot -Recurse -Depth 3 -Force -Filter 'tasks.json' -ErrorAction SilentlyContinue) {
-        if ($f.DirectoryName -like '*\.vscode') { Plan-VsTask $f.FullName }
+        if ((Split-Path -Leaf $f.DirectoryName) -eq '.vscode') { Plan-VsTask $f.FullName }
     }
 }
 
@@ -284,7 +316,7 @@ Note 'KEEP' "$claude itself" 'only the items listed above come out of it'
 
 # ------------------------------------------------------------------------------ confirm
 
-$deletes = @($plan | Where-Object { $_.Kind -in 'delete', 'schtask' }).Count
+$deletes = @($plan | Where-Object { $_.Kind -in 'delete', 'schtask', 'launchd' }).Count
 $edits   = @($plan | Where-Object { $_.Kind -in 'jsonkey', 'vstask' }).Count
 
 Write-Host ""
@@ -362,6 +394,12 @@ foreach ($item in $plan) {
             if ($LASTEXITCODE -eq 0) { $done++; Note 'deleted' "scheduled task $($item.Path)" }
             else { Note 'FAILED' "scheduled task $($item.Path)" 'try an elevated shell'; $skipped.Add($item.Path) }
         }
+        'launchd' {
+            # rc 3 = "No such process": it went meanwhile (measured), which is the outcome wanted.
+            & launchctl bootout "gui/$(id -u)/$($item.Path)" *> $null
+            if ($LASTEXITCODE -in 0, 3) { $done++; Note 'deleted' "launchd job $($item.Path)" }
+            else { Note 'FAILED' "launchd job $($item.Path)" "launchctl bootout rc $LASTEXITCODE"; $skipped.Add($item.Path) }
+        }
     }
 }
 
@@ -372,7 +410,7 @@ if ($skipped.Count) {
     $skipped | Select-Object -Unique | ForEach-Object { Write-Host "    $_" -ForegroundColor Yellow }
 }
 Write-Host ""
-Write-Host "⚠ A RUNNING Claude Code session rewrites $claude\dispatch-guard within seconds." -ForegroundColor Yellow
+Write-Host "⚠ A RUNNING Claude Code session rewrites $(Join-Path $claude 'dispatch-guard') within seconds." -ForegroundColor Yellow
 Write-Host "  Close every session first, or run this again until it finds nothing." -ForegroundColor Yellow
 Write-Host ""
 Show-Install

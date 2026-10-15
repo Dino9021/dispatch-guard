@@ -147,6 +147,8 @@ flowchart TD
 ### ⚡ A. 一段貼完（最快，什麼都不用想）
 
 ⛔ **在開 VS Code 之前跑完。** 理由見說明區的「**⚠ 安裝後重開 VS Code，它會問你一次**」。
+⚠ VS Code 已經開著（例如在它的終端機或 Claude 面板裡跑這一段）也可以：跑完之後**重開資料夾** ——
+工作檔已經在了，一樣沒有賽跑；或 `F1` → `Tasks: Run Task` → `Claude Usage Watcher`，當下就起來。
 
 **Windows（PowerShell）**
 
@@ -174,6 +176,10 @@ sh "$p/hooks/run.sh" "$p/install.py" --status
 ⭐ **這一段把四件事都做完**：外掛、CLI 狀態列、VS Code 的 `Claude Usage Watcher` 工作，
 以及 VS Code 的 `task.allowAutomaticTasks`（那個「你來不及按」的通知就不會出現了）。
 最後一行 `--status` 是驗收 —— `OVERALL` 那行說 live 就是好了。
+
+⚠ `claude plugin install` 會印一行 `1 userConfig option not yet set — run /plugin configure …`：
+那個選項是 `announce_unattended_work`（每個 session 開場提醒載入 unattended-work，預設開）。
+不設就是預設值，這一行可以不理；要關，見「**不想每次 session 都被提醒？**」。
 
 ⚠ 然後**開一個新的 Claude session**（hook 在 session 開始才載入），**再開 VS Code**。
 
@@ -338,7 +344,7 @@ VS Code 的 10 秒是從它自己**開始找工作**那一刻起算,而那一刻
 |---|---|
 | 找回通知 | 狀態列右下角的**鈴鐺圖示**，或 `Notifications: Show Notifications` |
 | 直接執行那個決定 | `Ctrl+Shift+P` → `Tasks: Manage Automatic Tasks` → 選 `Allow Automatic Tasks` |
-| 看它寫到哪裡 | `%APPDATA%\Code\User\settings.json` 的 `"task.allowAutomaticTasks": "on"` |
+| 看它寫到哪裡 | 使用者設定檔的 `"task.allowAutomaticTasks": "on"`：Windows `%APPDATA%\Code\User\settings.json`、macOS `~/Library/Application Support/Code/User/settings.json`、Linux `~/.config/Code/User/settings.json` |
 
 ⭐ **安裝腳本本來就會把那個值設成 `on`**，所以多數情況下你連通知都不會看到。
 ⚠ 但如果那個檔案在安裝時讀不到（例如帶了 VS Code 不介意、JSON 解析器介意的東西），
@@ -612,7 +618,7 @@ OVERALL             : everything is live
 
 ### 1. 拆掉 install.py 接上去的兩半
 
-在**每一個**裝過的專案目錄裡跑一次。⭐ 加 `--check` 可以先看，它什麼都不會動。
+跑一次就夠 —— 工作在 VS Code 的使用者層級 `tasks.json`，一份涵蓋每個專案。⭐ 加 `--check` 可以先看，它什麼都不會動。
 
 **Windows（PowerShell）**
 
@@ -633,22 +639,23 @@ sh "$p/hooks/run.sh" "$p/install.py" --all --uninstall
 
 - 移掉 `settings.json` 裡的 `statusLine`（`refreshInterval` 跟著一起走）
 - ⭐ 把 `auto_statusline` 和 `auto_vscode_task` 設成 false
-- 移掉**這個專案** `.vscode/tasks.json` 裡的 `Claude Usage Watcher`
+- 移掉 VS Code **使用者層級** `tasks.json`（跟 `settings.json` 同一個 `User` 資料夾）裡的 `Claude Usage Watcher`，
+  以及你執行它的那個目錄裡、舊版留下的 `.vscode/tasks.json` 那一份
 - ⭐ 取消已經預約的 resume
 
 ⛔ **第二項不是多餘的，少了它移除會自己失效。** `auto_statusline` 預設是 true，
 所以下一個 session 開始時 hook 會看到空的位置，然後把那一行**裝回去** ——
 你還沒讀完移除的輸出，它就回來了。
+⭐ 之後再跑 `install.py --all` 會把**移除關掉的**這兩個開關打開回來（0.75.2 起；你自己設的 false 不動）。
+⚠ 0.75.1 以前的移除沒有留記號，那些 false 會一直留著 —— `--status` 會說 `pinned settings … NO LONGER MATCH
+THE DEFAULT`，到 `~/.claude/dispatch-guard/config.json` 手動刪掉那兩個鍵。
 
-⚠ **只有你執行它的那個專案會被清掉。** `auto_vscode_task` 打開期間，
-每個你用 VS Code 開過的專案都可能有那個工作，而沒有任何地方記著是哪些。
-關掉旗標會止血，已經寫出去的檔案要一個一個清。
+⚠ **0.13.0 以前的版本是每個專案寫一份 `.vscode/tasks.json`，這一步只清得到你執行它的那個目錄裡的那一份。**
+舊版用過的其他專案若還有，要一個一個清 —— 沒有任何地方記著是哪些。
 
 ⛔ **最後那一項不能只寫在文件裡。** 其他殘留只是躺在硬碟上；那一個是會**自己醒來**的
 OS 排程工作，而它醒來要跑的腳本可能已經被你刪掉了。一個會自己執行的殘留，
 跟一個等著被刪的殘留不是同一件事。
-
-⚠ **`.vscode/tasks.json` 是每個專案一份的**，所以裝過幾個專案就要跑幾次。
 
 ### 2. 移除外掛本體
 
@@ -659,11 +666,15 @@ claude plugin marketplace remove dispatch-guard
 
 ⚠ **順序是先第 1 步再第 2 步。** 反過來的話，`--uninstall` 需要的那些檔案已經沒了。
 
+⚠ `claude plugin uninstall` 會把你設過的外掛選項（`pluginConfigs` 裡的 `announce_unattended_work`）一起刪掉，
+重裝後要再設一次（macOS 實測 2026-10-15）。
+
 ### 3. 它不會替你刪的東西
 
 | 東西 | 在哪裡 | 為什麼留著 |
 |---|---|---|
-| 用量歷史、設定、session 戳記 | `~/.claude/dispatch-guard/` | 是你的資料。要刪：`Remove-Item -Recurse` 或 `rm -rf` |
+| 用量歷史、設定、session 戳記，以及啟動器 `run.sh` / `run.cmd` | `~/.claude/dispatch-guard/` | 是你的資料；啟動器移除後還指著已經拿掉的那份安裝。要刪：`Remove-Item -Recurse` 或 `rm -rf` |
+| 舊版本的外掛資料夾 | `~/.claude/plugins/cache/dispatch-guard/dispatch-guard/<版本>/` | `claude plugin uninstall` 留著它們（macOS 實測 2026-10-15）。要刪就刪整個 `cache/dispatch-guard` |
 | `Memory/tasks/` | 每個專案裡 | 是你的工作紀錄。這支腳本從來不碰它 |
 | `task.allowAutomaticTasks` | VS Code **使用者**設定 | 現在可能有別的工作靠它 |
 | `.bak-dispatch-guard` | 那個設定檔旁邊 | 那是你原本設定的備份 |
@@ -814,7 +825,9 @@ cowork 只指過去、不重述 —— 一條規則只有一份正本。`Tools/D
 
 ⚠ **`reference/` 底下六個檔只有英文。** `SKILL.zh-TW.md` 跟另外兩支 skill 一樣是給人讀的對照，
 不是 skill 本身。第六個是 `cross-machine.md`（兩台機器、兩棵樹、兩個帳號 —— 本頁其餘部分預設存在的
-心跳與 `SendMessage` 在那裡都不存在）。
+心跳在那裡不存在；`SendMessage` 只有在兩個 session 都透過 Remote Control 連線時才跨得過去，即時但不保存）。
+⚠ 跨機等待用的 `tools/watch-folder.ps1` 需要 PowerShell 7（`pwsh`）：macOS、Linux 沒有內建，要先依 Microsoft 的
+PowerShell 安裝說明裝好。
 
 `skills/cowork/SKILL.md` 是入口；規則本身怎麼被強制、以及誠實列出的缺口，在 `PROTOCOL.md` §3–§4。
 
@@ -1940,7 +1953,9 @@ the way it does is in the **reference** below — read it if you want it.
 ### ⚡ A. One paste (fastest, nothing to think about)
 
 ⛔ **Run it BEFORE opening VS Code.** Why is in the reference, under "**⚠ Reopen VS Code after
-installing, and it asks you once**".
+installing, and it asks you once**". ⚠ VS Code already open (say, you run this in its terminal or
+its Claude panel) works too: **reopen the folder** afterwards — the task file is already there, so
+there is no race; or `F1` → `Tasks: Run Task` → `Claude Usage Watcher` starts it right now.
 
 **Windows (PowerShell)**
 
@@ -1968,6 +1983,11 @@ sh "$p/hooks/run.sh" "$p/install.py" --status
 ⭐ **That does all four things**: the plugin, the CLI statusline, VS Code's
 `Claude Usage Watcher` task, and VS Code's `task.allowAutomaticTasks` — so the notification you
 have to catch never appears. The last line is the check: `OVERALL` says live and you are done.
+
+⚠ `claude plugin install` prints `1 userConfig option not yet set — run /plugin configure …`: that
+option is `announce_unattended_work` (remind every session to load unattended-work, on by default).
+Unset means the default, so the line can be ignored; to turn it off, see "**Do not want the
+reminder every session?**".
 
 ⚠ Then **open a NEW Claude session** (a plugin's hooks load at session start), **then** VS Code.
 
@@ -2146,7 +2166,7 @@ Run Task lists it, but it NEVER starts on folder open — and nothing says why.
 |---|---|
 | get the notification back | the **bell icon** at the bottom right, or `Notifications: Show Notifications` |
 | make the decision directly | `Ctrl+Shift+P` → `Tasks: Manage Automatic Tasks` → pick `Allow Automatic Tasks` |
-| see where it is stored | `"task.allowAutomaticTasks": "on"` in `%APPDATA%\Code\User\settings.json` |
+| see where it is stored | `"task.allowAutomaticTasks": "on"` in the user settings file: Windows `%APPDATA%\Code\User\settings.json`, macOS `~/Library/Application Support/Code/User/settings.json`, Linux `~/.config/Code/User/settings.json` |
 
 ⭐ **The installer sets that value to `on` itself**, so most of the time the notification never
 appears. ⚠ But if that settings file cannot be read at install time — something VS Code
@@ -2429,7 +2449,7 @@ uninstall` the second.
 
 ### 1. Unwire the two halves install.py set up
 
-Run it once in **every** project you installed into. ⭐ Add `--check` to see it change nothing.
+Run it once — the task lives in VS Code's user-level `tasks.json`, one file covering every project. ⭐ Add `--check` to see it change nothing.
 
 **Windows (PowerShell)**
 
@@ -2450,23 +2470,26 @@ It does four things:
 
 - removes `statusLine` from `settings.json` (`refreshInterval` goes with it)
 - ⭐ sets `auto_statusline` and `auto_vscode_task` to false
-- removes `Claude Usage Watcher` from **this** project's `.vscode/tasks.json`
+- removes `Claude Usage Watcher` from VS Code's **user-level** `tasks.json` (the same `User` folder as
+  `settings.json`), and an old version's copy in `.vscode/tasks.json` of the directory you run it in
 - ⭐ cancels an armed resume
 
 ⛔ **The second one is not housekeeping; without it the uninstall undoes itself.**
 `auto_statusline` defaults to true, so the next session start finds an empty slot and puts
 the line **back** — before you have finished reading the uninstall's own output.
+⭐ A later `install.py --all` turns back on **the switches the uninstall turned off** (0.75.2 on; a
+false you set yourself is left alone). ⚠ An uninstall from 0.75.1 or earlier left no mark, so those
+falses stay — `--status` says `pinned settings … NO LONGER MATCH THE DEFAULT`; delete the two keys
+from `~/.claude/dispatch-guard/config.json` by hand.
 
-⚠ **Only the project you run it in is cleaned.** While `auto_vscode_task` was on, every
-project you opened in VS Code may carry the task, and nothing anywhere records which ones.
-Turning the flag off stops the spread; files already written come out one project at a time.
+⚠ **Before 0.13.0 every project got its own `.vscode/tasks.json`, and this step reaches only the
+one in the directory you run it in.** Other projects an old version wrote into come out one at a
+time — nothing anywhere records which ones.
 
 ⛔ **That last one cannot be left to a document.** Every other leftover merely sits on disk;
 this one is an OS scheduled task that WAKES UP, and the script it means to run may be the one
 you just deleted. A leftover that executes is not the same class of mess as a leftover waiting
 to be removed.
-
-⚠ **`.vscode/tasks.json` is per-project**, so run this once per project you installed into.
 
 ### 2. Remove the plugin
 
@@ -2477,11 +2500,15 @@ claude plugin marketplace remove dispatch-guard
 
 ⚠ **Step 1 before step 2.** The other way round, the files `--uninstall` needs are already gone.
 
+⚠ `claude plugin uninstall` deletes the plugin options you set (`announce_unattended_work` under
+`pluginConfigs`) along with it; set them again after a reinstall (measured on macOS 2026-10-15).
+
 ### 3. What it will not delete for you
 
 | Thing | Where | Why it stays |
 |---|---|---|
-| usage history, config, session stamps | `~/.claude/dispatch-guard/` | your data. To drop it: `Remove-Item -Recurse` or `rm -rf` |
+| usage history, config, session stamps, and the launcher `run.sh` / `run.cmd` | `~/.claude/dispatch-guard/` | your data; the launcher still points at the install you removed. To drop it: `Remove-Item -Recurse` or `rm -rf` |
+| old plugin version folders | `~/.claude/plugins/cache/dispatch-guard/dispatch-guard/<version>/` | `claude plugin uninstall` leaves them (measured on macOS 2026-10-15). To drop them, delete the whole `cache/dispatch-guard` |
 | `Memory/tasks/` | in each project | your work log. This script never touches it |
 | `task.allowAutomaticTasks` | VS Code **user** settings | other tasks may rely on it now |
 | `.bak-dispatch-guard` | beside that settings file | it is the backup of *your* settings |
@@ -2654,8 +2681,10 @@ heading comparison: the moment cowork restates a section of another skill, the c
 
 ⚠ **The six `reference/` files are English only.** `SKILL.zh-TW.md` is a reading copy for
 people, like the other two skills' — not the skill itself. The sixth is `cross-machine.md`
-(two machines, two trees, two accounts — where the heartbeat and `SendMessage` the rest of the
-skill assumes do not exist).
+(two machines, two trees, two accounts — where the heartbeat the rest of the skill assumes does not
+exist, and `SendMessage` crosses only when both sessions are connected through Remote Control: live,
+not stored). ⚠ `tools/watch-folder.ps1`, the cross-machine wake-up, needs PowerShell 7 (`pwsh`): macOS
+and Linux do not ship it - install it from Microsoft's PowerShell install guide first.
 
 `skills/cowork/SKILL.md` is the entry point; how the two rules are enforced, and the honest
 gaps, are in `PROTOCOL.md` §3–§4.

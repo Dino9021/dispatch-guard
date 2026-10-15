@@ -10,8 +10,9 @@ learn. Nothing here names a project, machine, account, path, product or
 person - if a rule cannot be applied elsewhere, it does not belong in this file.
 
 ⛔ **Across MACHINES, the mechanisms the rest of this page assumes do not exist** - no shared
-session directory, no peer heartbeat, no `SendMessage` - and the channel you build to replace
-them can fail in a direction that raises no error on either side. Rule 13 is the floor;
+session directory, no peer heartbeat, and no `SendMessage` unless both sessions are connected
+through Remote Control (then it works both ways, live but not stored: `cross-machine.md` 1.1) -
+and the channel you build to replace them can fail in a direction that raises no error on either side. Rule 13 is the floor;
 `reference/cross-machine.md` is the whole of it, and it is worth reading BEFORE the move
 rather than during it.
 

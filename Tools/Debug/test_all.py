@@ -72,6 +72,9 @@ CHECKS = [
     # ⚠ Runs the cowork folder watcher for real. Through 0.69.0 it listed only the top folder,
     # and two sessions answered each other in subfolders neither watcher could see.
     ("watch folder", [os.path.join(DEBUG_DIR, "test_watch_folder.py")]),
+    # ⚠ Runs the cleaner for real against a fixture install. It had no check, and on macOS it
+    # missed the project files, the hook's fallback log and the 0.75 launchd jobs.
+    ("cleaner", [os.path.join(DEBUG_DIR, "test_clean.py")]),
     # ⚠ The README's skill flowcharts (0.70.3) are a second description of the hook. This keeps
     # one chart per skill per language, the zh/en pairs identical in shape, and red meaning a
     # box that names the hook. It reads README.md only; it cannot render them or judge a label.

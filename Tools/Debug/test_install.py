@@ -610,6 +610,77 @@ def selfheal():
     print("ok - the gate repairs a stale statusline and leaves a foreign one alone")
 
 
+def uninstall_then_install():
+    """README 移除 then 安裝 A must leave the machine as a first install would. Measured 2026-10-15
+    on a Mac (Memory/tasks/20261015-214202-mac-install-audit/MAC-1-findings.md, M1-M3), it did not:
+
+      M1 a fresh install wrote statusLine WITHOUT refreshInterval - ensure_refresh() ran while the
+         slot was still empty - and `--status` flagged "statusline refresh : ⛔ NOT SET";
+      M2 `--uninstall` pinned auto_statusline / auto_vscode_task false, said "config.json: none,
+         and none is created" while creating it, and no install ever unpinned them - so after a
+         reinstall the hook never maintained the statusline or the task again;
+      M3 every marketplace install printed "that path carries the VERSION ... fails SILENTLY"
+         although the line it wrote names the version-free shim.
+    ⚠ In-process, every path pointed at a scratch directory (load_install_module), and HERE too,
+    so the resume.py the uninstall shells out to is not found - it must never cancel a real alarm.
+    """
+    import contextlib
+    import io as _io
+
+    def run(inst, argv):
+        buf = _io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            inst.statusline_install(argv)
+        return buf.getvalue()
+
+    def config(inst):
+        return json.load(open(inst.CONFIG_PATH, encoding="utf-8")) if os.path.exists(inst.CONFIG_PATH) else None
+
+    with scratch_dir("uninstall-then-install") as tmp:
+        inst = load_install_module(tmp)
+        inst.HERE = os.path.join(tmp, "cache", "dispatch-guard", "dispatch-guard", "9.9.9")  # a marketplace path
+        os.makedirs(inst.STATE_DIR, exist_ok=True)
+        with open(inst.SETTINGS, "w", encoding="utf-8") as f:
+            json.dump({}, f)
+        out = run(inst, [])
+        sl = json.load(open(inst.SETTINGS, encoding="utf-8"))["statusLine"]
+        assert sl.get("command") == inst.COMMAND and sl.get("refreshInterval") == inst.REFRESH_SECONDS, (
+            "M1: a fresh install wrote the statusline without its refresh timer: %r" % (sl,))
+        assert "carries the" not in out, "M3: the stale 'path carries the VERSION' warning is back:%s%s" % (chr(10), out)
+
+        out = run(inst, ["--all", "--uninstall"])
+        assert "none is created" not in out, "M2: the uninstall again says it creates no config.json:%s%s" % (chr(10), out)
+        block = config(inst)["dispatch"]
+        assert block.get("auto_statusline") is False and block.get("auto_vscode_task") is False, block
+        assert sorted(block.get(inst.UNINSTALL_MARK) or []) == ["auto_statusline", "auto_vscode_task"], block
+
+        # --check says it would turn the switch back on, and changes nothing
+        before = open(inst.CONFIG_PATH, "rb").read()
+        out = run(inst, ["--all", "--check"])
+        assert "would turn auto_statusline back on" in out and open(inst.CONFIG_PATH, "rb").read() == before, out
+        # the reinstall: each half turns ITS switch back on; the file the uninstall created is gone again
+        out = run(inst, ["--all"])
+        block = config(inst)["dispatch"]
+        assert "auto_statusline" not in block and block.get(inst.UNINSTALL_MARK) == ["auto_vscode_task"], (
+            "M2: the reinstall left auto_statusline pinned off: %r" % (block,))
+        assert inst.undo_uninstall_switch("auto_vscode_task")
+        assert config(inst) is None, "M2: the config.json the uninstall created was left behind: %r" % (config(inst),)
+
+    # ⛔ A false the person set ON PURPOSE is theirs: no mark, so no install may flip it.
+    with scratch_dir("deliberate-false-kept") as tmp:
+        inst = load_install_module(tmp)
+        os.makedirs(inst.STATE_DIR, exist_ok=True)
+        with open(inst.SETTINGS, "w", encoding="utf-8") as f:
+            json.dump({}, f)
+        with open(inst.CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump({"dispatch": {"auto_statusline": False, "auto_vscode_task": False}}, f)
+        run(inst, ["--all"])
+        assert inst.undo_uninstall_switch("auto_vscode_task") is None
+        assert config(inst) == {"dispatch": {"auto_statusline": False, "auto_vscode_task": False}}, config(inst)
+    print("ok - uninstall then install: refresh timer set, switches restored, no stale warning, "
+          "a deliberate false kept")
+
+
 if __name__ == "__main__":
     # ⛔ THE NET ROUND EVERYTHING BELOW. Several places in this file have now been found
     # writing into the real ~/.claude while "testing", each one patched individually after
@@ -622,6 +693,7 @@ if __name__ == "__main__":
     main()
     repoint()
     selfheal()
+    uninstall_then_install()
     assert _shim.recorded(_real_state) == _shim_was, (
         "these checks changed the machine's live shim:%s  was: %s%s  now: %s"
         % (chr(10), _shim_was, chr(10), _shim.recorded(_real_state)))
