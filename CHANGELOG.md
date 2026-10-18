@@ -33,6 +33,24 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.75.5
+
+擁有者 2026-10-18：「請進行修正」—— Game-Mac1 在 02:53 被鬧鐘「喚醒」卻什麼都沒做，03:13 排程放棄。
+
+- **原因：** 它的鬧鐘是在回合結束（Stop）時才自動上的。那一刻請 session 自己排 CronCreate 喚醒的那段話只印給人看
+  （`for_screen`），模型讀不到，所以它沒排。它只能靠 OS 鬧鐘透過 relay 送跨 session 訊息叫醒，而那則訊息被留在它的
+  收件匣「未讀」—— 它跑在 bypassPermissions，relay 是預設模式，這種權限模式不同的訊息會被扣住等擁有者核准（推論，
+  擁有者當時的畫面沒有看到）。同一時間另一個有自己排 CronCreate 的 session 02:51 就醒了。
+- **修正：** 這一次「回合結束時真的上了鬧鐘」、有人在看這個視窗、而且它還沒排同一個時間的喚醒時，Stop hook 擋一次
+  回合結束（`decision: block`），把排 CronCreate 的指示交給模型；排好之後那一輪自然結束。每個鬧鐘最多一次（同一個
+  鬧鐘之後的回合結束不會再上鬧鐘，也就不會再擋），接續的回合、子代理、無頭 session、沒有 `session_crons` 的舊版
+  Claude Code 都不擋。log 一行 `ROUTE-A-ASKED`。
+- **刻意不做：** 讓 relay 用跟對方一樣的權限模式送訊息 —— 那等於替擁有者核准，繞過「跨權限模式要核准」的保護。
+- 推翻既有決定「on_stop 永不擋回合結束」（ADR 20260902-142400、20261001-085000 D7）；擁有者做了 PENDING 裡
+  2026-10-01 那一項的決定。ADR：`Memory/tasks/20261018-161212-wake-held-and-route-a/ADR.md`（一輪審查，三個
+  blocker 都已處理）。
+- 測試：新增 `test_route_a_stop.py`（真的 `on_stop`，6 個突變全部被抓到）。Mac `test_all` 24/24。Windows 沒有重跑。
+
 ## 0.75.4
 
 - cowork（MAC）：`cross-machine.md` 1.1 與 1.8 改寫為「透過 Remote Control 叫醒閒置的同伴，兩個方向各實測一次」
@@ -3439,6 +3457,28 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.75.5
+
+Owner, 2026-10-18: please fix it - Game-Mac1 was "woken" at 02:53 and did nothing; the alarm gave up at 03:13.
+
+- **Cause:** its alarm was armed at Stop. The request to schedule its own CronCreate wake went to the person only
+  (`for_screen`), never to the model, so it scheduled none and depended on the OS alarm's relayed cross-session
+  message - which sat in its inbox unread: the receiver ran in bypassPermissions, the relay in default mode, and
+  a message across permission modes is held for the owner's approval (inferred; the owner's screen at the time
+  was not seen). A sibling session that had its own CronCreate job woke at 02:51.
+- **Fix:** when THIS Stop armed an alarm, a person is at the session, and it has no wake job for that time, the
+  Stop hook blocks the turn end once (`decision: block`) with the route-A request as the reason; the session
+  schedules the job and the turn then ends. At most once per arm (a later Stop for the same alarm does not arm,
+  so it cannot block); never for a continued turn, a sub-agent, a headless session, or an older Claude Code
+  without `session_crons`. Logged `ROUTE-A-ASKED`.
+- **Deliberately not done:** running the relay in the receiver's permission mode - that would approve on the
+  owner's behalf and bypass the hold-for-approval boundary.
+- Overturns "on_stop never blocks the turn end" (ADRs 20260902-142400, 20261001-085000 D7); the owner decided
+  the 2026-10-01 PENDING item. ADR: `Memory/tasks/20261018-161212-wake-held-and-route-a/ADR.md` (one round, its
+  three blockers answered).
+- Tests: new `test_route_a_stop.py` (the real `on_stop`; 6 mutants killed). test_all on the Mac 24/24. Not
+  re-run on Windows.
 
 ## 0.75.4
 

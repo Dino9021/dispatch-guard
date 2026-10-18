@@ -45,6 +45,9 @@ CHECKS = [
     # ⚠ The macOS alarm (launchd, 0.75) against a FAKE launchctl - it never registers a real job.
     ("resume launchd", [os.path.join(DEBUG_DIR, "test_resume_launchd.py")]),
     ("net zone",      [os.path.join(DEBUG_DIR, "test_net_zone.py")]),
+    # ⚠ The Stop that arms asks once for the in-session wake (0.75.5); a Stop-time arm used to reach
+    # the person only, and a held OS-alarm wake then woke nobody (2026-10-18).
+    ("route-A stop",  [os.path.join(DEBUG_DIR, "test_route_a_stop.py")]),
     ("cmd guards",    [os.path.join(DEBUG_DIR, "test_guards.py")]),
     # ⛔ 0.64.0 shipped a cowork SKILL.md whose frontmatter was invalid YAML, and the skill
     # vanished from every session without a warning. This reads each SKILL.md the way the

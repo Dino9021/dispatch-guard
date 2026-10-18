@@ -2808,7 +2808,8 @@ def arm_from_handoff(root, sdir, cfg, session_id, v=None):
     # ⚠ AND IT SAYS THIS IS ROUTE (B). resume.py prints "arm route (A) as well" only on a hand-run
     # `--arm`; this path arms detached, so until 0.65.3 no agent that was auto-armed ever saw it
     # (both write-ups of the 2026-09-27 incident say so). Here the model reads it on a prompt;
-    # on Stop only the person does, because the turn is already over.
+    # on Stop the person reads it, and since 0.75.5 the model too: on_stop blocks that one Stop
+    # with it (route_a_block, ADR 20261018-161212 D1).
     # ⭐ 0.68: the route-A sentence carries the exact cron and the check-first wake prompt
     # (ADR 20261001-085000 D1/D3) instead of "a one-shot CronCreate wake for then".
     hpath = os.path.join(scan_root, cfg["task_root"].replace("/", os.sep), folder, HANDOFF)
@@ -2904,8 +2905,8 @@ ROUTE_A_LEAD = " If this session stays open, also schedule ONE in-session wake"
 
 def for_screen(text):
     """The person's copy of an arm line: without the route-A instructions, which are the MODEL'S
-    (review A of 0.68: ~1000 characters of CronCreate syntax on the screen, and at Stop only the
-    person reads it at all)."""
+    (review A of 0.68: ~1000 characters of CronCreate syntax on the screen). At Stop the model gets
+    them through route_a_block()'s `reason` instead."""
     return str(text or "").split(ROUTE_A_LEAD)[0].strip()
 
 
@@ -3007,13 +3008,47 @@ def relax_band_label(v):
     return v.get("verdict")
 
 
+def route_a_block(payload, line):
+    """The `reason` that blocks THIS Stop once to ask for the in-session wake, or "".
+
+    ⛔ A STOP-TIME ARM NEVER REACHED THE MODEL. Its route-A sentence goes to the person only
+    (for_screen), so the session never scheduled its own wake and depended on the OS alarm's
+    relayed SendMessage - which a receiver in another permission mode holds for the owner's
+    approval. Measured 2026-10-18: armed at Stop 00:41, wake relayed 02:53 "not yet read", GAVE-UP
+    03:13, nobody noticed until 05:38; a sibling session that HAD scheduled its own job woke at 02:51.
+    ⇒ Only the Stop that armed asks (once per arm, by construction - ADR
+    Memory/tasks/20261018-161212-wake-held-and-route-a, D1). Never for the headless relay, a
+    continued turn, a sub-agent, an older Claude Code without `session_crons`, or when the same
+    wake job is already scheduled.
+    """
+    if not attended() or payload.get("stop_hook_active") or payload.get("agent_id"):
+        return ""
+    crons = payload.get("session_crons")
+    if not isinstance(crons, list):
+        return ""                                   # older Claude Code: fail open
+    ask = str(line or "").partition(ROUTE_A_LEAD)[2]
+    cron = re.search(r'with cron "([^"]+)"', ask)
+    if not cron:
+        return ""
+    for c in crons:
+        if (isinstance(c, dict) and c.get("schedule") == cron.group(1)
+                and WAKE_MARK in str(c.get("prompt") or "")):
+            return ""
+    return ("dispatch-guard: this turn ended by arming an OS resume alarm, and this session has no "
+            "in-session wake job for it. The OS alarm's wake message can be held for the owner's "
+            "approval and then wakes nobody; a job this session schedules for itself always reaches "
+            "it. Schedule it now, then end the turn:" + ROUTE_A_LEAD + ask)
+
+
 def on_stop(payload, root, sdir, cfg):
     """The turn ended. Arm for this session's fresh handoff if the window is closing.
 
-    ⚠ Prints ONLY when it armed - one `systemMessage` for the person - and nothing otherwise,
-    because a Stop hook's empty stdout changes nothing about the turn (measured in the 2.0.56
-    binary's hook-output schema, which also accepts systemMessage on every event). It never
-    blocks the turn from ending.
+    ⚠ Prints ONLY when it armed - one JSON object: a `systemMessage` for the person and, when
+    route_a_block() says so, `decision: block` with the route-A request as `reason` - and nothing
+    otherwise, because a Stop hook's empty stdout changes nothing about the turn (measured in the
+    2.0.56 binary's hook-output schema, which also accepts systemMessage on every event).
+    ⭐ It blocks the end of the turn at most once per arm: only the Stop that armed can (ADR
+    Memory/tasks/20261018-161212-wake-held-and-route-a, D1 - superseding "it never blocks").
     """
     line = None
     try:
@@ -3021,7 +3056,12 @@ def on_stop(payload, root, sdir, cfg):
     except Exception as exc:
         log(root, "AUTO-ARM-FAILED %r" % (exc,))
     if line:
-        print(json.dumps({"systemMessage": for_screen(line)}, ensure_ascii=False))
+        out = {"systemMessage": for_screen(line)}
+        ask = route_a_block(payload, line)
+        if ask:
+            out["decision"], out["reason"] = "block", ask
+            log(root, "ROUTE-A-ASKED session=%s" % str(payload.get("session_id") or "?")[:8])
+        print(json.dumps(out, ensure_ascii=False))
 
 
 def approved_slots(root, cfg, cutoff, folder, log_to=None):
