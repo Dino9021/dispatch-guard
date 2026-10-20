@@ -33,6 +33,21 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.75.6
+
+擁有者 2026-10-20（由 mac-initial-6c 轉達）：「請你通知他修改不刪 scratch 的提示」—— Game 在這台 Mac 上的子任務
+scratch 三天長到 37 GiB（實測 37.30 GiB，多半是 iOS 專案副本與 Xcode 建置產物）。
+
+- **規則改成「證據留著，建置產物刪掉」**（每個子任務 prompt 前面的第 8 條、dispatch-protocol 中英文兩版）：跑了什麼、
+  印出什麼（含建置 log）、報告引用或結論依據的東西都留著；能重建的東西（專案副本、`node_modules`、`.build`、
+  `DerivedData`、`SourcePackages`、`ModuleCache`、`target`、`dist`、`build`）在寫完報告之後、**只在自己的
+  `scratch/<子任務>/` 裡**刪掉，報告寫明建了什麼、多大、已刪；派工的一方回收時量那個子任務的 scratch、清掉漏刪的。
+- **絕不透過連結刪除**：Windows 先 `rmdir` 拆 junction，macOS / Linux 先 `unlink`；不用 `find -L`。
+- 拿掉「任務資料夾會整包刪除或封存、scratch 不需要清理」—— 從來沒有任何東西做這件事。
+- 沒有加 hook 強制：量一次 37 GiB 的 scratch 要 4.7 秒，hook 承受不起。已經存在的 37 GiB 屬於 Game，不在這裡刪。
+- ADR（一輪審查，兩個 blocker 已處理）：`Memory/tasks/20261020-140124-scratch-keep-evidence-delete-build/`。
+  gate 自我測試釘住新規則、確認舊句不會回來（3 個突變全部被抓到）。Mac `test_all` 24/24。
+
 ## 0.75.5
 
 擁有者 2026-10-18：「請進行修正」—— Game-Mac1 在 02:53 被鬧鐘「喚醒」卻什麼都沒做，03:13 排程放棄。
@@ -3457,6 +3472,24 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.75.6
+
+Owner, 2026-10-20 (relayed by mac-initial-6c): change the "do not delete scratch" hint - Game's sub-task scratch on
+the Mac grew to 37 GiB in three days (measured 37.30 GiB, mostly iOS project copies and Xcode build output).
+
+- **The rule is now "keep the evidence, delete the build"** (PREPEND rule 8 and dispatch-protocol, en + zh): what
+  was run and printed (build logs too), and anything a report cites or a finding depends on, stays; what can be
+  rebuilt (project copies, `node_modules`, `.build`, `DerivedData`, `SourcePackages`, `ModuleCache`, `target`,
+  `dist`, `build`) is deleted AFTER the report is written, ONLY inside the sub-task's own `scratch/<subtask>/`,
+  and the report says what was built, how large, and that it was deleted; the dispatcher checks that sub-task's
+  scratch on return and removes leftovers.
+- **Never delete through a link**: `rmdir` a junction on Windows, `unlink` on macOS/Linux; no `find -L`.
+- Removed "the task folder is deleted or archived as a unit; scratch needs no cleanup" - nothing ever did that.
+- No hook enforcement: measuring 37 GiB of scratch took 4.7 s, too slow for a hook. The existing 37 GiB is Game's
+  and is not deleted here.
+- ADR (one round, two blockers answered): `Memory/tasks/20261020-140124-scratch-keep-evidence-delete-build/`. The
+  gate selftest pins the new rule and keeps the old sentence out (3 mutants killed). test_all on the Mac 24/24.
 
 ## 0.75.5
 

@@ -371,13 +371,21 @@ anything YOU dispatch in turn.
    person can answer - never in a run the owner declared unattended. These prices are read
    from Anthropic's published pricing page, not from anybody's memory; the reasoning is in
    `dispatch-protocol`.
-8. SCRATCH FILES GO IN THE TASK FOLDER, AND YOU DO NOT DELETE THEM. Every intermediate
-   file you write - probes, captured output, half-built scripts, fixtures - goes under
-   {task_root}/<task>/scratch/<your-subtask>/, never the system temp directory and never
-   a path another sub-task also uses. LEAVE THEM BEHIND when you finish: they are the
-   only way anyone can answer "what did that agent actually see?" after you are gone,
-   and tidying up is the one helpful-looking act that destroys the evidence. The task
-   folder is removed or archived as a whole; cleaning up after yourself is not your job.
+8. SCRATCH FILES GO IN THE TASK FOLDER: KEEP THE EVIDENCE, DELETE THE BUILD. Every
+   intermediate file you write - probes, captured output, half-built scripts, fixtures -
+   goes under {task_root}/<task>/scratch/<your-subtask>/, never the system temp directory
+   and never a path another sub-task also uses. KEEP THE EVIDENCE when you finish - what
+   you ran and what it printed (build logs too), and anything your report cites or a
+   finding depends on: it is the only way anyone can answer "what did that agent actually
+   see?" after you are gone. But AFTER your report is written, DELETE WHAT CAN BE REBUILT
+   that nothing in the report points at - a copy of a project, dependency folders and build
+   output (node_modules, .build, DerivedData, SourcePackages, ModuleCache, target, dist,
+   build) - ONLY inside your own scratch/<your-subtask>/, never the repository's folders or
+   another sub-task's; say in the report what you built, how large, and that you deleted it.
+   (Measured: kept build copies grew one project's scratch to 37 GiB in three days.)
+   NEVER DELETE THROUGH A LINK: remove the link itself first (Windows: rmdir the junction;
+   macOS/Linux: unlink, or rm without a trailing slash) - a recursive delete follows it and
+   empties the folder it points at.
 
 Full protocol: {protocol_doc}
 
@@ -5588,11 +5596,16 @@ def selftest():
             assert ultracode_refusal(dict(base, effort={"level": level}), None, sd) is None, level
 
     # ⛔ RULE 8 MUST SURVIVE IN THE PREPEND. It is the only channel that reaches every
-    # sub-agent at every depth without the dispatcher remembering to say it - and "tidy up
-    # after yourself" is trained behaviour, so the instruction not to is load-bearing.
-    for token in ("SCRATCH FILES GO IN THE TASK FOLDER", "YOU DO NOT DELETE THEM",
-                  "{task_root}/<task>/scratch/"):
+    # sub-agent at every depth without the dispatcher remembering to say it. ⭐ Since 0.75.6 it
+    # says keep the evidence, delete the BUILD inside your own scratch, never through a link
+    # (owner 2026-10-20: kept build copies grew one project's scratch to 37 GiB in three days;
+    # ADR Memory/tasks/20261020-140124-scratch-keep-evidence-delete-build). The old "do not
+    # delete them" must not come back.
+    for token in ("SCRATCH FILES GO IN THE TASK FOLDER", "KEEP THE EVIDENCE, DELETE THE BUILD",
+                  "{task_root}/<task>/scratch/", "ONLY inside your own scratch/<your-subtask>/",
+                  "anything your report cites", "NEVER DELETE THROUGH A LINK"):
         assert token in PREPEND, token
+    assert "YOU DO NOT DELETE THEM" not in PREPEND, "the keep-everything scratch rule is back"
     filled = prepend_head({"task_root": "Memory/tasks", "plan_glob": "prompts*.md",
                            "protocol_doc": "PROTOCOL.md", "max_model_price": 5})
     # ⛔ THE MODEL RULE MUST REACH EVERY DEPTH TOO. A sub-agent that dispatches further never

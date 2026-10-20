@@ -32,9 +32,24 @@ the first one's evidence — so the run that failed is the one whose files are g
 this repository's own checks, where every child process cleared a shared scratch directory on
 startup and only the LAST one's files survived a full run.
 
-⭐ **Leave them after the sub-task finishes.** They cost nothing and they are the only way to
-answer "what did that agent actually see?" after it is gone. The task folder is deleted or
-archived as a unit; scratch does not need its own cleanup.
+⭐ **Keep the evidence, delete the build.** What the sub-task ran and what it printed (build logs
+too), probes, small fixtures, diffs - and anything its report cites or a finding depends on (a
+mutation fixture, the copy a claim was measured on), whatever its size - stay after it finishes:
+they are the only way to answer "what did that agent actually see?" after it is gone.
+
+⛔ **What can be rebuilt does NOT stay.** A copy of a project, dependency folders and build output
+(`node_modules`, `.build`, `DerivedData`, `SourcePackages`, `ModuleCache`, `target`, `dist`,
+`build`) that nothing in the report points at is deleted by the sub-task AFTER its report is
+written, ONLY inside its own `scratch/<subtask>/` - never the repository's folders, never another
+sub-task's - and the report says what was built, how large, and that it was deleted. When a
+sub-task returns, the dispatcher checks THAT sub-task's scratch size (`du -sh`) and deletes leftovers
+of that kind there, after reading the report. Measured 2026-10-20: one project's sub-tasks kept review
+copies of an iOS build and its scratch reached 37 GiB in three days. Nothing deletes or archives a task
+folder later, so nothing else will.
+
+⛔ **Never delete through a link.** Remove the link itself first - on Windows `rmdir` the junction,
+on macOS/Linux `unlink` it (or `rm` without a trailing slash) - and never delete with `find -L` or a
+glob that follows links: a recursive delete through a link empties the folder it points at.
 
 ⚠ **Say the path in the prompt.** A sub-task cannot infer it, and an agent told only "write
 your report to X" will put everything else wherever it likes. Gitignore the scratch path if
