@@ -99,7 +99,12 @@ that session. Do not report it as active.
    concurrency needs the owner's approval recorded as `PARALLEL-APPROVED` in the task
    folder, stating the count as `parallel N`, `N=<n>` or `平行N` (bare integers are not
    accepted).
-2. **Background dispatch** — it escapes the accounting entirely.
+2. **Asking for a background dispatch** (`run_in_background: true`) — the owner's rule is
+   foreground, waited for. ⚠ Claude Code 2.1.299 and later run an `Agent` call in the background
+   BY THEMSELVES (the result says "Async agent launched"). That is not refused: the gate keeps its
+   slot until the agent finishes (0.75.7). So treat it as a dispatch still running — dispatch nothing
+   next and touch nothing it works on until its task-notification says it **finished**; one saying
+   it is "waiting on its own background work" is not the end.
 3. **Dispatching before the plan is on disk** (`prompts*.md` newer than session start).
 4. **Any mass-spawn tool.** No approval path.
 5. **Dispatching when usage says STOP.**
@@ -113,7 +118,8 @@ request, not an approval); "I'll background it and collect later" (refusal 2).
 
 **An approved N means N ALIVE AT ONCE, run as batches of N** (dispatch N, wait for all N,
 next batch — not a rolling window). Approvals expire (60 min default) and are scoped to the
-named task folder.
+named task folder. ⚠ For agents the harness runs in the background the gate frees each slot as
+its own agent finishes, so the batch rule is kept by YOU, not by the gate.
 
 **Asking for a count:** write the plan and prompts, tell the owner the total and that they
 can approve a count, then **start sequentially immediately** — never stall waiting.

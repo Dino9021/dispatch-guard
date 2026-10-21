@@ -33,6 +33,30 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.75.7
+
+擁有者 2026-10-21：「請繼續」—— 修 Reglow-Mac1 回報的問題：子代理被系統放到背景跑時，gate 一啟動就把它當成「已回來」。
+
+- **現象：** Claude Code 2.1.299 / 2.1.304 預設把 `Agent` 呼叫放到背景（它的 Agent 工具根本沒有 `run_in_background`），
+  `PostToolUse` 在**啟動當下**就到，回傳 `isAsync: true`、`status: "async_launched"`、`agentId`。0.75.6 在這一刻就
+  釋放「一次一個」的名額（第二個派工因此會被放行），還對每一個報告檔誤報「was never created」—— Reglow 9 次全中，
+  這個 repo 自己的兩次 ADR 審查也各中一次。
+- **修正：** 背景啟動時保留名額、標上代理 id，不檢查報告檔，改告訴模型「它還在跑、完成通知說 finished 之前不要派下一個，
+  完成後自己確認 `<報告檔>` 存在」，`progress.md` 記一列 `LAUNCHED IN THE BACKGROUND`。名額在那個代理的
+  **`SubagentStop`**（新訂閱的事件）才釋放，同時檢查報告檔（缺檔只顯示在畫面上），記一列 `FINISHED`。
+- **「停下」不等於「做完」：** 代理自己啟動的背景工作（Bash 的 `backgroundTaskId`、巢狀背景代理）還在跑時，它的停下只是
+  中途停下（實測：工作結束後同一個代理會被叫醒再停一次）—— 名額保留，記一列 `WAITING`。
+- **背景代理自己的每個 hook 都會刷新名額時間**，所以 `slot_ttl_min` 量的是「沉默多久」而不是「多老」；跑 40 分鐘的背景代理
+  不會被回收，死掉的照樣 30 分鐘後回收。名額已滿時的拒絕訊息會寫明哪個名額是背景代理、要等它的完成通知。
+- **核准過期或換任務資料夾時**，編號超出目前核准數的背景代理名額也照算。
+- **推翻舊的設計決策 2**（「背景派工結束時沒有任何 hook，所以無法計數」—— 實測是錯的）。要求背景執行（`run_in_background: true`）
+  仍然拒絕，理由改成 owner 的規則；系統自己放到背景的照樣計數。代價：在 gate 這邊，已核准的 N 變成「有人做完就補」，
+  「一批一批跑」要靠派工的人自己守（dispatch-protocol、README、PROTOCOL.md 都已改寫）。
+- 不知道的：代理在等自己長時間的背景工作、超過 30 分鐘完全沒有 hook 時，名額會被回收（log 會寫明是背景代理）；
+  `isolation: "remote"` 與被 `TaskStop` 停掉的背景代理沒有實測。
+- ADR（兩輪審查：第一輪 REJECT 的兩個 blocker 已處理，第二輪 ACCEPT WITH NON-BLOCKING FINDINGS）與實測：
+  `Memory/tasks/20261021-094254-harness-background-agents/`。新測試 `test_background_agent.py`（17 個突變全部被抓到）。
+
 ## 0.75.6
 
 擁有者 2026-10-20（由 mac-initial-6c 轉達）：「請你通知他修改不刪 scratch 的提示」—— Game 在這台 Mac 上的子任務
@@ -3472,6 +3496,38 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.75.7
+
+Owner, 2026-10-21: 「請繼續」 - fix what Reglow-Mac1 reported: when the harness runs a sub-agent in the background, the
+gate treated it as "returned" at launch.
+
+- **Symptom:** Claude Code 2.1.299 / 2.1.304 run an `Agent` call in the background by default (its Agent tool has no
+  `run_in_background` at all), and `PostToolUse` arrives AT LAUNCH with `isAsync: true`,
+  `status: "async_launched"`, `agentId`. 0.75.6 freed the one-at-a-time slot right then (so a second dispatch
+  would pass) and reported every report file "was never created" - 9 of 9 in Reglow, and both of this
+  repository's own ADR reviews.
+- **Fix:** a background launch keeps its slot, marked with the agent id; no file check; the model is told it is
+  still running, to dispatch nothing next until its notification says it finished, and to check that
+  `<report>` exists then; `progress.md` gets a `LAUNCHED IN THE BACKGROUND` row. The slot is released on that
+  agent's **`SubagentStop`** (newly subscribed), where the report check runs (a missing file is shown on screen
+  only) and a `FINISHED` row is written.
+- **A stop is not a finish:** while background work the agent started itself (a Bash `backgroundTaskId`, a nested
+  background agent) is still running, its stop is interim (measured: the same agent is woken when that work
+  ends and stops again) - the slot is kept and a `WAITING` row is written.
+- **The background agent's own hooks refresh its slot**, so `slot_ttl_min` measures silence, not age: a
+  40-minute background agent keeps its slot, a dead one is still reclaimed after 30 minutes. The slots-full
+  refusal says which holder runs in the background and to wait for its task-notification.
+- **A background holder above the current approval** (an expired approval, another task folder) still counts.
+- **Overturns old design decision 2** ("no hook fires when a background dispatch finishes, so counting is
+  impossible" - measured false). Asking for `run_in_background: true` is still refused, now on the owner's rule;
+  a call the harness backgrounds by itself is counted. Cost: at the gate an approved N becomes a rolling window,
+  and batches of N are the dispatcher's to keep (dispatch-protocol, README, PROTOCOL.md rewritten).
+- Not known: a background agent waiting on a long background job of its own with no hook for 30 minutes loses its
+  slot (logged as a background agent); `isolation: "remote"` and `TaskStop`-stopped agents are not measured.
+- ADR (two rounds: round 1 REJECT, both blockers answered; round 2 ACCEPT WITH NON-BLOCKING FINDINGS) and
+  measurements: `Memory/tasks/20261021-094254-harness-background-agents/`. New test `test_background_agent.py`
+  (17 of 17 mutations killed).
 
 ## 0.75.6
 

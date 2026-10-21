@@ -40,7 +40,7 @@ skill 是模型看了描述之後**自己決定**要不要用；文件是模型*
 | | |
 |---|---|
 | ⛔ 拒絕**第二個同時進行**的子任務 | 除非 owner 已核准一個數量 |
-| ⛔ 拒絕**背景**派遣 | 它會完全繞過計數 — 見下方「做不到的事」 |
+| ⛔ 拒絕**要求**背景執行的派遣；系統自己改成背景的照樣計數 | 名額保留到那個代理做完（0.75.7）— 見下方「做不到的事」 |
 | ⛔ 拒絕**計畫還沒寫到硬碟**就派遣 | 計畫與每一個子任務提示詞要先落地 |
 | ⛔ 拒絕**一次大量生成**的工具呼叫 | 沒有核准管道 |
 | ⭐ 用量到達**硬門檻**就拒絕派遣 | 到軟門檻則對子任務發出警告 |
@@ -113,7 +113,7 @@ flowchart TD
   modelCheck -->|"任務資料夾有 MODEL-APPROVED"| singleDispatch
   modelCheck -->|"有人在、沒宣告無人職守"| dialogToOwner["其他檢查都過了，hook 才跳確認框問擁有者"]
   modelCheck -->|"headless、已宣告無人職守，或定不了價的模型"| modelRefused["hook 拒絕"]
-  dialogToOwner -->|"允許"| singleDispatch["一次派一個、前景執行<br/>並行要 PARALLEL-APPROVED 寫明數量<br/>多派或背景派，hook 拒絕"]
+  dialogToOwner -->|"允許"| singleDispatch["一次派一個、前景執行<br/>並行要 PARALLEL-APPROVED 寫明數量<br/>多派或要求背景派，hook 拒絕"]
   dialogToOwner -->|"不允許"| modelRefused
   singleDispatch --> prependBlock["gate 把規範區塊加在提示詞前面"]
   prependBlock --> subAgentWork["子代理把自己的單位做完<br/>邊做邊把報告寫進任務資料夾"]
@@ -706,7 +706,7 @@ claude plugin marketplace remove dispatch-guard
 flowchart TD
   trigger{"擁有者說了<br/>無人職守、無人值守、無人模式、自動模式、做完再叫我、unattended<br/>或指名這支 skill"} --> loadUnattended["載入 unattended-work，hook 顯示 ⭐ unattended-work ACTIVE<br/>agent 也印出它自己的 ACTIVE 那一行<br/>宣告過的 run 沒載入：hook 拒絕第一次派工一次"]
   loadUnattended --> planFirst["§2 計畫和每份提示詞先落到硬碟<br/>沒有就由 hook 拒絕派工"]
-  planFirst --> sequential["§1 一次派一個，不背景、不大量生成<br/>違反的派工 hook 都拒絕"]
+  planFirst --> sequential["§1 一次派一個，不要求背景、不大量生成<br/>違反的派工 hook 都拒絕"]
   sequential --> wave["§3 實作 → 會執行的反駁者 → 修正 → 把修正再送去反駁"]
   wave --> reviewers["§4 實質段落之後：兩位不同角度的審查者，一位接一位"]
   reviewers --> adviser{"修正後問 adviser，最多兩輪"}
@@ -1705,10 +1705,11 @@ dispatch_gate.py        ← 每次工具呼叫都是新行程，跟上面沒有�
   它被拒絕兩次之後，自己寫了一個檔案、引用 owner 的原話當作核准，然後就過了。
   這個檔案買到的是：這個動作是**刻意**的、它**會過期**、而且用了會留下**一行紀錄**，
   上面有它的年齡跟內容。
-- ⛔ **背景派遣沒辦法計數，只能拒絕。**
-  `PostToolUse` 是在工具呼叫**回傳**時觸發，而背景派遣是一啟動就回傳，
-  而且它真正結束時沒有任何 hook 會觸發。
-  ⇒ 已核准的並行是**一批 N 個**跑完再下一批，不是滑動視窗。
+- ⛔ **背景代理的名額在它做完時才釋放，但「一批 N 個」不再由 gate 保證。**
+  Claude Code 2.1.299 起預設把派工放到背景：`PostToolUse` 一啟動就觸發。0.75.7 起 gate 保留名額，
+  等那個代理的 `SubagentStop`（而且它自己啟動的背景工作都結束了）才釋放 —— 所以每個名額在它自己的代理做完時就空出來，
+  已核准的並行在 gate 這裡變成滑動視窗；「一批 N 個跑完再下一批」要靠派工的人自己守。
+  ⚠ 一個背景代理在等自己的長時間背景工作、超過 `slot_ttl_min`（30 分鐘）都沒有任何 hook 時，名額會被回收（log 會寫 `RECLAIM(... background agent <id>)`）。
 - ⛔ **它壞掉時是「放行」。** 一個因為自己當掉就拒絕所有東西的守門員，比它要守的規則更糟。
   ⚠ 代價是：**沒有出現拒絕，不等於它有在跑。**
   請看 `<repo>/.claude/dispatch_gate.log` —
@@ -1855,7 +1856,7 @@ its task. **A refused tool call is not.**
 | | |
 |---|---|
 | ⛔ refuses a **second concurrent** sub-task | unless the owner approved a count |
-| ⛔ refuses a **background** dispatch | it escapes the accounting entirely — see the gaps below |
+| ⛔ refuses a dispatch that **asks** for the background; one the harness backgrounds by itself is counted | its slot is held until that agent finishes (0.75.7) — see the gaps below |
 | ⛔ refuses a dispatch made **before the plan is on disk** | the plan and every sub-task prompt land first |
 | ⛔ refuses a **mass-spawn** tool call | no approval path |
 | ⭐ refuses a dispatch once usage reaches the **hard threshold** | and warns the sub-task at the soft one |
@@ -1917,7 +1918,7 @@ flowchart TD
   modelCheck -->|"MODEL-APPROVED in the task folder"| singleDispatch
   modelCheck -->|"attended, not declared unattended"| dialogToOwner["Every other check passed: the hook asks the owner<br/>in a permission dialog"]
   modelCheck -->|"headless, declared unattended, or a model the gate cannot price"| modelRefused["The hook refuses"]
-  dialogToOwner -->|"allowed"| singleDispatch["One at a time, in the foreground<br/>concurrency needs PARALLEL-APPROVED with a count<br/>the hook refuses a second or a background dispatch"]
+  dialogToOwner -->|"allowed"| singleDispatch["One at a time, in the foreground<br/>concurrency needs PARALLEL-APPROVED with a count<br/>the hook refuses a second or a requested-background dispatch"]
   dialogToOwner -->|"declined"| modelRefused
   singleDispatch --> prependBlock["The gate prepends the protocol block to the prompt"]
   prependBlock --> subAgentWork["The sub-agent does its unit in full<br/>and writes its report into the task folder as it goes"]
@@ -2544,7 +2545,7 @@ cowork's line also carries a `/rename <project>-<role>` tip (0.72.1, see the cow
 flowchart TD
   trigger{"The owner said<br/>無人職守, 無人值守, 無人模式, 自動模式, 做完再叫我 or unattended<br/>or named this skill"} --> loadUnattended["Load unattended-work, the hook shows ⭐ unattended-work ACTIVE<br/>and the agent prints its own ACTIVE line<br/>declared run without it: the hook refuses the first dispatch once"]
   loadUnattended --> planFirst["§2 The plan and every prompt land on disk first<br/>without them the hook refuses the dispatch"]
-  planFirst --> sequential["§1 One dispatch at a time, no background, no mass-spawn<br/>the hook refuses each of those"]
+  planFirst --> sequential["§1 One dispatch at a time, no requested background, no mass-spawn<br/>the hook refuses each of those"]
   sequential --> wave["§3 Implement → executing refuter → fix → refute the fix"]
   wave --> reviewers["§4 After a substantial block: two reviewers from different angles, one after the other"]
   reviewers --> adviser{"Fix, then ask the adviser, two rounds at most"}
@@ -3655,9 +3656,14 @@ Read this before trusting it. Every item is a way it can look like it is working
   itself, and one did — refused twice, it wrote the file quoting the owner's phrasing as the
   approval, and got through. What the artefact buys is that the act is **deliberate**, that it
   **expires**, and that its use is **one log line** carrying its age and contents.
-- ⛔ **A background dispatch cannot be counted, only refused.** `PostToolUse` fires when the tool
-  call *returns*, which for a background dispatch is at launch, and no hook fires when one
-  finishes. ⇒ An approved concurrency runs as **batches of N**, not a rolling window.
+- ⛔ **A background agent's slot is released when it finishes, but batches of N are no longer the
+  gate's.** Since Claude Code 2.1.299 an `Agent` call runs in the background by default, and its
+  `PostToolUse` fires at launch. Since 0.75.7 the gate keeps the slot and releases it on that agent's
+  `SubagentStop` (once no background work of its own is still running) — so each slot frees as its
+  own agent finishes, and an approved concurrency is a rolling window at the gate. Batches of N are
+  kept by the dispatcher. ⚠ A background agent that waits on a long background job of its own fires no
+  hook meanwhile; past `slot_ttl_min` (30) its slot is reclaimed (logged as
+  `RECLAIM(... background agent <id>)`).
 - ⛔ **It fails OPEN.** A gate that refused everything because it crashed would be worse than the
   rule it enforces. ⚠ The price: **an absent denial is not proof it ran.** Read
   `<repo>/.claude/dispatch_gate.log` — a log full of `ADVISORY(no-session-stamp)` means it is

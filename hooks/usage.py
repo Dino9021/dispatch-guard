@@ -3262,7 +3262,8 @@ def _dispatch_in_flight_min(sdir, now=None):
     the heavy run it exists to govern.
 
     ⭐ THE GATE WRITES state/<session>.slotN WHEN A DISPATCH STARTS and removes it on the
-    dispatch's PostToolUse, so an open slot is proof work is happening NOW with no hook in
+    dispatch's PostToolUse (a background agent's: on its SubagentStop, and its own hooks keep
+    the file's mtime fresh meanwhile), so an open slot is proof work is happening NOW with no hook in
     between. Reporting activity keeps the watcher on its NORMAL 120 s cadence - it does not
     poll one bit faster, so it cannot spend the endpoint's tiny call budget.
 

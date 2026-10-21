@@ -57,6 +57,9 @@ CHECKS = [
     # covers lived in the event wiring, not in any function: every unit involved passed
     # while a failed dispatch held its slot for half an hour.
     ("slot lifecycle", [os.path.join(DEBUG_DIR, "test_slot_lifecycle.py")]),
+    # ⛔ Claude Code 2.1.299+ backgrounds every Agent call; 0.75.6 freed its slot at launch and
+    # called every report "never created" (2026-10-21). Measured payload shapes, real process.
+    ("background agent", [os.path.join(DEBUG_DIR, "test_background_agent.py")]),
     ("usage debug dump", [os.path.join(DEBUG_DIR, "test_usage_debug_dump.py")]),
     # ⚠ Runs the watch LOOP for a few seconds and counts what comes out. The defect it
     # covers - an idle watcher redrawing a too-wide line for ever - cannot be seen from a

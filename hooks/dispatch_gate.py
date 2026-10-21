@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Dispatch gate - enforces the sub-task dispatch protocol, and brakes on usage.
 
-Registered in settings.json for SessionStart, UserPromptSubmit, PreToolUse and
-PostToolUse. Reads one hook payload as JSON on stdin, writes a hook response on stdout.
+Registered (hooks/hooks.json) for SessionStart, UserPromptSubmit, PreToolUse, PostToolUse,
+PostToolUseFailure, Stop and SubagentStop. Reads one hook payload as JSON on stdin, writes a
+hook response on stdout.
 
   SessionStart     stamp the session; print the protocol pointer into context.
   UserPromptSubmit inject a wind-down instruction once usage crosses soft/hard.
@@ -14,7 +15,10 @@ PostToolUse. Reads one hook payload as JSON on stdin, writes a hook response on 
                    deny once the concurrency slots are full;
                    otherwise PREPEND the protocol to the sub-task's prompt.
   PostToolUse
-      Agent        release this dispatch's slot.
+      Agent        release this dispatch's slot - unless the harness launched it in the
+                   background: then mark the slot with the agent and keep it.
+  SubagentStop     release a background agent's slot once it stops with no background
+                   work of its own still running.
 
 ⭐ WHY THE USAGE BRAKE LIVES ON THE DISPATCH, not only in an advisory message:
 dispatching a sub-task is the single most expensive thing an agent does - a sub-agent
@@ -38,12 +42,16 @@ THREE DESIGN DECISIONS THAT ARE EASY TO MISREAD
    needed. Enforcement begins with the NEXT session, never mid-flight in one already
    running - which also means installing this cannot disrupt a colleague's live work.
 
-2. A background dispatch is REFUSED rather than counted. PostToolUse fires when the
-   tool call RETURNS, which for a background dispatch is at launch, so its slot would
-   free while the sub-task was still alive and any number could pile up behind it. No
-   hook event fires when a background sub-task finishes, so counting is not merely
-   hard - it is impossible. The cost, stated plainly: an approved concurrency runs as
-   BATCHES of N rather than as a rolling window that refills as each finishes.
+2. A background dispatch the CALL asks for is REFUSED - that is the owner's rule (one
+   sub-task at a time, in the foreground, waited for). One the HARNESS backgrounds by
+   itself is COUNTED (0.75.7). Until 0.75.7 this item said counting was impossible because
+   "no hook event fires when a background sub-task finishes". Measured 2026-10-21 that is
+   false: SubagentStop fires with the agent's id (ADR
+   Memory/tasks/20261021-094254-harness-background-agents/). And Claude Code 2.1.299
+   backgrounds every Agent call by default, so the old refusal-only design freed the slot
+   at launch on every dispatch. The cost, stated plainly: for background agents each slot
+   frees as its own agent finishes, so the gate no longer makes an approved N run as
+   BATCHES of N - that rule is now the dispatcher's to keep.
 
 3. The gate FAILS OPEN on its own errors. A broken gate that refused every dispatch
    would be worse than the rule it enforces. ⚠ The price is that an absent denial is
@@ -346,7 +354,9 @@ These rules bind you exactly as they bind the agent that dispatched you, and the
 anything YOU dispatch in turn.
 
 1. ONE SUB-TASK AT A TIME. Never dispatch two agents in one message, never dispatch one
-   in the background, and never call Workflow. Sequential dispatch of any number needs
+   in the background, and never call Workflow. One the harness puts in the background by
+   itself is still in flight until its task-notification says it FINISHED: wait for that
+   before the next dispatch. Sequential dispatch of any number needs
    no permission; concurrency needs the owner's approval. This is enforced by a hook,
    not by your judgement.
 2. THE WORK ORDER LANDS ON DISK FIRST. Before dispatching anything, write the plan and
@@ -3243,20 +3253,39 @@ def claim_slot(root, sdir, cfg, session_id, slots, tool_use_id, folder=None, des
     O_CREAT|O_EXCL is atomic - 20 threads racing it produce exactly one winner - so two
     hooks firing at the same instant cannot both take the same slot.
 
-    A slot older than slot_ttl_min is reclaimed first. A dispatch that dies without its
+    A slot untouched for slot_ttl_min is reclaimed first. A dispatch that dies without its
     PostToolUse - an interrupt, an API error, a killed process - would otherwise hold
     its slot forever and every later dispatch would be refused, ⛔ which reads exactly
-    like the rule working.
+    like the rule working. (A background agent's own hooks touch its slot - see
+    note_background_activity() - so for one of those the clock measures SILENCE, not age.)
+
+    ⛔ EVERY SLOT IS LOOKED AT, NOT ONLY range(slots) (0.75.7). `slots` is the approval for
+    THIS dispatch's task folder. A background agent claimed under an approval that has since
+    expired, or for another folder, can hold a higher slot while it runs - with foreground
+    dispatch the parent was blocked meanwhile, so nobody could ask. Such holders shrink the
+    range this dispatch may claim from.
     """
     os.makedirs(os.path.join(sdir, "state"), exist_ok=True)
-    for i in range(slots):
+    for i in range(cfg["max_slots"]):
         p = state_path(sdir, session_id, "slot%d" % i)
         try:
             if time.time() - os.path.getmtime(p) > cfg["slot_ttl_min"] * 60:
+                try:
+                    with open(p, encoding="utf-8") as f:
+                        agent = (json.loads(f.read()) or {}).get("agent")
+                except (OSError, ValueError, AttributeError):
+                    agent = None
                 os.remove(p)
-                log(root, "RECLAIM(stale slot%d)" % i)
+                # ⚠ A LIVE background agent can be reclaimed here: one waiting on a long child
+                # of its own fires no hook meanwhile (ADR G7). Named, so that is visible.
+                log(root, "RECLAIM(stale slot%d%s)"
+                    % (i, ", background agent %s" % agent if agent else ""))
         except OSError:
             pass
+    beyond = sum(1 for i in range(slots, cfg["max_slots"])
+                 if os.path.exists(state_path(sdir, session_id, "slot%d" % i)))
+    for i in range(max(0, slots - beyond)):
+        p = state_path(sdir, session_id, "slot%d" % i)
         try:
             fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             # ⭐ `wants` IS STASHED AT CLAIM TIME rather than re-derived on the way out. The
@@ -3291,9 +3320,14 @@ def held_slots_note(sdir, cfg, session_id, slots):
     so, and a wait nobody can see the end of looks like a broken gate.
     ⇒ Say who holds it and when the clock runs out, so the answer is "wait" and never "edit
     the enforcement state".
+
+    ⭐ A BACKGROUND HOLDER (0.75.7) is not a dead one, and its clock moves: its own hooks keep
+    touching the slot, so "wait for that minute" would be refused again with a later minute.
+    Its line says so, and says to wait for the task-notification. Every slot is listed, not
+    only range(slots) - see claim_slot().
     """
     lines = []
-    for i in range(slots):
+    for i in range(cfg["max_slots"]):
         p = state_path(sdir, session_id, "slot%d" % i)
         try:
             started = os.path.getmtime(p)
@@ -3305,6 +3339,24 @@ def held_slots_note(sdir, cfg, session_id, slots):
             held = json.loads(raw)
         except Exception:
             held = {}                      # an older version's slot: age still reads true
+        if not isinstance(held, dict):
+            held = {}
+        if held.get("agent"):
+            try:
+                at = float(held.get("at"))
+            except (TypeError, ValueError):
+                at = started
+            lines.append("  slot%d: %s - running in the BACKGROUND as agent %s, dispatched %s "
+                         "(%.0f min ago), last active %s; released when it finishes - wait for "
+                         "its task-notification; reclaimed automatically at %s only if it "
+                         "stays silent"
+                         % (i, held.get("desc") or "(unnamed)", held["agent"],
+                            time.strftime("%H:%M", time.localtime(at)),
+                            (time.time() - at) / 60.0,
+                            time.strftime("%H:%M", time.localtime(started)),
+                            time.strftime("%H:%M", time.localtime(
+                                started + cfg["slot_ttl_min"] * 60))))
+            continue
         lines.append("  slot%d: %s - dispatched %s (%.0f min ago), reclaimed automatically "
                      "at %s if it never returns"
                      % (i, held.get("desc") or "(unnamed)",
@@ -3363,6 +3415,292 @@ def release_slot(sdir, cfg, session_id, tool_use_id):
         except OSError as exc:
             return "error: %r" % (exc,)
     return False
+
+
+# ---------------------------------------------------------------- background agents (0.75.7)
+#
+# ⛔ MEASURED 2026-10-21 (ADR + MEASUREMENTS.md in
+# Memory/tasks/20261021-094254-harness-background-agents/): Claude Code 2.1.299 / 2.1.304 runs
+# an Agent call in the BACKGROUND by default - its Agent tool has no run_in_background at all -
+# and its PostToolUse arrives AT LAUNCH. Read as "the agent returned", that freed the
+# one-at-a-time slot at launch and reported every report file missing. The slot is now kept,
+# marked with the agent, and released on that agent's SubagentStop.
+#
+# State, all per session and age-pruned by prune_state (none matches usage.py's `*.slot*` glob or
+# prune_state's `slot*` skip):
+#   <sid>.bgslot-<agent>          pointer: the index of the slot that agent holds
+#   <sid>.bgkid-<agent>-<child>   background work that agent started itself (one file each:
+#                                 no read-modify-write, and no wait for the pointer - ADR r2 N1/N3)
+#   <sid>.bgdone-<agent>          that agent was released as finished (the detector, ADR D4)
+#   <sid>.tmp-slotN               the temp file of a slot rewrite
+
+
+def _bg_key(agent_id):
+    """An agent or task id made safe for a state-file name."""
+    return re.sub(r"[^A-Za-z0-9_-]", "_", str(agent_id))[:64]
+
+
+def background_launch(response):
+    """The agentId when this Agent PostToolUse is a BACKGROUND LAUNCH ("" if it names none),
+    else None. The measured shape: {"isAsync": true, "status": "async_launched", "agentId"}."""
+    if isinstance(response, dict) and (response.get("isAsync") is True
+                                       or response.get("status") == "async_launched"):
+        return str(response.get("agentId") or "")
+    return None
+
+
+def missing_demanded(held):
+    """The files this dispatch's prompt demanded that do not exist (paths stashed at claim)."""
+    return [p for p in (held.get("wants") or []) if isinstance(p, str) and not os.path.exists(p)]
+
+
+def rewrite_slot(p, held):
+    """Replace slot file `p` with `held`. True on success.
+
+    ⭐ A temp file moved over the slot with os.replace: the path never stops existing, so no
+    claim can take the slot in between. ⚠ Windows refuses the move while another process has
+    the slot open (Python's open() grants no delete-sharing) - hence the retries, and then an
+    in-place rewrite, which needs no delete-sharing at all.
+    """
+    data = json.dumps(held).encode("utf-8")
+    folder, base = os.path.split(p)
+    sid_part, suffix = base.rsplit(".", 1)
+    tmp = os.path.join(folder, "%s.tmp-%s" % (sid_part, suffix))
+    for _ in range(3):
+        try:
+            with open(tmp, "wb") as f:
+                f.write(data)
+            os.replace(tmp, p)
+            return True
+        except OSError:
+            time.sleep(0.05)
+    try:
+        os.remove(tmp)
+    except OSError:
+        pass
+    try:
+        with open(p, "r+b") as f:
+            f.write(data)
+            f.truncate()
+        return True
+    except OSError:
+        return False
+
+
+def mark_slot_background(sdir, cfg, session_id, tool_use_id, agent, root):
+    """Keep this dispatch's slot and mark it with the agent now running in the background.
+
+    Returns the slot's record, False when no slot is held for that id, or "error: ..." text.
+    ⭐ `asked` is cleared: the call resolved (this PostToolUse is its event), and
+    release_unresolved_asks() would otherwise free an approved ask while its agent runs.
+    ⭐ `root` is stashed: the SubagentStop that releases it may carry another cwd (ADR r2 N13).
+    """
+    want = str(tool_use_id)
+    for i in range(cfg["max_slots"]):
+        p = state_path(sdir, session_id, "slot%d" % i)
+        try:
+            with open(p, encoding="utf-8") as f:
+                held = json.loads(f.read())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(held, dict) or held.get("id") != want:
+            continue
+        held.update(agent=agent, asked=False, root=root)
+        if not rewrite_slot(p, held):
+            return "error: slot%d could not be rewritten" % i
+        if agent:
+            try:
+                with open(state_path(sdir, session_id, "bgslot-" + _bg_key(agent)), "w",
+                          encoding="utf-8") as f:
+                    f.write(str(i))
+            except OSError:
+                pass                    # the stop falls back to a scan; the touch waits for it
+        return held
+    return False
+
+
+def background_slot(sdir, cfg, session_id, agent, scan=False):
+    """(path, record) of the slot marked with `agent`, else (None, None).
+
+    ⛔ THE POINTER IS CHECKED, NOT TRUSTED (ADR r2 N11): after a reclaim its index may hold
+    another dispatch now, and releasing that would free a running dispatch's slot.
+    """
+    idx = None
+    try:
+        with open(state_path(sdir, session_id, "bgslot-" + _bg_key(agent)),
+                  encoding="utf-8") as f:
+            idx = int(f.read().strip())
+    except (OSError, ValueError):
+        pass
+    order = [idx] if idx is not None and 0 <= idx < cfg["max_slots"] else []
+    if scan:
+        order += [i for i in range(cfg["max_slots"]) if i != idx]
+    for i in order:
+        p = state_path(sdir, session_id, "slot%d" % i)
+        try:
+            with open(p, encoding="utf-8") as f:
+                held = json.loads(f.read())
+        except (OSError, ValueError):
+            continue
+        if isinstance(held, dict) and held.get("agent") == agent:
+            return p, held
+    return None, None
+
+
+def _seen_after_release(root, sdir, session_id, agent):
+    """ADR D4: a background agent released as finished is active again - a kind of child work
+    the gate does not record, or a resume. Logged once; nothing is re-claimed."""
+    done = state_path(sdir, session_id, "bgdone-" + _bg_key(agent))
+    if os.path.exists(done):
+        try:
+            os.remove(done)
+        except OSError:
+            pass
+        log(root, "BG-AGENT-ACTIVE-AFTER-RELEASE agent=%s" % agent)
+
+
+def note_background_activity(root, sdir, cfg, payload):
+    """A sub-agent's own hook event (it carries `agent_id`).
+
+    ⭐ Touch the slot that agent holds, so slot_ttl_min measures its SILENCE: a 40-minute
+    background agent keeps its slot, a dead one is still reclaimed 30 minutes after its last
+    hook. ⭐ Record background work it starts itself - a Bash `backgroundTaskId`, or the agentId
+    of a nested background launch - so its stop while that work runs is not read as the finish
+    (measured: the agent stops, then WAKES when the work ends and stops again - M10).
+    ⚠ Only through the pointer, never a scan of every slot: this runs on every event of every
+    sub-agent, and on Windows a reader blocks another process's remove.
+    """
+    agent = str(payload.get("agent_id") or "")
+    sid = payload.get("session_id")
+    p, _held = background_slot(sdir, cfg, sid, agent)
+    if p:
+        os.utime(p, None)
+    else:
+        _seen_after_release(root, sdir, sid, agent)
+    resp = payload.get("tool_response")
+    if payload.get("hook_event_name") == "PostToolUse" and isinstance(resp, dict):
+        kid = resp.get("backgroundTaskId") or background_launch(resp)
+        if kid:
+            with open(state_path(sdir, sid, "bgkid-%s-%s" % (_bg_key(agent), _bg_key(kid))),
+                      "w", encoding="utf-8"):
+                pass
+
+
+def on_background_launch(payload, root, sdir, cfg, agent):
+    """PostToolUse of an Agent call the harness launched in the BACKGROUND: it has not returned.
+
+    ⛔ NO FILE CHECK HERE - the report cannot exist yet; that check is what cried "never created"
+    at every launch. It runs when the agent finishes (on_subagent_stop).
+    """
+    sid = payload.get("session_id")
+    asked_for = bool((payload.get("tool_input") or {}).get("run_in_background"))
+    who = "call" if asked_for else "harness"
+    held = mark_slot_background(sdir, cfg, sid, payload.get("tool_use_id"), agent, root)
+    if held is False:
+        log(root, "BG-LAUNCH(no slot held) agent=%s id=%s" % (agent, payload.get("tool_use_id")))
+        return
+    if isinstance(held, dict):
+        log(root, "BG-LAUNCH(%s) agent=%s %s" % (who, agent, held.get("desc") or ""))
+        record_progress(root, cfg, held.get("folder"), held.get("desc"), held.get("at"),
+                        "LAUNCHED IN THE BACKGROUND by the %s (agent %s) - slot held until it "
+                        "finishes" % (who, agent or "?"))
+    else:
+        # ⚠ Still held, only unmarked: SubagentStop cannot find it, so the TTL frees it - and an
+        # `asked` slot is freed sooner, by release_unresolved_asks() (ADR r2 N5).
+        log(root, "BG-MARK-FAILED %s agent=%s" % (held, agent))
+        held = {}
+    wants = [p for p in (held.get("wants") or []) if isinstance(p, str)]
+    text = ("dispatch-guard: this sub-agent was started in the BACKGROUND by the harness "
+            "(the call %s). It has NOT returned - treat it as a dispatch still running: it "
+            "holds its dispatch slot (one sub-task at a time: the next dispatch is refused "
+            "until it finishes; under PARALLEL-APPROVED it counts against the approved "
+            "number). Start nothing that depends on its result or touches its files until a "
+            "task-notification says it FINISHED - one saying it is \"waiting on its own "
+            "background work\" is not the end. If nothing else is left, end your turn: the "
+            "notification wakes you."
+            % ("asked for it" if asked_for else "did not ask for it"))
+    if wants:
+        text += (" When it finishes, check that %s exists before you trust its summary."
+                 % "; ".join(wants))
+    return context_note("PostToolUse", text,
+                        systemMessage="dispatch-guard: sub-agent %r runs in the background; its "
+                                      "dispatch slot stays held until it finishes."
+                                      % (held.get("desc") or agent))
+
+
+def on_subagent_stop(payload, root, sdir, cfg):
+    """A sub-agent ended a turn. Release its slot if it is a BACKGROUND agent that is done.
+
+    ⛔ "ENDED A TURN" IS NOT "FINISHED". Measured (M10): an agent that started background work
+    of its own stops with it still running, and the harness wakes it again when that work ends.
+    That interim stop keeps the slot. ⭐ A foreground agent's slot is never marked (its
+    SubagentStop comes before its PostToolUse - M5), so it is never found here.
+    ⛔ NEVER PRINTS `decision`: on SubagentStop, `block` keeps the sub-agent running.
+    """
+    agent = str(payload.get("agent_id") or "")
+    if not agent:
+        return
+    sid = payload.get("session_id")
+    pointer = state_path(sdir, sid, "bgslot-" + _bg_key(agent))
+    p, held = background_slot(sdir, cfg, sid, agent, scan=True)
+    if not p:
+        try:
+            os.remove(pointer)               # a stale pointer (ADR r2 N11), if any
+        except OSError:
+            pass
+        _seen_after_release(root, sdir, sid, agent)
+        return
+    root = held.get("root") or root
+    running = {_bg_key(t.get("id")) for t in (payload.get("background_tasks") or [])
+               if isinstance(t, dict) and t.get("status") == "running"}
+    prefix = "%s.bgkid-%s-" % (safe_session(sid), _bg_key(agent))
+    kid_files = glob.glob(os.path.join(sdir, "state", glob.escape(prefix) + "*"))
+    # ⭐ A nested background agent that is itself waiting drops out of background_tasks (M11),
+    # but its own slot pointer is still there - that counts as running too (ADR r2 N2).
+    live = sorted(k for k in (os.path.basename(f)[len(prefix):] for f in kid_files)
+                  if k in running or os.path.exists(state_path(sdir, sid, "bgslot-" + k)))
+    if live:
+        os.utime(p, None)
+        log(root, "BG-STOP-INTERIM agent=%s waiting=%s" % (agent, ",".join(live)))
+        record_progress(root, cfg, held.get("folder"), held.get("desc"), held.get("at"),
+                        "WAITING on its own background work (%s) - slot held" % ", ".join(live))
+        return
+    for attempt in range(3):
+        try:
+            os.remove(p)
+            break
+        except FileNotFoundError:
+            log(root, "RELEASE-MISS(background, slot already gone) agent=%s" % agent)
+            return
+        except OSError as exc:
+            if attempt == 2:
+                log(root, "RELEASE-FAILED(background) agent=%s %r" % (agent, exc))
+                return
+            time.sleep(0.05)
+    for f in [pointer] + kid_files:
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+    try:
+        with open(state_path(sdir, sid, "bgdone-" + _bg_key(agent)), "w", encoding="utf-8"):
+            pass
+    except OSError:
+        pass
+    log(root, "RELEASE(background finished) agent=%s" % agent)
+    record_progress(root, cfg, held.get("folder"), held.get("desc"), held.get("at"),
+                    "FINISHED in the background: %s"
+                    % (payload.get("last_assistant_message") or "(no text returned)"))
+    missing = missing_demanded(held)
+    if missing:
+        log(root, "AGENT-FILE-MISSING %s" % "; ".join(missing))
+        # ⚠ The screen only: SubagentStop has no measured channel to the parent model (ADR G2).
+        print(json.dumps({"systemMessage": "dispatch-guard: background sub-agent %r finished "
+                                           "without writing %s. Its report may be lost."
+                                           % (held.get("desc") or agent, missing[0])},
+                         ensure_ascii=False))
+    elif held.get("wants"):
+        log(root, "AGENT-FILE-OK n=%d" % len(held["wants"]))
 
 
 def release_unresolved_asks(root, sdir, cfg, session_id, tool_use_id, agent_id,
@@ -3767,7 +4105,8 @@ def on_session_start(payload, root, sdir, cfg):
     notes += [c or "" for c, _s in pairs]
 
     text = ("Sub-task dispatch is governed by %s and enforced by a hook: one sub-task at "
-            "a time, no background dispatch, no Workflow, and the plan plus every "
+            "a time, no background dispatch (one the harness backgrounds by itself counts "
+            "until it finishes), no Workflow, and the plan plus every "
             "sub-task prompt are written to %s/<YYYYMMDD-HHMMSS-task-name>/%s BEFORE any "
             "dispatch%s.%s %s Before "
             "dispatching a wave run `%s --verdict` for GO/PACE/STOP - never interpret the "
@@ -4497,10 +4836,11 @@ def on_pre_agent(payload, root, sdir, cfg, wind=None):
 
     if tool_input.get("run_in_background"):
         log(root, "DENY(background) %s" % desc)
-        deny(event, "dispatch gate: background dispatch is refused. The harness treats a "
-                    "background sub-task as finished the moment it is launched, so it "
-                    "escapes the one-at-a-time accounting entirely and any number can "
-                    "pile up behind it. Dispatch in the foreground and wait. See %s."
+        deny(event, "dispatch gate: background dispatch is refused - the owner's rule is one "
+                    "sub-task at a time, dispatched in the foreground and waited for. Leave "
+                    "run_in_background unset. (A call the harness runs in the background by "
+                    "itself is counted instead: its slot stays held until that agent "
+                    "finishes.) See %s."
              % cfg["protocol_doc"])
         return
 
@@ -4594,7 +4934,10 @@ def on_pre_agent(payload, root, sdir, cfg, wind=None):
                     "refusal looks exactly like the rule working. It is not stuck: the "
                     "gate reclaims that slot by itself at the time shown above. Wait for "
                     "that minute and dispatch again, or do the work in this session "
-                    "meanwhile. ⛔ Do NOT delete a slot file to get past this refusal. It "
+                    "meanwhile. A holder RUNNING IN THE BACKGROUND is not dead and its minute "
+                    "moves: it is released the moment it finishes, so end your turn and wait "
+                    "for its task-notification instead. ⛔ Do NOT delete a slot file to get "
+                    "past this refusal. It "
                     "is this plugin's enforcement state, deleting a LIVE one hands the "
                     "same slot to two dispatches, and the wait it saves is minutes."
                     % (slots, cfg["task_root"],
@@ -4656,6 +4999,15 @@ def main():
         keep_clock_running(sdir)
     except Exception as exc:
         log(root, "CLOCK-FAILED %r" % (exc,))
+    # ⭐ 0.75.7: a sub-agent's own event keeps ITS background slot alive and records background
+    # work it starts (see note_background_activity). ⛔ WRAPPED: this runs BEFORE every
+    # PreToolUse branch, and an exception here would make the gate print nothing - an allow -
+    # on every sub-agent call, a nested dispatch included.
+    if payload.get("agent_id") and event != "SubagentStop":
+        try:
+            note_background_activity(root, sdir, cfg, payload)
+        except Exception as exc:
+            log(root, "BG-ACTIVITY-FAILED %r" % (exc,))
 
     if event == "SessionStart":
         return on_session_start(payload, root, sdir, cfg)
@@ -4664,6 +5016,14 @@ def main():
     # ⛔ BEFORE the `tool != "Agent"` fall-through below: a Stop payload carries no tool name.
     if event == "Stop":
         return on_stop(payload, root, sdir, cfg)
+    # ⭐ 0.75.7: the event that says a BACKGROUND agent ended a turn. Also before the tool branches
+    # (no tool name), and it prints at most a systemMessage - never a `decision`.
+    if event == "SubagentStop":
+        try:
+            on_subagent_stop(payload, root, sdir, cfg)
+        except Exception as exc:
+            log(root, "SUBAGENT-STOP-FAILED %r" % (exc,))
+        return
     # ⭐ WHO WROTE WHICH HANDOFF.md - recorded here, before the Bash branch below returns, so a
     # Write, an Edit and a Bash redirect are all seen. Never decides anything; never returns.
     post_note = ""
@@ -4821,6 +5181,12 @@ def main():
         # marker, so asking twice would answer once and swallow the note.
         return on_pre_agent(payload, root, sdir, cfg, wind)
     if event == "PostToolUse":
+        # ⛔ A BACKGROUND LAUNCH HAS NOT RETURNED (0.75.7): its PostToolUse comes at launch.
+        # Releasing here freed the slot of every dispatch on Claude Code 2.1.299, and the file
+        # check below reported every report "never created".
+        bg = background_launch(payload.get("tool_response"))
+        if bg is not None:
+            return on_background_launch(payload, root, sdir, cfg, bg)
         result = release_slot(sdir, cfg, sid, payload.get("tool_use_id"))
         if isinstance(result, dict):
             log(root, "RELEASE")
@@ -4832,8 +5198,7 @@ def main():
             # on 2026-08-31 did say in its first line that it could not write, and it was
             # still missed - because the summary looked normal. A missing file does not.
             try:
-                missing = [p for p in (result.get("wants") or [])
-                           if isinstance(p, str) and not os.path.exists(p)]
+                missing = missing_demanded(result)
                 if missing:
                     log(root, "AGENT-FILE-MISSING %s" % "; ".join(missing))
                     text = ("dispatch-guard: the sub-agent returned, but %s was never "
