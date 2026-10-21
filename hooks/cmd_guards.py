@@ -60,6 +60,7 @@ GUARD_DEFAULTS = {
     "guard_add_all": True,              # deny: git add -A / . / --all
     "guard_commit_message_file": True,  # deny: git commit -m, name -F instead
     "guard_silenced_search": True,      # deny: a search with its errors silenced
+    "guard_held_delete": True,          # deny: a delete Claude Code holds for the owner (0.75.8)
     "guard_relative_cd": True,          # warn: `cd <relative> && …`
     "guard_unattended_first": True,     # deny once: dispatch before unattended-work loaded
     "guard_unpushed": True,             # note: older unpushed commits on this branch
@@ -409,6 +410,227 @@ def g_relative_cd(payload, ctx, segs):
               % (target,
                  "⛔ It does not exist under %s right now." % here if not seen
                  else "(It does exist under %s.)" % here))
+
+
+# ------------------------------------------------- deletes Claude Code holds for the owner (0.75.8)
+
+# ⛔ THE DIALOG THIS PREVENTS IS CLAUDE CODE'S OWN, and bypassPermissions does not clear it. Measured
+# 2026-10-21 on Claude Code 2.1.291 (headless, Windows): "Dangerous rm operation detected … This command
+# changes directories before the removal, so the relative glob target cannot be statically resolved.
+# This requires explicit approval and cannot be auto-allowed by permission rules." - and for the
+# PowerShell tool "Remove-Item on system path 'out\*' is blocked". A wii session waited 7.3 h on one.
+# ⇒ Refused here FIRST, with a rewrite that runs, so the agent fixes it instead of waiting for a person.
+# Every matched shape was measured HELD and every pinned RAN shape passes (test_held_delete.py); an
+# unmeasured shape is not matched. Re-probe after a Claude Code update - ADR
+# Memory/tasks/20261021-105230-held-delete-guard (§6). shortcut: mirrors a harness check by string,
+# so it goes stale when the harness changes; upgrade by re-running scratch/00-probes there.
+_HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z_0-9]*)\1")
+_HD_SKIP = frozenset(("time", "nohup", "command", "exec", "sudo", "env", "builtin"))
+_CD_HEADS = frozenset(("cd", "pushd", "chdir"))
+_PS_RM_HEADS = frozenset(("remove-item", "rm", "del", "ri"))
+_PS_VALUE_PARAMS = frozenset(("-include", "-exclude", "-filter", "-erroraction", "-warningaction",
+                              "-informationaction", "-errorvariable", "-outvariable", "-credential",
+                              "-stream"))
+
+
+def _strip_heredocs(command):
+    """The command without heredoc BODIES: a body is data, never a `cd` or an `rm` (review N2, P6)."""
+    out, end = [], None
+    for line in (command or "").splitlines():
+        if end is not None:
+            if line.strip() == end:
+                end = None
+            continue
+        out.append(line)
+        m = _HEREDOC.search(line)
+        if m:
+            end = m.group(2)
+    return "\n".join(out)
+
+
+def _shell_segments(command, escape="\\"):
+    """[(words, in_subshell)] - split on && || ; | newline and ( ) OUTSIDE quotes, words joined
+    across adjacent quoted parts (`"$D"/*` is ONE word, review N3), raw text kept, `$(…)` kept whole."""
+    segs, words, cur = [], [], ""
+    quote, depth, sub, i, n = None, 0, 0, 0, len(command)
+    seg_sub = [False]
+
+    def end_word():
+        nonlocal cur
+        if cur:
+            words.append(cur)
+            cur = ""
+
+    def end_seg():
+        end_word()
+        if words:
+            segs.append((list(words), seg_sub[0]))
+        del words[:]
+        seg_sub[0] = sub > 0
+
+    while i < n:
+        c = command[i]
+        if quote:
+            cur += c
+            if c == escape and quote == '"' and i + 1 < n:
+                cur += command[i + 1]
+                i += 1
+            elif c == quote:
+                quote = None
+        elif depth:
+            cur += c
+            depth += (c == "(") - (c == ")")
+        elif c == escape and i + 1 < n:
+            cur += c + command[i + 1]
+            i += 1
+        elif c in "'\"":
+            quote = c
+            cur += c
+        elif c == "$" and command[i + 1:i + 2] == "(":
+            cur += "$("
+            depth = 1
+            i += 1
+        elif command.startswith(("&&", "||"), i):
+            end_seg()
+            i += 1
+        elif c in ";|\n\r":
+            end_seg()
+        elif c == "(" and not cur:
+            end_seg()
+            sub += 1
+            seg_sub[0] = True
+        elif c == ")" and sub:
+            end_seg()
+            sub -= 1
+            seg_sub[0] = sub > 0
+        elif c in " \t":
+            end_word()
+        else:
+            cur += c
+        i += 1
+    end_seg()
+    return segs
+
+
+def _head_words(words):
+    """The words from the command word on: leading VAR=value and wrappers dropped."""
+    i = 0
+    while i < len(words):
+        w = words[i]
+        if re.match(r"^[A-Za-z_][A-Za-z_0-9]*=", w) or w in _HD_SKIP:
+            i += 1
+        elif w == "timeout":
+            i += 1
+            while i < len(words) and (words[i].startswith("-") or re.match(r"^[0-9.]+[smhd]?$", words[i])):
+                i += 1
+        else:
+            break
+    return words[i:]
+
+
+def _unresolvable_cd(words, in_subshell):
+    """True for a directory change Claude Code cannot resolve (measured: relative cd/pushd, any
+    `(cd …)` subshell, and on Windows an unquoted MSYS `/x/…` target). Anything else: False."""
+    w = _head_words(words)
+    if not w or w[0].lower() not in _CD_HEADS:
+        return False
+    if in_subshell:
+        return True
+    args = [a for a in w[1:] if not a.startswith(("-", ">", "<", "2>", "1>"))]
+    if not args:
+        return False
+    t = args[0]
+    if t[0] in "'\"$~" or re.match(r"^[A-Za-z]:", t):
+        return False                    # quoted, variable, home, drive letter: resolvable or unmeasured
+    if t.startswith("/"):
+        return os.name == "nt" and bool(re.match(r"^/[A-Za-z](?:/|$)", t))
+    return True
+
+
+def _bare_star_word(word):
+    """True when the word's last path component is an unquoted bare `*` (`out/*`, `*`, `"$D"/*`)."""
+    if not (word == "*" or word.endswith("/*")):
+        return False
+    quote = None
+    for c in word[:-1]:
+        if quote:
+            quote = None if c == quote else quote
+        elif c in "'\"":
+            quote = c
+    return quote is None
+
+
+def _held_rm(words):
+    """An `rm` with a relative (or plain-`$`) bare-`*` argument - `"${VAR:?}"/*` is exempt (measured RAN)."""
+    w = _head_words(words)
+    if not w or w[0] != "rm":
+        return None
+    for a in w[1:]:
+        if a.startswith("-") or not _bare_star_word(a):
+            continue
+        s = a.lstrip("'\"")
+        if s.startswith("${") and ":?" in s.split("}")[0]:
+            continue
+        if s.startswith(("/", "~")) or re.match(r"^[A-Za-z]:", s):
+            continue
+        return a
+    return None
+
+
+def _ps_held_remove(words):
+    """A Remove-Item (or rm/del/ri) whose path argument ends in a bare `*` - relative or absolute."""
+    if not words or words[0].lower() not in _PS_RM_HEADS:
+        return None
+    skip = False
+    for a in words[1:]:
+        if skip:
+            skip = False
+            continue
+        low = a.lower()
+        if low in _PS_VALUE_PARAMS:
+            skip = True
+            continue
+        if a.startswith("-"):
+            continue
+        last = re.split(r"[\\/]", a.strip("'\""))[-1]
+        if last == "*":
+            return a
+    return None
+
+
+def g_held_delete(payload, ctx, segs):
+    """A delete Claude Code will stop for the owner to approve - refused first, with a rewrite."""
+    cmd = command_of(payload)
+    if payload.get("tool_name") == "PowerShell":
+        for words, _sub in _shell_segments(cmd, escape="`"):
+            hit = _ps_held_remove(words)
+            if hit:
+                ctx["log"]("CMD-HELD-DELETE %s" % " ".join(cmd.split())[:500])
+                return _v(DENY, "guard_held_delete",
+                          "dispatch gate: this delete is refused BEFORE Claude Code refuses it - Claude Code "
+                          "blocks `Remove-Item` on a path ending in a bare `*` (`%s`) as a protected path. "
+                          "Delete the SAME entries in ONE command: `Get-ChildItem <dir> | Remove-Item -Recurse "
+                          "-Force` (add -Force to Get-ChildItem too if the original had -Force - it decides "
+                          "whether hidden entries go). Remove any link inside first: never delete through a "
+                          "link (rule 8)." % hit)
+        return None
+    parts = _shell_segments(_strip_heredocs(cmd))
+    if not any(_unresolvable_cd(w, sub) for w, sub in parts):
+        return None
+    for words, _sub in parts:
+        hit = _held_rm(words)
+        if hit:
+            ctx["log"]("CMD-HELD-DELETE %s" % " ".join(cmd.split())[:500])
+            return _v(DENY, "guard_held_delete",
+                      "dispatch gate: this delete is refused BEFORE Claude Code stops for it. Claude Code "
+                      "holds `rm … %s` (a bare `*`) in a command that also changes directory for the owner's "
+                      "explicit approval - it cannot be auto-allowed, and the task waits until a person "
+                      "clicks. Rewrite it to delete the SAME entries in ONE command: write the directory as "
+                      "an absolute path (`rm -rf D:/abs/dir/*`, `rm -rf /abs/dir/*`), or name it through a "
+                      "checked variable: `D=<dir> && rm -rf \"${D:?}\"/*`. ⛔ Do not split it into two tool "
+                      "calls - the working directory can differ in the next one. Remove any link inside "
+                      "first: never delete through a link (rule 8)." % hit)
+    return None
 
 
 # ------------------------------------------------------- append-only records (cowork rule 3)
@@ -850,6 +1072,9 @@ GUARDS = (
     ("guard_append_only", g_append_only),
     ("guard_silenced_search", g_silenced_search),
     ("guard_cowork_first", g_cowork_first_commit),
+    # ⚠ BEFORE the relative-cd WARNING, like the cowork nag: `cd x && rm -f out/*` is its main
+    # shape and would otherwise stop at the warning (review N4).
+    ("guard_held_delete", g_held_delete),
     ("guard_relative_cd", g_relative_cd),
 )
 

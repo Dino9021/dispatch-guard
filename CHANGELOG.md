@@ -33,6 +33,29 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.75.8
+
+擁有者 2026-10-21：「現在 Agent 要刪除 scratch 的時候會跳視窗問我，可以不要跳視窗問嗎? 這樣會造成任務暫停中斷」；
+做法由擁有者選定：「擋下並退回改寫」。
+
+- **跳窗的是 Claude Code 自己的檢查，不是 dispatch-guard，而且略過權限模式關不掉。** Claude Code 2.1.291 實測（無頭模式，
+  Windows）：同一條指令裡有切換目錄（相對路徑的 `cd`/`pushd`、`(cd …)` 子 shell、Windows 上的 MSYS `/d/…`），又 `rm`
+  一個單獨 `*` 結尾的相對路徑（`dir/*`、`*`、`./dir/*`、`"$D"/*`），它回「Dangerous rm operation detected … This requires
+  explicit approval and cannot be auto-allowed by permission rules」；PowerShell 的 `Remove-Item <dir>\*` 被當成受保護路徑擋下。
+  兩台 gate log 的詢問都是 0。代價：wii 有一次在 `cd /d/…/Build/Wii/app && … rm -rf contract/*` 上等了 7.3 小時。
+- **新守衛 `guard_held_delete`（預設開，有自己的開關，壞掉就放行）。** 在 Claude Code 跳窗之前先擋下這些寫法，退回訊息給一個
+  在**同一條**指令裡刪掉**相同**項目、而且實測會直接執行的寫法：絕對路徑、`D=<dir> && rm -rf "${D:?}"/*`，PowerShell 用
+  `Get-ChildItem <dir> | Remove-Item -Recurse -Force`；並明說不要拆成兩次呼叫（下一次的工作目錄可能不同）。agent 當場改寫，
+  任務不停。`dir/*.log` 這類有樣式的刪除、絕對路徑、`"${D:?}"/*`、加引號的磁碟機路徑 `cd` 都不擋 —— Claude Code 會直接執行。
+  heredoc 內容和引號裡的字串當資料，不會被誤擋。排在相對路徑 `cd` 的警告之前。
+- 子代理收到的 rule 8 和 dispatch-protocol skill（中英）各加一句同樣的提醒；gate 自檢固定這句話。
+- 驗證：`Tools/Debug/test_held_delete.py`（`test_all` 的 `held delete`）透過 `main()` 驗 23 種會被擋、28 種會直接執行的實測
+  寫法，加上突變、順序、開關、出錯放行、未蓋章 session；10 個突變全部被抓到。ADR 與量測：
+  `Memory/tasks/20261021-105230-held-delete-guard/`（第一輪 REJECT，兩個阻擋問題用新量測回應）。
+- ⚠ 已在跑的 session 要重開才會拿到；這個守衛對照的是 Claude Code 的檢查，Claude Code 更新後要重新量測。Mac 由 MAC 實測
+  （VS Code 內建的 Claude Code 2.1.304）：相對路徑 `cd` 會被擋，POSIX 絕對路徑的 `cd`（加不加引號都一樣）會直接執行 ——
+  守衛同樣不擋後者。
+
 ## 0.75.7
 
 擁有者 2026-10-21：「請繼續」—— 修 Reglow-Mac1 回報的問題：子代理被系統放到背景跑時，gate 一啟動就把它當成「已回來」。
@@ -3496,6 +3519,32 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.75.8
+
+Owner, 2026-10-21: "now when an agent deletes scratch a dialog asks me - can it not ask? It pauses and breaks the
+task"; approach chosen by the owner: "refuse and send back for a rewrite".
+
+- **The dialog is Claude Code's own check, not dispatch-guard's, and bypassPermissions does not clear it.** Measured
+  on Claude Code 2.1.291 (headless, Windows): a command that changes directory (a relative `cd`/`pushd`, a `(cd …)`
+  subshell, an MSYS `/d/…` target on Windows) and `rm`s a relative path ending in a bare `*` (`dir/*`, `*`,
+  `./dir/*`, `"$D"/*`) gets "Dangerous rm operation detected … This requires explicit approval and cannot be
+  auto-allowed by permission rules"; PowerShell `Remove-Item <dir>\*` is blocked as a protected path. 0 asks in the
+  gate log on either machine. Cost: one wii session waited 7.3 hours on `cd /d/…/Build/Wii/app && … rm -rf contract/*`.
+- **New guard `guard_held_delete`** (on by default, own switch, fail-open). It refuses those shapes before Claude
+  Code's dialog, with a rewrite that deletes the SAME entries in ONE command and was measured to run: an absolute
+  path, `D=<dir> && rm -rf "${D:?}"/*`, PowerShell `Get-ChildItem <dir> | Remove-Item -Recurse -Force` - and says not
+  to split it into two calls (the next one's working directory can differ). The agent rewrites at once; the run does
+  not stop. Pattern deletes (`dir/*.log`), absolute paths, `"${D:?}"/*` and a quoted drive-letter `cd` pass - Claude
+  Code runs them. Heredoc bodies and quoted strings are data. It sits before the relative-cd warning.
+- PREPEND rule 8 and the dispatch-protocol skill (both languages) gain the same sentence; the gate selftest pins it.
+- Verified: `Tools/Debug/test_held_delete.py` (`held delete` in `test_all`) drives 23 measured held shapes and 28
+  measured running shapes through `main()`, plus mutation, order, switch, fail-open and unstamped; 10 mutants killed.
+  ADR and measurements: `Memory/tasks/20261021-105230-held-delete-guard/` (round 1 REJECT, both blockers answered
+  with new measurements).
+- ⚠ Running sessions get it after a restart. The guard mirrors a Claude Code check: re-probe after a Claude Code
+  update. Mac, measured by MAC (the VS Code CLI 2.1.304): a relative `cd` is held, a POSIX-absolute `cd` (quoted or
+  not) runs - and the guard does not refuse it either.
 
 ## 0.75.7
 

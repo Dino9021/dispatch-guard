@@ -51,6 +51,13 @@ folder later, so nothing else will.
 on macOS/Linux `unlink` it (or `rm` without a trailing slash) - and never delete with `find -L` or a
 glob that follows links: a recursive delete through a link empties the folder it points at.
 
+⛔ **In a command that also changes directory, never `rm` a relative `dir/*`.** Claude Code stops that
+shape for the owner's explicit approval - bypassPermissions does not clear it - and the run waits for a
+person (measured 2026-10-21: one session waited 7.3 hours). Write the directory absolutely, or
+`D=<dir> && rm -rf "${D:?}"/*`, in ONE command; in PowerShell `Get-ChildItem <dir> | Remove-Item
+-Recurse -Force`, never `Remove-Item <dir>\*`. The gate refuses the held shapes first
+(`guard_held_delete`, 0.75.8), so a refusal there is the rule working.
+
 ⚠ **Say the path in the prompt.** A sub-task cannot infer it, and an agent told only "write
 your report to X" will put everything else wherever it likes. Gitignore the scratch path if
 the task folder is committed.

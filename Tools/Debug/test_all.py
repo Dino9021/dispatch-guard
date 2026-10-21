@@ -49,6 +49,9 @@ CHECKS = [
     # the person only, and a held OS-alarm wake then woke nobody (2026-10-18).
     ("route-A stop",  [os.path.join(DEBUG_DIR, "test_route_a_stop.py")]),
     ("cmd guards",    [os.path.join(DEBUG_DIR, "test_guards.py")]),
+    # ⚠ The deletes Claude Code holds for the owner even in bypassPermissions (0.75.8): every shape it
+    # pins was measured held or ran on 2.1.291; a Claude Code update can move the boundary.
+    ("held delete",   [os.path.join(DEBUG_DIR, "test_held_delete.py")]),
     # ⛔ 0.64.0 shipped a cowork SKILL.md whose frontmatter was invalid YAML, and the skill
     # vanished from every session without a warning. This reads each SKILL.md the way the
     # loader does. See its docstring.

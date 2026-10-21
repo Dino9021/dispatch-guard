@@ -395,7 +395,10 @@ anything YOU dispatch in turn.
    (Measured: kept build copies grew one project's scratch to 37 GiB in three days.)
    NEVER DELETE THROUGH A LINK: remove the link itself first (Windows: rmdir the junction;
    macOS/Linux: unlink, or rm without a trailing slash) - a recursive delete follows it and
-   empties the folder it points at.
+   empties the folder it points at. AND IN A COMMAND THAT ALSO CHANGES DIRECTORY, NEVER `rm` A
+   RELATIVE `dir/*`: Claude Code stops that for the owner's approval and the run waits for a
+   person. Write the directory absolutely, or `D=<dir> && rm -rf "${{D:?}}"/*`, in ONE command
+   (PowerShell: Get-ChildItem <dir> | Remove-Item -Recurse -Force, never Remove-Item <dir>/*).
 
 Full protocol: {protocol_doc}
 
@@ -5968,7 +5971,10 @@ def selftest():
     # delete them" must not come back.
     for token in ("SCRATCH FILES GO IN THE TASK FOLDER", "KEEP THE EVIDENCE, DELETE THE BUILD",
                   "{task_root}/<task>/scratch/", "ONLY inside your own scratch/<your-subtask>/",
-                  "anything your report cites", "NEVER DELETE THROUGH A LINK"):
+                  "anything your report cites", "NEVER DELETE THROUGH A LINK",
+                  # ⭐ 0.75.8: the delete shape Claude Code holds for the owner (guard_held_delete,
+                  # ADR Memory/tasks/20261021-105230-held-delete-guard D2).
+                  "NEVER `rm` A\n   RELATIVE `dir/*`", "Claude Code stops that for the owner's approval"):
         assert token in PREPEND, token
     assert "YOU DO NOT DELETE THEM" not in PREPEND, "the keep-everything scratch rule is back"
     filled = prepend_head({"task_root": "Memory/tasks", "plan_glob": "prompts*.md",
@@ -5979,6 +5985,8 @@ def selftest():
     assert "CHOOSE THE MODEL BEFORE YOU DISPATCH" in filled, filled[:400]
     assert "$5 per million INPUT tokens" in filled, "the limit did not interpolate"
     assert "Memory/tasks/<task>/scratch/" in filled, filled[-600:]
+    # The rewrite it names must survive .format(): doubled braces in PREPEND, single in the prompt.
+    assert 'rm -rf "${D:?}"/*' in filled, filled[-900:]
     # ⛔ AND THE PRICES IN IT MUST BE THE FILE'S, NOT FOUR NUMBERS TYPED INTO THE TEMPLATE.
     # That is exactly the drift this change removed everywhere else; leaving it in the prompt
     # would have the gate refusing at one price while the prompt promised another.

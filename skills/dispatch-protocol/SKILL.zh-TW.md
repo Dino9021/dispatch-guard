@@ -45,6 +45,12 @@ scratch —— 報告裡要寫明建了什麼、多大、已經刪掉。子任�
 ⛔ **絕不透過連結刪除。** 先拆掉連結本身 —— Windows 用 `rmdir` 拆 junction，macOS / Linux 用 `unlink`（或不帶結尾斜線的
 `rm`）—— 也絕不用 `find -L` 或會跟著連結走的萬用字元來刪：透過連結的遞迴刪除，會把它指向的資料夾整個清空。
 
+⛔ **同一條指令裡有切換目錄時，絕不 `rm` 相對路徑的 `dir/*`。** Claude Code 會為這種寫法停下來等擁有者明確核准
+（略過權限模式也放不掉），任務就卡著等人（2026-10-21 實測：有一個 session 等了 7.3 小時）。把資料夾寫成絕對路徑，
+或寫成 `D=<dir> && rm -rf "${D:?}"/*`，而且在**同一條**指令裡完成；PowerShell 用
+`Get-ChildItem <dir> | Remove-Item -Recurse -Force`，絕不用 `Remove-Item <dir>\*`。gate 會先擋下這些寫法
+（`guard_held_delete`，0.75.8）—— 在那裡被擋，就是規則在運作。
+
 ⚠ **路徑要寫在提示詞裡。** 子任務推不出來；一個只被告知「把報告寫到 X」的 agent，
 其他東西會亂放。⛔ 如果那個任務資料夾會被 commit，記得把 scratch 路徑 gitignore。
 
