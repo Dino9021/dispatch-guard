@@ -199,6 +199,46 @@ BASH_REPARSE_RAN = [
     ('echo "a f(){ x; }"\necho \'a && rm -rf "$v"/ x\'', 'P01-funcdef-in-double-quotes'),
 ]
 
+# 0.75.11: Bash tool, no cd, no function/eval - an rm target with two or more unchecked variables, any of
+# them not set by this command before the rm (a `for` variable, an environment variable) or once a loop has
+# run; followed through a same-command D=. Measured 2026-10-22 on 2.1.291 (Windows, headless, sonnet, the
+# exact command checked); ids are the probe cases in
+# Memory/tasks/20261021-105230-held-delete-guard/scratch/00-probes/permprobe_run10..run14.
+_S = "S=/c/x/s"
+BASH_UNRESOLVED_HELD = [
+    (_S + ' && for k in a b c/App/node_modules; do test -e "$S/$k/App/node_modules" && echo "LINK $k"; done; '
+     'test -e $S/c/App/node_modules && echo "LINK c"; for k in a b; do D=$S/$k; find "$D" -maxdepth 3 -type l | '
+     'head -2; du -sh "$D" | cut -f1; rm -rf "${D:?}" && echo "deleted $k"; done', 'P0-owner-shape'),
+    (_S + ' && for k in a b; do D=$S/$k; rm -rf "${D:?}" && echo "deleted $k"; done', 'P1-loop-checked-var'),
+    (_S + ' && for k in a b; do rm -rf "$S/$k" && echo "deleted $k"; done', 'P3-loop-direct'),
+    (_S + ' && for k in a b; do D=$S/$k; rm -rf "$D" && echo "deleted $k"; done', 'P4-loop-var-unchecked'),
+    (_S + '; for k in a b; do D=$S/$k; rm -rf "${D:?}"; done', 'P6-loop-checked-semicolon'),
+    (_S + ' && for k in a b; do D=$S/$k/App; rm -rf "${D:?}"; done', 'B1-assigned-var-plus-literal'),
+    (_S + ' && k=a && for d in x y; do echo "$d"; done; rm -rf "$S/$k"', 'Q1-loop-then-two-plain-vars'),
+    ('for d in x y; do echo "$d"; done; ' + _S + '; k=a; rm -rf "$S/$k"', 'Q4-assigned-after-loop'),
+    ('rm -rf "$DG_PROBE_UNSET_A/$DG_PROBE_UNSET_B"', 'Q7-two-unassigned-env-vars'),
+    # Seen held interactively (the owner's second screenshot, 2026-10-22, Windows Game session):
+    (_S + ' && for k in dev-b1 b1-final; do D=$S/$k; test -e "$D/App/node_modules" && { echo "LINK in $k"; '
+     'continue; }; rm -rf "${D:?}" && echo "deleted $k"; done', 'S2-owner-screenshot-continue'),
+]
+BASH_UNRESOLVED_RAN = [
+    (_S + ' && D=$S/a && rm -rf "${D:?}" && echo deleted', 'P2-checked-var-no-loop'),
+    ('for d in /c/x/s/a /c/x/s/b; do rm -rf "$d"; done', 'P5-loop-literal'),
+    (_S + ' && for k in a b; do D=$S/$k; du -sh "$D" | cut -f1; done', 'P7-no-rm-control'),
+    (_S + ' && for k in a b; do rm -rf "${S:?}/${k:?}" && echo "deleted $k"; done', 'R1-direct-both-checked'),
+    (_S + ' && for k in a b; do D="${S:?}/${k:?}"; rm -rf "$D" && echo "deleted $k"; done', 'R2-assigned-both-checked'),
+    (_S + ' && for k in a b; do D="${S:?}/${k:?}"; rm -rf "${D:?}" && echo "deleted $k"; done',
+     'R3-assigned-checked-then-guard'),
+    ('for d in /c/x/s/a /c/x/s/b; do rm -rf "${d:?}" && echo "deleted $d"; done', 'R4-literal-loop-paths'),
+    (_S + ' && k=a && rm -rf "$S/$k"', 'B2-two-vars-no-loop'),
+    ('S=/c/x/s/a && rm -rf "$S"', 'B3-one-var-only'),
+    (_S + ' && k=a && for d in x y; do rm -rf "$S/$k"; done', 'Q2-two-plain-vars-inside-loop'),
+    (_S + ' && for d in x y; do echo "$d"; done; rm -rf "$S/a"', 'Q5-one-var-plus-literal-after-loop'),
+    ('rm -rf "$DG_PROBE_UNSET_VAR/a"', 'Q6-unassigned-env-var-plus-literal'),
+    (_S + ' && k=a && for d in x y; do echo "$d"; done; rm -rf "${S:?}/${k:?}"', 'W1-after-loop-both-checked'),
+    ('rm -rf "${DG_PROBE_UNSET_A:?}/${DG_PROBE_UNSET_B:?}"', 'W2-unassigned-both-checked'),
+]
+
 
 def ps(root, command, sid="s1"):
     return bash(root, command, sid=sid, tool="PowerShell")
@@ -240,8 +280,24 @@ def main():
         t0 = time.time()
         cmd_guards._reparsed_rm(slow, cmd_guards._shell_segments(slow))
         assert time.time() - t0 < 1.5, "the re-parse check is slow again: %.1fs" % (time.time() - t0)
-        held_n = len(held) + len(BASH_REPARSE_HELD)
-        ran_n = len(ran) + len(BASH_REPARSE_RAN)
+        # 0.75.11: the unresolved-variable target - its own reason, naming the rewrites that measured RAN.
+        for c, note in BASH_UNRESOLVED_HELD:
+            r = run_gate(gate, bash(root, c))
+            assert decision(r) == "deny", (note, c, r)
+            for token in ("`for` loop variable", '"${S:?}/${k:?}"', "for d in /abs/a /abs/b",
+                          "Never delete through a link"):
+                assert token in reason(r), (note, token, reason(r))
+        for c, note in BASH_UNRESOLVED_RAN:
+            r = run_gate(gate, bash(root, c))
+            assert decision(r) is None, (note, c, r)
+        real_lv = cmd_guards._unresolved_rm
+        cmd_guards._unresolved_rm = lambda *a: None
+        try:
+            assert decision(run_gate(gate, bash(root, BASH_UNRESOLVED_HELD[1][0]))) is None, "unresolved-var mutation stood"
+        finally:
+            cmd_guards._unresolved_rm = real_lv
+        held_n = len(held) + len(BASH_REPARSE_HELD) + len(BASH_UNRESOLVED_HELD)
+        ran_n = len(ran) + len(BASH_REPARSE_RAN) + len(BASH_UNRESOLVED_RAN)
         # Mutation: without the re-parse branch the DevWK-Mac shape is no longer refused.
         real_rp = cmd_guards._reparsed_rm
         cmd_guards._reparsed_rm = lambda *a: None

@@ -33,6 +33,23 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.75.11
+
+擁有者 2026-10-22：兩張 Windows Game session 卡在「Allow this bash command?」的截圖（「又有卡住的情況」「又一個」）。
+
+- **第三種 Claude Code 會擋的刪除：兩個它推不出值的變數。** `S=… && for k in …; do D=$S/$k; rm -rf "${D:?}"; done`
+  沒有 `cd`、沒有函式，0.75.8、0.75.9 都不擋，但 Claude Code 會停下來等擁有者核准（略過權限模式也放不掉）：「This
+  command sets $D from `$S/$k`, which is the filesystem root when the variable in it is empty … A `${D:?}` guard does
+  not help」。Windows（Claude Code 2.1.291）實測規則：刪除目標裡有**兩個以上**沒加 `:?` 的變數（經由同一條指令的
+  `D=` 也算），而其中任一個在刪除之前沒被這條指令指派過（`for` 迴圈變數、環境變數），或刪除之前已經跑過一個迴圈
+  （`done` 在前，連迴圈後才指派的也算）——就會被擋。一個變數（`"$X/a"`）、迴圈前就指派好且刪除在迴圈**裡面**、
+  沒有迴圈且都已指派（`k=a && rm -rf "$S/$k"`）、每個變數都加 `:?` 的，都直接執行。
+- `guard_held_delete` 加第三種判斷 `_unresolved_rm()`，擋下時給實測會直接執行的改寫：`rm -rf "${S:?}/${k:?}"`
+  （或 `D="${S:?}/${k:?}"; rm -rf "$D"`），或迴圈寫死絕對路徑。log 記 `CMD-HELD-DELETE(unresolved)`。
+- 驗證：`test_held_delete.py` 加 10 種會被擋（含擁有者第二張截圖原文）、14 種不會擋的實測寫法；6 個突變全被抓到
+  （第 7 個只在 `D=x rm "$D"` 這種沒量過的寫法上有差別，已在腳本註明）。補充說明：
+  `Memory/tasks/20261021-105230-held-delete-guard/ADDENDUM-0.75.11.md`。Mac 還沒量；已在跑的 session 要重開才拿到。
+
 ## 0.75.10
 
 擁有者 2026-10-22：「請你加你提到的小修法」。
@@ -3554,6 +3571,26 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.75.11
+
+Owner, 2026-10-22: two screenshots of a Windows Game session stopped on "Allow this bash command?".
+
+- **A third delete Claude Code holds: two variables it cannot resolve.** `S=… && for k in …; do D=$S/$k; rm -rf
+  "${D:?}"; done` has no `cd` and no function, so neither 0.75.8 nor 0.75.9 matched it, yet Claude Code held it for the
+  owner (bypassPermissions does not clear it): "This command sets $D from `$S/$k`, which is the filesystem root when the
+  variable in it is empty … A `${D:?}` guard does not help". The rule measured on Windows (Claude Code 2.1.291): an rm
+  target with **two or more** unchecked variables (followed through a same-command `D=`) is held when any of them was
+  not set by this command before the rm (a `for` variable, an environment variable), or when a loop has already run
+  (`done` before the rm - even variables set after it). One variable (`"$X/a"`), both set before a loop with the rm
+  INSIDE it, no loop and both set (`k=a && rm -rf "$S/$k"`), and every part `${x:?}`-checked all run.
+- `guard_held_delete` gains a third branch, `_unresolved_rm()`, whose reason offers measured rewrites:
+  `rm -rf "${S:?}/${k:?}"` (or `D="${S:?}/${k:?}"; rm -rf "$D"`), or a loop over literal absolute paths. Logged
+  `CMD-HELD-DELETE(unresolved)`.
+- Verified: `test_held_delete.py` pins 10 held shapes (the owner's second screenshot verbatim among them) and 14 running
+  ones; 6 mutants killed (a seventh differs only for an unmeasured `D=x rm "$D"` and is documented in the script).
+  Addendum: `Memory/tasks/20261021-105230-held-delete-guard/ADDENDUM-0.75.11.md`. Not yet measured on the Mac; running
+  sessions get it after a restart.
 
 ## 0.75.10
 

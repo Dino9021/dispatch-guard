@@ -665,6 +665,44 @@ def _reparsed_rm(command, segs):
     return None
 
 
+# ⛔ A THIRD HOLD: TWO VARIABLES IT CANNOT RESOLVE (0.75.11). Measured 2026-10-22 on Claude Code 2.1.291
+# (Windows, headless): "This command sets $D from `$S/$k`, which is the filesystem root when the variable
+# in it is empty ... A `${D:?}` guard does not help, because $D is not empty." An rm target with TWO or
+# more unchecked variables is held when any of them is one this command did not set before the rm (a
+# `for` variable, an environment variable) or when a loop has already run (`done` before the rm - even
+# variables set after it). Followed through a same-command D=. RAN: one variable (`"$X/a"`), both set
+# earlier with no loop yet (`k=a && rm -rf "$S/$k"`), inside the loop body, every part `${x:?}`-checked.
+# A Game session stopped on exactly this. Boundary: ADDENDUM-0.75.11.md in the ADR folder above.
+# shortcut: mirrors a harness check by regex; re-probe after a Claude Code update.
+_EXPANSION = re.compile(r"\$\{([A-Za-z_][A-Za-z_0-9]*)(:\?[^}]*)?\}|\$([A-Za-z_][A-Za-z_0-9]*)")
+_ONE_VAR = re.compile(r"\$\{?([A-Za-z_][A-Za-z_0-9]*)(?::\?[^}]*)?\}?")
+
+
+def _unresolved_rm(segs):
+    """(rm argument, the expression it stands for) when Claude Code holds it as above, else None."""
+    assigned, done_seen = {}, False
+    for words, _sub in segs:
+        h = _head_words(words)
+        while h and h[0] in _KEYWORDS:
+            h = _head_words(h[1:])
+        if h and h[0] == "rm":
+            for arg in h[1:]:
+                if arg.startswith("-"):
+                    continue
+                one = _ONE_VAR.fullmatch(arg.strip("'\""))
+                expr = assigned.get(one.group(1), arg) if one else arg
+                unchecked = {m.group(1) or m.group(3) for m in _EXPANSION.finditer(expr) if not m.group(2)}
+                if len(unchecked) >= 2 and (done_seen or not unchecked <= set(assigned)):
+                    return arg, expr
+        if h and h[0] == "done":
+            done_seen = True
+        for w in words:                         # assignments count from the NEXT segment on
+            m = re.match(r"^([A-Za-z_][A-Za-z_0-9]*)=(.*)$", w, re.S)
+            if m:
+                assigned[m.group(1)] = m.group(2)
+    return None
+
+
 def _ps_held_remove(words):
     """A Remove-Item (or rm/del/ri) whose path argument ends in a bare `*` - relative or absolute."""
     if not words or words[0].lower() not in _PS_RM_HEADS:
@@ -717,6 +755,18 @@ def g_held_delete(payload, ctx, segs):
                   "`sed -f <file>`), or move the function into a script file and run it. If the rm is "
                   "real, make its target unable to become `/`: `\"${VAR:?}\"/`, or a literal absolute "
                   "path. Never delete through a link (rule 8)." % hit[:120])
+    lv = _unresolved_rm(parts)
+    if lv:
+        ctx["log"]("CMD-HELD-DELETE(unresolved) %s" % " ".join(cmd.split())[:500])
+        return _v(DENY, "guard_held_delete",
+                  "dispatch gate: this delete is refused BEFORE Claude Code stops for it. Claude Code holds "
+                  "`rm … %s` (built from `%s`): two or more variables it cannot resolve - a `for` loop "
+                  "variable, one this command did not set before the rm, or any variable once a loop has "
+                  "run - which it reads as `/` when they are empty; a `${D:?}` on a variable set from them "
+                  "does not help. It cannot be auto-allowed, and the task waits until a person clicks. "
+                  "Rewrite with EVERY part checked: `rm -rf \"${S:?}/${k:?}\"` (or `D=\"${S:?}/${k:?}\"; "
+                  "rm -rf \"$D\"`), or loop over literal absolute paths: `for d in /abs/a /abs/b; do rm -rf "
+                  "\"$d\"; done`. Never delete through a link (rule 8)." % (lv[0][:80], lv[1][:80]))
     if not any(_unresolvable_cd(w, sub) for w, sub in parts):
         return None
     for words, _sub in parts:
