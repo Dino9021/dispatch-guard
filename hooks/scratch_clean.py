@@ -60,7 +60,9 @@ def anchor(path, depth_needed=True):
             continue
         depth = len(names) - 1 - i
         if depth_needed and depth < need:
-            raise Refused("only %d level(s) below `%s` - a path must be at least %d below it" % (depth, name, need))
+            raise Refused("only %d level(s) below `%s` - a path must be at least %d below it (a whole sub-task "
+                          "folder is its evidence): name the things inside it, or run --build on it to remove only "
+                          "its build folders, at any depth" % (depth, name, need))
         return os.path.join(root, *names[:i + 1]), names[i + 1:]
     raise Refused("not below a folder named scratch or scratchpad")
 
@@ -101,6 +103,20 @@ def _tracked(top, rel):
     return len([p for p in out.stdout.split(b"\0") if p])
 
 
+def _long(path):
+    """The Windows extended-length form, so a deep tree (node_modules) past 260 characters still goes on a machine
+    without LongPathsEnabled; unchanged elsewhere. shortcut: only for the walk and the delete, never handed to git."""
+    if os.name != "nt" or path.startswith("\\\\?\\"):
+        return path
+    return "\\\\?\\UNC\\" + path[2:] if path.startswith("\\\\") else "\\\\?\\" + path
+
+
+def _short(path):
+    if path.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + path[8:]
+    return path[4:] if path.startswith("\\\\?\\") else path
+
+
 def _remove_link(path):
     if os.name == "nt" and os.path.isdir(path):
         os.rmdir(path)                                # a directory junction or symlink: the link only
@@ -122,22 +138,29 @@ def _remove_file(path, note):
 
 
 def delete(path, dry, tally):
-    """Delete `path` without ever following a link; tally bytes, files and links."""
-    if is_link(path):
-        tally["links"] += 1
-        if not dry:
-            _remove_link(path)
-        return
-    if not os.path.isdir(path):
-        tally["bytes"] += os.lstat(path).st_size
-        tally["files"] += 1
-        if not dry and not _remove_file(path, tally["notes"]):
-            tally["kept"] += 1
-        return
-    for entry in list(os.scandir(path)):
-        delete(entry.path, dry, tally)
-    if not dry and not tally["kept"]:
-        os.rmdir(path)
+    """Delete `path` without ever following a link; tally bytes, files and links. A loop, not recursion: a tree any
+    number of levels deep goes (Python's recursion limit would stop near 1000)."""
+    stack = [(path, False)]
+    while stack:
+        p, emptied = stack.pop()
+        if emptied:                                   # every child is gone: the directory itself
+            if not dry and not tally["kept"]:
+                os.rmdir(p)
+            continue
+        if is_link(p):
+            tally["links"] += 1
+            if not dry:
+                _remove_link(p)
+            continue
+        if not os.path.isdir(p):
+            tally["bytes"] += os.lstat(p).st_size
+            tally["files"] += 1
+            if not dry and not _remove_file(p, tally["notes"]):
+                tally["kept"] += 1
+            continue
+        stack.append((p, True))
+        with os.scandir(p) as it:
+            stack.extend((e.path, False) for e in it)
 
 
 def _report(verb, path, tally=None, reason=""):
@@ -165,7 +188,7 @@ def clean_path(arg, dry, counts):
         return
     tally = {"bytes": 0, "files": 0, "links": 0, "kept": 0, "notes": []}
     try:
-        delete(path, dry, tally)
+        delete(_long(path), dry, tally)
     except OSError as exc:
         _report("FAILED", path, reason="%s: %s" % (exc.__class__.__name__, exc))
         counts["failed"] += 1
@@ -181,18 +204,19 @@ def clean_path(arg, dry, counts):
 def build_targets(root):
     """The rule-8 build directories under `root`, never descending through a link or into a match."""
     found = []
-    stack = [root]
+    stack = [_long(root)]
     while stack:
         cur = stack.pop()
         try:
-            entries = list(os.scandir(cur))
+            with os.scandir(cur) as it:
+                entries = list(it)
         except OSError:
             continue
         for e in entries:
             if is_link(e.path) or not e.is_dir(follow_symlinks=False):
                 continue
             if e.name in BUILD_DIRS:
-                found.append(e.path)
+                found.append(_short(e.path))
             else:
                 stack.append(e.path)
     return sorted(found)

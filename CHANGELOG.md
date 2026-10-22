@@ -33,6 +33,18 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.75.13
+
+擁有者 2026-10-22：「scratch 有時候會有非常多層，你的腳本可以加入嗎? agent 會知道他需要刪多少層?」
+
+- **`scratch_clean.py` 不再有層數上限。** 0.75.12 的刪除是遞迴寫法，Python 大約 1000 層就停：實測一棵 1100 層、最深路徑
+  2334 字元的樹，0.75.12 直接 `RecursionError`、什麼都沒刪、也沒印最後一行。改成迴圈後同一棵樹整個刪掉；`--build` 往下找
+  建置資料夾本來就是迴圈，1100 層底下的 `node_modules` 也找得到。
+- Windows 路徑超過 260 字元時改用 `\\?\` 長路徑寫法刪除，沒開 LongPathsEnabled 的電腦也刪得掉（這台有開，那個情況沒實測）。
+- agent 不需要知道要刪幾層：給最上層那個資料夾，底下不管幾層都會刪；`--build <子任務資料夾>` 會在任何深度找建置資料夾。
+  唯一的限制是給的路徑本身要在 `scratch` 底下至少兩層，太淺時的拒絕訊息會直接說該改給什麼（裡面的東西，或用 `--build`）。
+- 驗證：`test_scratch_clean.py` 加 1100 層（Mac 上 300 層，macOS 絕對路徑上限 1024）的整棵刪除與 `--build`；10 個突變仍全被抓到。
+
 ## 0.75.12
 
 擁有者 2026-10-22：「能不能先寫好刪除指定 scartch 路徑下那些暫存、不需保留檔按的腳本，然後帶上路徑參數呼叫腳本來處理?」
@@ -3591,6 +3603,23 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.75.13
+
+Owner, 2026-10-22: "scratch sometimes has very many levels - can your script handle that? Will the agent know how many
+levels it has to delete?"
+
+- **`scratch_clean.py` has no depth limit any more.** 0.75.12 deleted recursively and Python stops near 1000 levels:
+  measured on a 1100-level tree whose deepest path is 2334 characters, 0.75.12 raised `RecursionError`, deleted nothing
+  and printed no last line. A loop now deletes the same tree; `--build` already walked with a loop and finds a
+  `node_modules` 1100 levels down.
+- On Windows the walk and the delete use the `\\?\` extended-length form, so a path past 260 characters goes on a
+  machine without LongPathsEnabled too (this machine has it on; that case is not measured).
+- The agent does not need to know the depth: it names the top folder and everything under it goes; `--build
+  <subtask folder>` finds build folders at any depth. The one limit is that the path itself is at least two below
+  `scratch`, and the refusal now says what to give instead (the things inside it, or `--build`).
+- Verified: `test_scratch_clean.py` deletes an 1100-level tree whole and with `--build` (300 levels on macOS, whose
+  absolute paths stop at 1024 characters); 10 mutants still killed.
 
 ## 0.75.12
 

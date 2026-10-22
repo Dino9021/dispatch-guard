@@ -117,6 +117,33 @@ def main():
         rc, out = run(os.path.join(f, "gitcopy"))
         assert rc == 0 and not os.path.exists(os.path.join(f, "gitcopy")), out
 
+        # 6b. VERY deep trees (owner, 2026-10-22: "scratch 有時候會有非常多層"): past Python's ~1000 recursion limit
+        # and past 260 characters, both for a whole path and for --build finding a build folder at the bottom.
+        # Windows only for the >1000 case - macOS refuses an absolute path past PATH_MAX (1024).
+        levels = 1100 if WIN else 300
+        top_deep = os.path.join(f, "deep")
+        lp = ("\\\\?\\" + top_deep) if WIN else top_deep
+        os.mkdir(lp)
+        for _ in range(levels):                       # one level at a time: os.makedirs itself recurses
+            lp = os.path.join(lp, "d")
+            os.mkdir(lp)
+        for d in ("node_modules", os.path.join("node_modules", "pkg")):
+            os.mkdir(os.path.join(lp, d))
+        for name in (os.path.join("node_modules", "pkg", "m.js"), "keep.txt"):
+            with open(os.path.join(lp, name), "w") as fh:
+                fh.write("x")
+        try:
+            rc, out = run("--build", top_deep)
+            assert rc == 0 and "scratch_clean: 1 deleted" in out, out[-400:]
+            assert not os.path.exists(os.path.join(lp, "node_modules")) and os.path.exists(os.path.join(lp, "keep.txt"))
+            rc, out = run(top_deep)
+            assert rc == 0 and not os.path.exists(top_deep), out[-400:]
+        finally:
+            if os.path.lexists(top_deep):             # never leave a tree the next run's cleanup cannot recurse into
+                sys.path.insert(0, repo_path("hooks"))
+                import scratch_clean as _sc
+                _sc.delete(_sc._long(top_deep), False, {"bytes": 0, "files": 0, "links": 0, "kept": 0, "notes": []})
+
         # 7. --dry-run changes nothing; 8. ABSENT is not a failure
         put(os.path.join(f, "dry/x.txt"))
         rc, out = run("--dry-run", os.path.join(f, "dry"))
