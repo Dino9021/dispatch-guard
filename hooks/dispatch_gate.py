@@ -399,6 +399,11 @@ anything YOU dispatch in turn.
    RELATIVE `dir/*`: Claude Code stops that for the owner's approval and the run waits for a
    person. Write the directory absolutely, or `D=<dir> && rm -rf "${{D:?}}"/*`, in ONE command
    (PowerShell: Get-ChildItem <dir> | Remove-Item -Recurse -Force, never Remove-Item <dir>/*).
+   DELETE SCRATCH WITH THE TOOL, NOT `rm`: {scratch_clean} <path>... (each path whole), or
+   `--build <dir>` (only the build folders above), `--dry-run` first if unsure. It has no `rm` for
+   Claude Code to stop on, never follows a link, refuses anything git tracks or outside a scratch
+   folder, and its last line `scratch_clean: <n> deleted ...` is the evidence for your report (no
+   last line = it did not run). Copy a build log your report cites out of a build folder first.
 
 Full protocol: {protocol_doc}
 
@@ -1477,7 +1482,8 @@ def prepend_head(cfg):
         max_model_price=cfg.get("max_model_price", DEFAULTS["max_model_price"]),
         price_list=price_sentence() or ("the table in %s" % model_pricing.FILENAME),
         dear_example=("%s is $%g" % (mid, dear)) if mid
-        else "an old version can be several times the family's current price")
+        else "an old version can be several times the family's current price",
+        scratch_clean=runnable("scratch_clean.py"))
 
 
 def allow_prepended(event, tool_input, cfg, note, warn=None):
@@ -5992,7 +5998,11 @@ def selftest():
                   "anything your report cites", "NEVER DELETE THROUGH A LINK",
                   # ⭐ 0.75.8: the delete shape Claude Code holds for the owner (guard_held_delete,
                   # ADR Memory/tasks/20261021-105230-held-delete-guard D2).
-                  "NEVER `rm` A\n   RELATIVE `dir/*`", "Claude Code stops that for the owner's approval"):
+                  "NEVER `rm` A\n   RELATIVE `dir/*`", "Claude Code stops that for the owner's approval",
+                  # ⭐ 0.75.12: scratch is deleted by the shipped script (ADR
+                  # Memory/tasks/20261022-212421-scratch-clean-script D2).
+                  "DELETE SCRATCH WITH THE TOOL, NOT `rm`", "{scratch_clean} <path>", "`--build <dir>`",
+                  "no\n   last line = it did not run"):
         assert token in PREPEND, token
     assert "YOU DO NOT DELETE THEM" not in PREPEND, "the keep-everything scratch rule is back"
     filled = prepend_head({"task_root": "Memory/tasks", "plan_glob": "prompts*.md",
@@ -6005,6 +6015,7 @@ def selftest():
     assert "Memory/tasks/<task>/scratch/" in filled, filled[-600:]
     # The rewrite it names must survive .format(): doubled braces in PREPEND, single in the prompt.
     assert 'rm -rf "${D:?}"/*' in filled, filled[-900:]
+    assert "run.sh\" scratch_clean.py <path>" in filled, filled[-900:]     # the shim, no version in it
     # ⛔ AND THE PRICES IN IT MUST BE THE FILE'S, NOT FOUR NUMBERS TYPED INTO THE TEMPLATE.
     # That is exactly the drift this change removed everywhere else; leaving it in the prompt
     # would have the gate refusing at one price while the prompt promised another.

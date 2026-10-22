@@ -310,6 +310,13 @@ def main():
         r = run_gate(gate, bash(root, "cd h1 && rm -f out/*"))
         for token in ('"${D:?}"/*', "absolute path", "Do not split it into two tool calls"):
             assert token in reason(r), token
+        # 0.75.12: the scratch tool is named with the refused rm's OWN path words, so it deletes the same entries
+        # (ADR 20261022-212421-scratch-clean-script D2, review B2) - and not in the re-parse reason, whose rm is
+        # usually text inside a sed string.
+        assert 'run.sh" scratch_clean.py out/*` in the same command' in reason(r), reason(r)
+        r11 = run_gate(gate, bash(root, BASH_UNRESOLVED_HELD[2][0]))
+        assert 'run.sh" scratch_clean.py "$S/$k"` in the same place' in reason(r11), reason(r11)
+        assert "scratch_clean" not in reason(run_gate(gate, bash(root, BASH_REPARSE_HELD[0][0])))
         assert "Get-ChildItem <dir> | Remove-Item -Recurse -Force" in reason(run_gate(gate, ps(root, "Remove-Item k4\\out\\*")))
 
         # Mutation: without the row the same payload is no longer refused - it falls to the relative-cd

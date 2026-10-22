@@ -33,6 +33,26 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.75.12
+
+擁有者 2026-10-22：「能不能先寫好刪除指定 scartch 路徑下那些暫存、不需保留檔按的腳本，然後帶上路徑參數呼叫腳本來處理?」
+
+- **新工具 `hooks/scratch_clean.py`：刪 scratch 的唯一做法。** 用 `bash ~/.claude/dispatch-guard/run.sh scratch_clean.py
+  <路徑>...` 呼叫（每個路徑整個刪掉），`--build <資料夾>` 只刪 rule 8 列的建置資料夾，`--dry-run` 只列計畫。呼叫它的指令裡
+  沒有 `rm`，Claude Code 的危險刪除檢查（0.75.8、0.75.9、0.75.11 擋的那三種）不會觸發 —— 實測（Windows，2.1.291）：
+  用 `$S/$k`、沒指派的變數、先 `cd` 再給 `out/*` 呼叫它，都直接執行。
+- **它拒絕刪的：** 不在 `scratch` 資料夾底下至少兩層（`scratch/<子任務>/<東西>`，整個子任務資料夾是它的證據）、
+  `scratchpad` 底下至少一層的路徑；含 `..` 的路徑；從最外層 scratch 往下途中經過連結或 junction 的路徑（否則會刪到別處）；
+  git 有追蹤的檔案（從 scratch 資料夾本身問 git、不分大小寫）；任何答不出來的檢查一律拒絕。刪除範圍裡遇到連結只拆連結本身；
+  唯讀的硬連結檔不改權限（改了會連帶改到原檔）。每個路徑印一行，最後一行 `scratch_clean: <n> deleted, …` 是報告證據，
+  沒有最後一行代表沒執行。
+- 子代理收到的 rule 8、dispatch-protocol skill（中英）改成指向這支工具；0.75.8、0.75.11 兩種退回訊息也用原本 `rm` 的
+  路徑寫法提到它（`scratch_clean.py out/*`、`scratch_clean.py "$S/$k"`），刪的範圍不變；0.75.9 那種（rm 多半只是 sed 字串
+  裡的文字）不提。
+- 驗證：`Tools/Debug/test_scratch_clean.py`（`test_all` 的 `scratch clean`）：拒絕的情況全用 `--dry-run` 跑，壞掉的檢查只會
+  讓測試失敗、不會真的刪；10 個突變全部被抓到。ADR（審一輪，REJECT 的兩個阻擋問題已修）：
+  `Memory/tasks/20261022-212421-scratch-clean-script/`。Mac 還沒量；已在跑的 session 要重開才拿到。
+
 ## 0.75.11
 
 擁有者 2026-10-22：兩張 Windows Game session 卡在「Allow this bash command?」的截圖（「又有卡住的情況」「又一個」）。
@@ -3571,6 +3591,30 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.75.12
+
+Owner, 2026-10-22: "could you first write a script that deletes the temporary files under a given scratch path that
+need not be kept, and then call it with the path as an argument?"
+
+- **New tool `hooks/scratch_clean.py`: the one way to delete scratch.** Called as `bash ~/.claude/dispatch-guard/run.sh
+  scratch_clean.py <path>...` (each path whole), `--build <dir>` (only rule 8's build folders), `--dry-run` (the plan
+  only). A command that calls it has no `rm`, so Claude Code's dangerous-rm checks (the three shapes 0.75.8, 0.75.9 and
+  0.75.11 refuse) do not fire - measured on Windows (2.1.291): called with `$S/$k`, unset variables, or `cd` then
+  `out/*`, it ran.
+- **What it refuses:** a path not at least two levels below a `scratch` folder (`scratch/<subtask>/<thing>` - a whole
+  sub-task folder is its evidence) or one below a `scratchpad`; a `..` path; a path that passes through a link or
+  junction below the outermost scratch (the delete would land elsewhere); anything git tracks (asked from the scratch
+  folder itself, case-insensitively); any check that cannot be answered. A link inside a deleted tree is removed as a
+  link; a read-only hard-linked file keeps its permissions (changing them would change the original too). One line per
+  path, and a last line `scratch_clean: <n> deleted, …` that is the report's evidence - no last line means it did not
+  run.
+- PREPEND rule 8 and the dispatch-protocol skill (both languages) point at the tool; the 0.75.8 and 0.75.11 refusals name
+  it with the refused rm's own path words (`scratch_clean.py out/*`, `scratch_clean.py "$S/$k"`), so it deletes the same
+  thing; the 0.75.9 one (whose rm is usually text in a sed string) does not.
+- Verified: `Tools/Debug/test_scratch_clean.py` (`scratch clean` in `test_all`) runs every refusal with `--dry-run`, so
+  a broken check fails the test instead of deleting; 10 mutants killed. ADR (one round; REJECT's two blockers fixed):
+  `Memory/tasks/20261022-212421-scratch-clean-script/`. Not measured on the Mac; running sessions get it after a restart.
 
 ## 0.75.11
 

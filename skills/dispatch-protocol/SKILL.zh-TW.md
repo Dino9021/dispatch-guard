@@ -51,6 +51,14 @@ scratch —— 報告裡要寫明建了什麼、多大、已經刪掉。子任�
 `Get-ChildItem <dir> | Remove-Item -Recurse -Force`，絕不用 `Remove-Item <dir>\*`。gate 會先擋下這些寫法
 （`guard_held_delete`，0.75.8）—— 在那裡被擋，就是規則在運作。
 
+⭐ **刪 scratch 用外掛附的工具，不要自己寫 `rm`（0.75.12）：**
+`bash ~/.claude/dispatch-guard/run.sh scratch_clean.py <路徑>...` 把每個路徑整個刪掉；`--build <資料夾>` 只刪上面列的
+建置資料夾；`--dry-run` 只列出會刪什麼。呼叫它的指令裡沒有 `rm`，Claude Code 的危險刪除檢查（曾因 `cd` 加相對路徑萬用字元、
+迴圈變數組成的路徑，讓任務卡好幾小時）根本不會觸發。它拒絕：不在 `scratch` 資料夾底下至少兩層（`scratchpad` 底下至少一層）
+的路徑、含 `..` 的路徑、途中經過連結的路徑、git 有追蹤的檔案；刪除範圍裡遇到連結只拆連結本身。最後一行
+`scratch_clean: <n> deleted, …` 就是報告的證據——沒有最後一行代表它沒有執行。報告要引用的建置 log，先從建置資料夾複製出來，
+再跑 `--build`。
+
 ⚠ **路徑要寫在提示詞裡。** 子任務推不出來；一個只被告知「把報告寫到 X」的 agent，
 其他東西會亂放。⛔ 如果那個任務資料夾會被 commit，記得把 scratch 路徑 gitignore。
 

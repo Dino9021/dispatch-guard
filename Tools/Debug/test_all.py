@@ -52,6 +52,8 @@ CHECKS = [
     # ⚠ The deletes Claude Code holds for the owner even in bypassPermissions (0.75.8): every shape it
     # pins was measured held or ran on 2.1.291; a Claude Code update can move the boundary.
     ("held delete",   [os.path.join(DEBUG_DIR, "test_held_delete.py")]),
+    # ⚠ 0.75.12: the one way to delete scratch. Refusals run --dry-run, deletes touch fixtures only.
+    ("scratch clean", [os.path.join(DEBUG_DIR, "test_scratch_clean.py")]),
     # ⛔ 0.64.0 shipped a cowork SKILL.md whose frontmatter was invalid YAML, and the skill
     # vanished from every session without a warning. This reads each SKILL.md the way the
     # loader does. See its docstring.
