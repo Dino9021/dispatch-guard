@@ -4438,6 +4438,11 @@ def skill_active_notice(name, session_id=None):
     return ""
 
 
+# Another session's message, as the transcript records it in a prompt (2026-10-22). An unclosed
+# block runs to the end: dropping too much text only misses a declaration, never invents one.
+_PEER_BLOCK = re.compile(r"<cross-session-message\b[^>]*>.*?(?:</cross-session-message>|\Z)", re.S)
+
+
 def unattended_word(text, cfg, log_to=None):
     """The first configured "nobody is watching" word found in `text`, or "" (0.70, ADR D0)."""
     for pat in cfg.get("unattended_words") or ():
@@ -4466,8 +4471,21 @@ def note_unattended_declaration(payload, root, sdir, cfg, sid):
     text = payload.get("prompt")
     if not isinstance(text, str) or not text.strip():
         return ""
-    hit = unattended_word(text, cfg, log_to=root)
+    # ⛔ A PEER'S MESSAGE IS NOT THE OWNER'S PROMPT (2026-10-22). Another session's message arrives
+    # as a prompt too, and a peer writing "so unattended runs never stop" set this session's
+    # never-cleared marker (gate log, 09:43:39). Its block is dropped before matching, and a payload
+    # marked as a peer's is skipped. ⚠ Whether the hook payload carries the wrapper or `origin` was
+    # not measured (the transcript record carries both), so a word seen only in a peer's text is
+    # logged - the next false match says which form arrived.
+    origin = payload.get("origin")
+    peer = isinstance(origin, dict) and origin.get("kind") == "peer"
+    owner_text = "" if peer else _PEER_BLOCK.sub(" ", text)
+    hit = unattended_word(owner_text, cfg, log_to=root)
     if not hit:
+        seen = unattended_word(text, cfg)
+        if seen:
+            log(root, "UNATTENDED-IGNORED word=%r in a peer's message (%s) sid=%s"
+                % (seen, "origin" if peer else "wrapper", str(sid or "?")[:8]))
         return ""
     mark = state_path(sdir, sid, "unattended-declared")
     if not os.path.exists(mark):

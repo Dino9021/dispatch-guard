@@ -33,6 +33,41 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.75.10
+
+擁有者 2026-10-22：「請你加你提到的小修法」。
+
+- **其他 session 傳來的訊息，不再被當成擁有者宣告無人值守。** 其他 session 的訊息也是以提示文字送進來，
+  `note_unattended_declaration()` 會比對裡面的字詞：一個 peer 寫了「so unattended runs never stop」（之後又寫了
+  「無人值守」），就把這個 session 那個不會清掉的標記立起來了 —— 之後派工時超過 `max_model_price` 的模型會直接被拒
+  （平常會跳窗問），第一次派工也會被擋到載入 `unattended-work` 為止。gate log 實測：
+  `2026-10-22 09:43:39 UNATTENDED-DECLARED word='unattended'`。現在比對前會先拿掉 `<cross-session-message …>` 區塊，
+  `origin.kind` 是 `peer` 的直接跳過；擁有者自己的話照樣算，跟 peer 訊息貼在一起時也算。
+- ⚠ hook 收到的內容究竟帶標籤還是帶 `origin`，沒有量到（session 紀錄兩樣都有）。只出現在 peer 文字裡的字詞會記一行
+  `UNATTENDED-IGNORED … (wrapper|origin)`；萬一兩樣都沒有，就還會誤判，下一次誤判時就看得出來。
+- 已知、沒改：擁有者自己描述目的的話（「…無人值守持續作業的目的」）也會被比對到 —— 0.70 的設計接受誤判（代價是一次拒絕），
+  要不要改比對範圍由擁有者決定。
+- 驗證：`test_guards.py` 加三種情況（包著標籤的 peer 訊息、`origin` 是 peer、擁有者的話夾著 peer 訊息）；兩個突變
+  （拿掉標籤剝除、拿掉 origin 判斷）都被抓到。Windows `test_all` 全過。0.75.9 的重新解析寫法也在 Windows 量過
+  （Claude Code 2.1.291）：J01、K10、L02、L04、C-L4-only 會被擋，F01、F02 不會 —— 跟 Mac 一樣。
+
+## 0.75.9
+
+擁有者 2026-10-22：DevWK-Mac 的一個指令「又要求 Owner 確認 … 應該要由閘門擋下要求改寫，避免作業暫停等待回應」。
+
+- **又一種會被 Claude Code 擋下的形狀，而且完全沒有 `cd`：** 指令裡**定義了 shell 函式**（`name() {`、`function name {`）
+  或用了 **`eval`** 時，Claude Code 會把單引號字串**再解析一次**；字串裡分隔符（`&&` `||` `;` `|`，有沒有反斜線都算）
+  後面的 `rm`，只要目標在變數為空時會變成 `/`（`"$v"/`、`"$v"/*`、`"${v}"/`、`$v/`、`$v/*`），就要擁有者按確認 ——
+  即使那只是文字（DevWK 那次是 sed 的取代字串裡寫著 `rm -rf "$lock"`）。
+- **修正：** `guard_held_delete` 多一個分支，先擋下並說明改寫方式：把那段文字用 Write 工具寫進檔案再傳檔案
+  （`sed -f <檔案>`、`sh <檔案>`），或把函式放進腳本檔執行；真的要刪就讓目標不可能變成 `/`（`"${VAR:?}"/` 或寫死絕對路徑）。
+  log 寫 `CMD-HELD-DELETE(reparsed)`；開關沿用 `guard_held_delete`。
+- **界線是實測的：** VS Code 擴充套件自己的 Claude Code 2.1.304、headless、bypassPermissions，約 90 個形狀，每次都核對模型
+  執行的是一字不差的指令；28 種被擋、63 種放行，兩份清單都釘在 `test_held_delete.py`（由實測檔案以 `repr()` 產生）。
+  15 個突變全部被抓到。Mac `test_all` 26/26。
+- 沒有實測、所以不擋的：`sh -c` / `bash -c` 帶會變成 `/` 的目標（模型拒絕執行探測）、Windows 上的同一組形狀。
+- 證據與界線：`Memory/tasks/20261021-105230-held-delete-guard/ADDENDUM-0.75.9.md`、`scratch/03-reparse-probes/`。
+
 ## 0.75.8
 
 擁有者 2026-10-21：「現在 Agent 要刪除 scratch 的時候會跳視窗問我，可以不要跳視窗問嗎? 這樣會造成任務暫停中斷」；
@@ -3519,6 +3554,48 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.75.10
+
+Owner, 2026-10-22: "please add the small fix you mentioned".
+
+- **A peer's message no longer declares a session unattended.** Another session's message arrives as a prompt, and
+  `note_unattended_declaration()` matched its words: a peer writing "so unattended runs never stop" (and later
+  「無人值守」) set this session's never-cleared marker - after which a dispatch over `max_model_price` is refused
+  instead of asked, and the first dispatch is refused until `unattended-work` is loaded. Measured in the gate log
+  (`2026-10-22 09:43:39 UNATTENDED-DECLARED word='unattended'`). Now a `<cross-session-message …>` block is dropped
+  before matching and a payload whose `origin.kind` is `peer` is skipped; the owner's own words still count, including
+  beside a peer block.
+- ⚠ Whether the hook payload carries the wrapper or `origin` was not measured (the transcript record carries both). A
+  word seen only in a peer's text is logged `UNATTENDED-IGNORED … (wrapper|origin)`; a bare peer body with neither would
+  still declare, and the next false match would show it.
+- Known and unchanged: the owner's own words that merely describe the purpose (「…無人值守持續作業的目的」) also match - the
+  0.70 design accepts a false match (it costs a refusal); changing the match width is the owner's decision.
+- Verified: three cases in `test_guards.py` (wrapped peer message, `origin` peer, owner words beside a peer block); two
+  mutants (strip removed, origin check removed) killed. Windows `test_all` green. 0.75.9's re-parse shapes measured on
+  Windows too (Claude Code 2.1.291): J01, K10, L02, L04, C-L4-only HELD, F01, F02 ran - same as on the Mac.
+
+## 0.75.9
+
+Owner, 2026-10-22: a DevWK-Mac command "asked the owner to confirm again ... the gate should refuse it and ask for a
+rewrite, so the work does not pause waiting for an answer".
+
+- **Another shape Claude Code holds, with no `cd` at all:** when a command **defines a shell function** (`name() {`,
+  `function name {`) or runs **`eval`**, Claude Code parses single-quoted strings **again**. An `rm` after a separator
+  inside one (`&&` `||` `;` `|`, escaped or not) whose target is `/` when its variable is empty (`"$v"/`, `"$v"/*`,
+  `"${v}"/`, `$v/`, `$v/*`) waits for the owner's click - even when it is only text (DevWK's was `rm -rf "$lock"` in a
+  sed replacement).
+- **Fix:** a second branch in `guard_held_delete` refuses it first and says how to rewrite: write the text to a file
+  with the Write tool and pass the file (`sed -f <file>`, `sh <file>`), or move the function into a script file; for a
+  real delete make the target unable to become `/` (`"${VAR:?}"/` or a literal absolute path). Logged as
+  `CMD-HELD-DELETE(reparsed)`; same switch, `guard_held_delete`.
+- **The boundary is measured:** the VS Code extension's own Claude Code 2.1.304, headless, bypassPermissions, about
+  90 shapes, each checked to be the exact command the model ran; 28 held, 63 ran, both lists pinned in
+  `test_held_delete.py` (generated from the measured files with `repr()`). 15 of 15 mutations killed. Mac `test_all`
+  26/26.
+- Not measured, so not matched: `sh -c` / `bash -c` with a root-expandable target (the model refused to run the probe),
+  and the same shapes on Windows.
+- Evidence and boundary: `Memory/tasks/20261021-105230-held-delete-guard/ADDENDUM-0.75.9.md`, `scratch/03-reparse-probes/`.
 
 ## 0.75.8
 

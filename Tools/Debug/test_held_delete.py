@@ -4,7 +4,8 @@
     python Tools/Debug/test_held_delete.py
 
 ⛔ EVERY SHAPE HERE WAS MEASURED, not imagined: headless `claude -p --permission-mode
-bypassPermissions` on Claude Code 2.1.291 (Windows), first tool_result. HELD = Claude Code answered
+bypassPermissions` on Claude Code 2.1.291 (Windows), first tool_result - and the BASH_REPARSE_* lists (0.75.9)
+on 2.1.304 (macOS). HELD = Claude Code answered
 "Dangerous rm operation detected" / "Remove-Item on system path … is blocked"; RAN = it ran. The guard
 must deny every HELD shape and pass every RAN shape - an over-match costs the agent a pointless
 rewrite, an under-match leaves the dialog that stalls a run for hours. Probe scripts and outputs:
@@ -20,6 +21,7 @@ the switch must turn it off, and a guard that raises must allow.
 
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _debugpaths import fresh_scratch, scratch_dir  # noqa: E402
@@ -96,6 +98,108 @@ PS_RAN = [
 ]
 
 
+# 0.75.9: Bash tool, NO directory change - Claude Code parses a single-quoted string AGAIN when the
+# command defines a function or runs eval, and holds an rm after a separator in it whose target can
+# become `/`.
+# Measured 2026-10-22 on 2.1.304 (macOS, headless, sonnet, the exact command checked); names are
+# the probe case ids in Memory/tasks/20261021-105230-held-delete-guard/scratch/03-reparse-probes/.
+BASH_REPARSE_HELD = [
+    ('S=/tmp/dg-s/grmut && rm -rf $S && mkdir -p $S && f=graph-servers/graph-refresh.sh\nmut() { name=$1; shift; sed "$@" $f > $S/m.sh; if cmp -s $S/m.sh $f; then echo "$name: NOT APPLIED"; return; fi; o=$(REFRESH_UNDER_TEST=$S/m.sh sh graph-servers/test-graph-refresh.sh 2>&1); printf \'%s\\n\' "$o" | grep -q \'PASS .*FAIL$\' || { echo "$name: INVALID"; return; }; r=$(printf \'%s\\n\' "$o" | grep \'  FAIL\' | head -2 | tr \'\\n\' \';\'); if [ -n "$r" ]; then echo "$name: KILLED by:$r"; else echo "$name: SURVIVED"; fi; }\nmut L1-steal-live -e \'s/^        if lock_holder_alive "\\$lock"; then$/        if false; then/\'\nmut L2-no-pid-written -e \'s/^    echo \\$\\$ >"\\$lock\\/pid"$/    :/\'\nmut L3-no-recycle-check -e \'s/^    case \\$(ps -p "\\$_p" -o command= 2>\\/dev\\/null) in \\*graph-refresh\\*) return 0 ;; esac$/    return 0/\'\nmut L4-release-any -e \'s/^    \\[ "\\$({ tr -d . \\\\n\\\\r. <"\\$lock\\/pid"; } 2>\\/dev\\/null)" = "\\$\\$" \\] \\&\\& rm -rf "\\$lock"$/    rm -rf "$lock"/\'\nmut O1-output-dropped -e \'s/^            \\[ -s "\\$out_file" \\] \\&\\& tail -n 15 "\\$out_file" | sed .s\\/\\^\\/    | \\/. >>"\\$log_file"$/            :/\'\nmut O2-log-on-success -e \'s/^        if \\[ \\$rc -ne 0 \\]; then$/        if true; then/\'\nrm -rf $S', 'A-full'),
+    ('mut() { echo "$1"; }\nmut L4-release-any -e \'s/^    \\[ "\\$({ tr -d . \\\\n\\\\r. <"\\$lock\\/pid"; } 2>\\/dev\\/null)" = "\\$\\$" \\] \\&\\& rm -rf "\\$lock"$/    rm -rf "$lock"/\'', 'C-L4-only'),
+    ('mut() { echo "$1"; }\nmut L4-release-any -e \'s/^    \\[ "\\$({ tr -d . \\\\n\\\\r. <"\\$lock\\/pid"; } 2>\\/dev\\/null)" = "\\$\\$" \\] \\&\\& rm -rf "\\$lock"$/    rm -rf "$lock"/\'', 'H10-C-again'),
+    ('mut() { echo "$1"; }; mut \'s/"\\$(x)" \\&\\& rm -rf "$lock"/\'', 'J01-func-subst-amp-escaped'),
+    ('mut() { echo "$1"; }; mut \'"\\$(x)" && rm -rf "$lock"/\'', 'J02-func-subst-amp-plain'),
+    ('mut() { echo "$1"; }; mut \'$(x) && rm -rf "$lock"/\'', 'J03-func-bare-subst'),
+    ('mut() { echo "$1"; }; mut \'"\\$({ x; } 2>/dev/null)" = "\\$\\$" \\] \\&\\& rm -rf "$lock"/\'', 'J06-func-brace-subst'),
+    ('mut() { echo "$1"; }\nsed -e \'s/^    \\[ "\\$({ tr -d . \\\\n\\\\r. <"\\$lock\\/pid"; } 2>\\/dev\\/null)" = "\\$\\$" \\] \\&\\& rm -rf "\\$lock"$/    rm -rf "$lock"/\' graph-servers/graph-refresh.sh > /dev/null', 'J08-funcdef-newline-sed-L4'),
+    ('mut() { echo "$1"; }; mut L4-release-any -e \'s/^    \\[ "\\$({ tr -d . \\\\n\\\\r. <"\\$lock\\/pid"; } 2>\\/dev\\/null)" = "\\$\\$" \\] \\&\\& rm -rf "\\$lock"$/    rm -rf "$lock"/\'', 'J11-func-sameline-L4'),
+    ('mut() { echo "$1"; }; mut \'$(x) && rm -rf $lock/*\'', 'K05-target-star'),
+    ('mut() { echo "$1"; }; mut \'$(x) && rm -f "$lock"/\'', 'K08-rm-f-only'),
+    ('function mut { echo "$1"; }; mut \'$(x) && rm -rf "$lock"/\'', 'K10-function-keyword'),
+    ('mut() { echo "$1"; }; mut \'`x` && rm -rf "$lock"/\'', 'K12-backtick'),
+    ('mut() { echo "$1"; }; mut \'$(x) && rm -rf "${lock}"/\'', 'K13-braced-var'),
+    ('eval \'$(true) && rm -rf "$lock"/\'', 'L02-eval-subst'),
+    ('mut() { echo "$1"; }; mut \'$(x); rm -rf "$lock"/\'', 'L04-func-semicolon'),
+    ('mut() { echo "$1"; }; mut \'$(x) || rm -rf "$lock"/\'', 'L05-func-oror'),
+    ('mut() { echo "$1"; }; mut \'$(x) | rm -rf "$lock"/\'', 'L06-func-pipe'),
+    ('mut() { echo "$1"; }; mut \'$(x) && rm -rf "$lock"/*\'', 'L08-target-quoted-star'),
+    ('mut() { echo "$1"; }; mut \'$(x) && rm -rf $lock/\'', 'L09-target-unquoted-slash'),
+    ('mut() { echo "$1"; }; mut \'$(x) && rm "$lock"/\'', 'L10-rm-noflag-slash'),
+    ('mut() { echo "$1"; }; mut \'$(x) && rm -r -f "$lock"/\'', 'L11-rm-split-flags'),
+    ('mut() { echo "$1"; }; mut \'$(x) && rm -rf "$lock"/ more\'', 'L12-text-after-target'),
+    ('eval true; echo \'$(x) && rm -rf "$lock"/\'', 'M02-eval-elsewhere'),
+    ('mut () { echo "$1"; }; mut \'$(x) && rm -rf "$lock"/\'', 'M03-funcdef-space-paren'),
+    ('mut() { echo "$1"; }; mut \'a && rm -rf "$lock"/\'', 'N01-func-no-subst-separator'),
+    ('if true; then eval "$x"; fi\necho \'a && rm -rf "$v"/ x\'', 'P11-eval-after-then'),
+    ('f(){ x; }\necho \'a && \'\\\'\'b && rm -rf "$v"/ x\'', 'U17-split-string-rm-in-second-piece'),
+]
+BASH_REPARSE_RAN = [
+    ('S=/tmp/dg-s/grmut && rm -rf $S && mkdir -p $S && f=graph-servers/graph-refresh.sh\nrm -rf $S', 'B-setup-only'),
+    ('S=/tmp/dg-s/grmut && rm -rf "$S" && mkdir -p "$S" && f=graph-servers/graph-refresh.sh\nrm -rf "$S"', 'D-quoted-S'),
+    ('rm -rf /tmp/dg-s/grmut && mkdir -p /tmp/dg-s/grmut\nrm -rf /tmp/dg-s/grmut', 'E-literal-path'),
+    ('rm -rf "$lock"', 'F01-real-unassigned'),
+    ('rm -rf "${lock:?}"', 'F02-real-guarded'),
+    ('rm -rf "$lock/dg-probe-nonexistent-1/x"', 'F03-real-deep'),
+    ('rm -rf "$lock/dg-probe-nonexistent-2"', 'F04-real-toplevel'),
+    ('lock=/tmp/dg-s/f05 && mkdir -p "$lock" && rm -rf "$lock"', 'F05-assigned-in-command'),
+    ('echo \'rm -rf "$lock"\'', 'F06-echo-single-quoted'),
+    ("grep -c 'rm -rf $lock' graph-servers/graph-refresh.sh", 'F07-grep-pattern'),
+    ('echo \'rm -rf "${lock:?}"\'', 'F08-echo-guarded'),
+    ("echo 'rm -rf /dg-probe-nonexistent-3'", 'F09-echo-literal'),
+    ("echo 'rm -rf $HOME'", 'F10-echo-home'),
+    ("sed -e 's/x/rm -f $f/' graph-servers/graph-refresh.sh > /dev/null", 'F11-sed-rm-f'),
+    ('echo "rm -rf \\$lock"', 'F12-echo-escaped-dollar'),
+    ("echo 'rm $x'", 'F13-echo-rm-noflag'),
+    ('cat > /tmp/dg-s/f14.sh <<\'EOF\'\nrm -rf "$lock"\nEOF', 'F14-heredoc-body'),
+    ('true # rm -rf "$lock"', 'F15-comment'),
+    ("printf '%s\\n' 's/a/b/' > /tmp/dg-s/f16.sed && sed -f /tmp/dg-s/f16.sed graph-servers/graph-refresh.sh > /dev/null", 'F16-sed-file-instead'),
+    ('echo \'rm -rf "$lock"/pid\'', 'F17-echo-rm-sub-relative'),
+    ('mut() { echo "$1"; }; mut \'rm -rf "$lock"\'', 'G01-func-arg-plain'),
+    ('dgprobe_unknown_cmd \'rm -rf "$lock"\'', 'G02-unknown-cmd-arg'),
+    ('echo \'s/x $(y) && rm -rf "$lock"/\'', 'G03-echo-with-subst'),
+    ('sed -e \'s/^    \\[ "\\$({ tr -d . \\\\n\\\\r. <"\\$lock\\/pid"; } 2>\\/dev\\/null)" = "\\$\\$" \\] \\&\\& rm -rf "\\$lock"$/    rm -rf "$lock"/\' graph-servers/graph-refresh.sh > /dev/null', 'G04-sed-L4-expr'),
+    ('sh -c \'rm -rf "$lock"\'', 'G05-sh-c'),
+    ('eval \'rm -rf "$lock"\'', 'G06-eval'),
+    ('mut() { echo "$1"; }; mut \'rm -rf "${lock:?}"\'', 'G07-func-arg-guarded'),
+    ('mut() { echo "$1"; }; mut \'rm -rf /dg-probe-nonexistent-4\'', 'G08-func-arg-literal'),
+    ('mut() { echo "$1"; }; mut \'echo hi\'', 'G09-func-arg-control'),
+    ('echo \'a; rm -rf "$lock"\'', 'G10-echo-semicolon-rm'),
+    ('echo \'{ tr x; } && rm -rf "$lock"\'', 'G11-echo-brace-semicolon'),
+    ('echo \'$(true) rm -rf "$lock"\'', 'G12-echo-subst-only'),
+    ('sh -c \'rm -rf "${lock:?}"\'', 'G13-sh-c-guarded'),
+    ('lock=/tmp/dg-s/g14 && mut() { echo "$1"; }; mut \'rm -rf "$lock"\'', 'G14-func-arg-assigned'),
+    ('echo \'rm -rf "$lock"/\'', 'H01-echo-slash'),
+    ("echo 'rm -rf $lock/*'", 'H02-echo-star'),
+    ('mut() { echo "$1"; }; mut \'rm -rf "$lock"/\'', 'H03-func-slash'),
+    ('mut() { echo "$1"; }; mut \'rm -rf $lock/*\'', 'H04-func-star'),
+    ('sed -e \'s/a/rm -rf "$lock"\\//\' graph-servers/graph-refresh.sh > /dev/null', 'H05-sed-slash'),
+    ('mut() { echo "$1"; }\nmut \'rm -rf "$lock"/\'', 'H06-func-newline-slash'),
+    ('mut() { echo "$1"; }; mut -e \'s/x/    rm -rf "$lock"/\'', 'H07-func-unbalanced-tail'),
+    ('echo -e \'s/x/    rm -rf "$lock"/\'', 'H08-echo-unbalanced-tail'),
+    ('sed -e \'s/x/    rm -rf "$lock"/\' graph-servers/graph-refresh.sh > /dev/null', 'H09-sed-unbalanced-tail'),
+    ('echo \'"\\$(x)" \\&\\& rm -rf "$lock"/\'', 'J04-echo-subst-amp-escaped'),
+    ('printf \'%s\\n\' \'"\\$(x)" \\&\\& rm -rf "$lock"/\'', 'J05-printf-subst-amp-escaped'),
+    ('sed -e \'"\\$({ x; } 2>/dev/null)" = "\\$\\$" \\] \\&\\& rm -rf "$lock"/\' graph-servers/graph-refresh.sh > /dev/null', 'J07-sed-brace-subst'),
+    ('echo L4-release-any -e \'s/^    \\[ "\\$({ tr -d . \\\\n\\\\r. <"\\$lock\\/pid"; } 2>\\/dev\\/null)" = "\\$\\$" \\] \\&\\& rm -rf "\\$lock"$/    rm -rf "$lock"/\'', 'J09-echo-L4'),
+    ('true\nsed -e \'s/^    \\[ "\\$({ tr -d . \\\\n\\\\r. <"\\$lock\\/pid"; } 2>\\/dev\\/null)" = "\\$\\$" \\] \\&\\& rm -rf "\\$lock"$/    rm -rf "$lock"/\' graph-servers/graph-refresh.sh > /dev/null', 'J10-true-newline-sed-L4'),
+    ('mut() { o=$(true); echo "$1"; }; mut \'rm -rf "$lock"/\'', 'K01-subst-in-body-rm-in-arg'),
+    ('x=$(true); mut() { echo "$1"; }; mut \'rm -rf "$lock"/\'', 'K02-subst-before-funcdef'),
+    ('mut() { echo "$1"; }; mut \'$(x) && rm -rf "$lock"\'', 'K03-target-no-slash'),
+    ('mut() { echo "$1"; }; mut \'$(x) && rm -rf "${lock:?}"/\'', 'K04-target-guarded'),
+    ('mut() { echo "$1"; }; mut \'$(x) && rm -rf "$lock/sub"\'', 'K06-target-toplevel-quoted'),
+    ('mut() { echo "$1"; }; mut \'$(x) && rm -rf "$lock/a/b"\'', 'K07-target-deep-quoted'),
+    ('mut() { echo "$1"; }; mut \'$(x) && rm "$lock"/x\'', 'K09-rm-noflag'),
+    ('mut() { echo "$1"; }; mut \'$(x)\' \'rm -rf "$lock"/\'', 'K11-subst-and-rm-separate-args'),
+    ('mut() { echo "$1"; }; mut \'$(x) rm -rf "$lock"/\'', 'K14-no-ampersand'),
+    ('mut() { echo "$1"; }; mut "\\$(x) && rm -rf \\"\\$lock\\"/"', 'L07-func-double-quoted'),
+    ('echo \'mut() { x; }\'; echo \'$(x) && rm -rf "$lock"/\'', 'M01-funcdef-only-in-quotes'),
+    ('mut() { echo "$1"; }; mut \'$(x) && ls "$lock"/\'', 'N02-func-subst-ls-not-rm'),
+    ('echo \'a mut() { x; }\'; echo \'$(x) && rm -rf "$lock"/\'', 'N03-quoted-funcdef-after-space'),
+    ('# f(){ x; }\necho \'a && rm -rf "$v"/ x\'', 'O16-funcdef-in-comment'),
+    ('echo "a f(){ x; }"\necho \'a && rm -rf "$v"/ x\'', 'P01-funcdef-in-double-quotes'),
+]
+
+
 def ps(root, command, sid="s1"):
     return bash(root, command, sid=sid, tool="PowerShell")
 
@@ -121,6 +225,30 @@ def main():
         for mk, c, note in ran:
             r = run_gate(gate, mk(root, c))
             assert decision(r) is None, (note, c, r)
+        # 0.75.9: the re-parsed rm - its own reason, naming the rewrites that measured RAN.
+        for c, note in BASH_REPARSE_HELD:
+            r = run_gate(gate, bash(root, c))
+            assert decision(r) == "deny", (note, c, r)
+            for token in ("parses this quoted text AGAIN", "sed -f <file>", '"${VAR:?}"/', "Never delete through a link"):
+                assert token in reason(r), (note, token, reason(r))
+        for c, note in BASH_REPARSE_RAN:
+            r = run_gate(gate, bash(root, c))
+            assert decision(r) is None, (note, c, r)
+        # Linear time: an unclosed `"` before 50 000 `\"` took 12-16 s through the first version (review R2 B1),
+        # and a hook that times out ALLOWS the call. The bound is loose on purpose; the bad version is 10x over it.
+        slow = 'f(){ x; }; echo "' + '\\"' * 50000
+        t0 = time.time()
+        cmd_guards._reparsed_rm(slow, cmd_guards._shell_segments(slow))
+        assert time.time() - t0 < 1.5, "the re-parse check is slow again: %.1fs" % (time.time() - t0)
+        held_n = len(held) + len(BASH_REPARSE_HELD)
+        ran_n = len(ran) + len(BASH_REPARSE_RAN)
+        # Mutation: without the re-parse branch the DevWK-Mac shape is no longer refused.
+        real_rp = cmd_guards._reparsed_rm
+        cmd_guards._reparsed_rm = lambda *a: None
+        try:
+            assert decision(run_gate(gate, bash(root, BASH_REPARSE_HELD[0][0]))) is None, "re-parse mutation stood"
+        finally:
+            cmd_guards._reparsed_rm = real_rp
 
         # The Bash reason names forms that RUN, and forbids the split (review B2).
         r = run_gate(gate, bash(root, "cd h1 && rm -f out/*"))
@@ -165,7 +293,7 @@ def main():
         assert decision(run_gate(gate, bash(root, "cd h1 && rm -f out/*", sid="never-stamped"))) is None
 
     print("ok - %d held shapes refused, %d ran shapes passed, mutation, order, switch, fail-open and "
-          "unstamped checked" % (len(held), len(ran)))
+          "unstamped checked" % (held_n, ran_n))
     return 0
 
 

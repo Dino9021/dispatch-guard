@@ -577,6 +577,94 @@ def _held_rm(words):
     return None
 
 
+# ⛔ A SECOND HOLD, WITH NO DIRECTORY CHANGE AT ALL (0.75.9). Measured 2026-10-22 on Claude Code 2.1.304
+# (headless, macOS): in a command that defines a shell function or runs `eval`, Claude Code parses a
+# single-quoted string AGAIN, and an `rm` after a separator in it (`&&` `||` `;` `|`, escaped or not)
+# whose target is empty when its variable is - so `/` - is held: "... this rm is parsed again before it
+# runs (it is inside a quoted string or after eval)". DevWK-Mac's mutation runner stopped on a sed
+# replacement TEXT that way. Boundary, ~90 shapes HELD and RAN: ADDENDUM-0.75.9.md in the ADR folder above.
+# shortcut: mirrors a harness parser quirk by regex; re-probe after a Claude Code update.
+_FUNC_DEF = re.compile(r"(?:^|[\s;&|(){}])(?:function\s+[A-Za-z_][\w.:-]*|[A-Za-z_][\w.:-]*\s*\(\s*\))\s*\{")
+_RP_SEP = re.compile(r"\\?&\\?&|\\?\|\\?\||\\?;|\\?\|")
+_ROOT_TARGET = re.compile(r'^("?)\$(?:\{[A-Za-z_][A-Za-z_0-9]*\}|[A-Za-z_][A-Za-z_0-9]*)\1/\*?$')
+_COMMENT = re.compile(r"(?m)(?:^|(?<=[\s;&|]))#.*$")
+_KEYWORDS = frozenset(("then", "do", "else", "elif", "if", "while", "until", "!", "{"))
+
+
+def _unquoted(command):
+    """The command with quoted text dropped. A linear scan: the regex it replaces was quadratic on an
+    unclosed `"` followed by many `\\"` (12-16 s on 100 KB, review R2 B1) - and a hook that times out allows."""
+    out, q, i, n = [], None, 0, len(command)
+    while i < n:
+        c = command[i]
+        if q:
+            if c == "\\" and q == '"':
+                i += 1
+            elif c == q:
+                q = None
+        elif c in "'\"":
+            q = c
+            out.append(" ")
+        elif c == "\\":
+            out.append(command[i:i + 2])
+            i += 1
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _single_quoted_value(word):
+    """The word's shell value, or None when no single-quoted piece is in it (a double-quoted
+    string is NOT parsed again - L07 RAN). `'a && '\\''b …'` is one value (U17 HELD)."""
+    out, q, seen, i = [], None, False, 0
+    while i < len(word):
+        c = word[i]
+        if q == "'":
+            q = None if c == "'" else q
+            if q:
+                out.append(c)
+        elif q == '"':
+            if c == '"':
+                q = None
+            elif c == "\\" and word[i + 1:i + 2] in ('"', "\\", "$", "`"):
+                i += 1
+                out.append(word[i])
+            else:
+                out.append(c)
+        elif c in "'\"":
+            q, seen = c, seen or c == "'"
+        elif c == "\\" and i + 1 < len(word):
+            i += 1
+            out.append(word[i])
+        else:
+            out.append(c)
+        i += 1
+    return "".join(out) if seen else None
+
+
+def _reparsed_rm(command, segs):
+    """The `rm …` text Claude Code parses again and holds (see above), else None."""
+    # Function text inside quotes or a comment is not a definition (M01, N03, P01, O16 RAN); `eval` after
+    # then/do/else is a command (P11 HELD).
+    code = _COMMENT.sub("", _unquoted(command))
+    heads = [_head_words(w) for w, _sub in segs]
+    for h in heads:
+        while h and h[0] in _KEYWORDS:
+            h.pop(0)
+    if not (_FUNC_DEF.search(code) or any(h and h[0] == "eval" for h in heads)):
+        return None
+    for words, _sub in segs:
+        for word in words:
+            text = _single_quoted_value(word)
+            if text is not None:
+                for chunk in _RP_SEP.split(text)[1:]:      # an rm opening the string itself RAN
+                    w = chunk.split()
+                    if w and w[0] == "rm" and any(_ROOT_TARGET.match(t) for t in w[1:]):
+                        return chunk.strip()
+    return None
+
+
 def _ps_held_remove(words):
     """A Remove-Item (or rm/del/ri) whose path argument ends in a bare `*` - relative or absolute."""
     if not words or words[0].lower() not in _PS_RM_HEADS:
@@ -614,7 +702,21 @@ def g_held_delete(payload, ctx, segs):
                           "whether hidden entries go). Remove any link inside first: never delete through a "
                           "link (rule 8)." % hit)
         return None
-    parts = _shell_segments(_strip_heredocs(cmd))
+    stripped = _strip_heredocs(cmd)
+    parts = _shell_segments(stripped)
+    hit = _reparsed_rm(stripped, parts)
+    if hit:
+        ctx["log"]("CMD-HELD-DELETE(reparsed) %s" % " ".join(cmd.split())[:500])
+        return _v(DENY, "guard_held_delete",
+                  "dispatch gate: this command is refused BEFORE Claude Code stops for it. It defines a "
+                  "shell function (or runs eval), and Claude Code then parses this quoted text AGAIN as a "
+                  "command: `%s` - an rm whose target is `/` when its variable is empty. It holds that "
+                  "for the owner's explicit approval even when the text is only data (a sed replacement, "
+                  "a message); it cannot be auto-allowed, and the task waits until a person clicks. "
+                  "Rewrite: put that text in a file with the Write tool and pass the file instead (e.g. "
+                  "`sed -f <file>`), or move the function into a script file and run it. If the rm is "
+                  "real, make its target unable to become `/`: `\"${VAR:?}\"/`, or a literal absolute "
+                  "path. Never delete through a link (rule 8)." % hit[:120])
     if not any(_unresolvable_cd(w, sub) for w, sub in parts):
         return None
     for words, _sub in parts:
