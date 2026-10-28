@@ -122,6 +122,16 @@ that session. Do not report it as active.
    slot until the agent finishes (0.75.7). So treat it as a dispatch still running — dispatch nothing
    next and touch nothing it works on until its task-notification says it **finished**; one saying
    it is "waiting on its own background work" is not the end.
+   ⛔ **But waiting is not sleeping: before you end a turn while such an agent holds its slot, arm a
+   self-wake** (ScheduleWakeup or CronCreate, about 30 minutes). Nothing else wakes you — the
+   "finished" notice comes only when the job the agent waits on exits, and a job that never exits
+   sends none. Measured 2026-10-28: an agent wrote its report, then waited on a poll loop whose
+   pattern never matched (`until grep -q "^real" …`; zsh's `time` prints no `real` line); the
+   dispatcher ended its turn with no wake and slept almost 8 hours, until the owner typed.
+   ⭐ **On a "waiting on its own background work" notice, look before you wait:** does the report
+   file its prompt named exist, and what is the waited-on job? Report written and the job only a
+   wait or poll loop → stop that job (its "finished" notice follows within about a minute) and
+   treat the agent as done. Otherwise arm the wake and wait.
 3. **Dispatching before the plan is on disk** (`prompts*.md` newer than session start).
 4. **Any mass-spawn tool.** No approval path.
 5. **Dispatching when usage says STOP.**

@@ -33,6 +33,18 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.75.14
+
+擁有者 2026-10-28 選「只改技能說明」。
+
+- **背景代理佔著名額時，結束這一輪前要先設好自我喚醒。** `dispatch-protocol` 拒絕 #2（中英兩版）加兩條：結束這一輪前用
+  ScheduleWakeup 或 CronCreate 設約 30 分鐘的喚醒；收到「waiting on its own background work」先看報告檔在不在、代理在等什麼，
+  報告已寫好、等的只是等待或輪詢迴圈就停掉那個工作，把代理當成做完。實測 2026-10-28（Mac，Claude Code 2.1.299）：代理寫完報告後
+  卡在一個永遠對不上的 `until grep -q "^real"` 迴圈（zsh 的 `time` 不印 `real`），「finished」通知永遠不來；派工的 session 照舊規則
+  等它、沒設喚醒，睡了將近 8 小時。停掉迴圈後一分鐘內就收到「finished」。gate 的行為沒有變：這只是技能說明，代理不照做仍然會停住。
+
+---
+
 ## 0.75.13
 
 擁有者 2026-10-22：「scratch 有時候會有非常多層，你的腳本可以加入嗎? agent 會知道他需要刪多少層?」
@@ -3601,6 +3613,21 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.75.14
+
+Owner, 2026-10-28: chose "skill text only".
+
+- **While a background agent holds its slot, arm a self-wake before ending the turn.** `dispatch-protocol` refusal #2
+  (both languages) gains two rules: arm a wake of about 30 minutes (ScheduleWakeup or CronCreate) before ending the
+  turn; on a "waiting on its own background work" notice, check whether the report file exists and what the agent is
+  waiting on - report written and the job only a wait or poll loop means stop that job and treat the agent as done.
+  Measured 2026-10-28 (Mac, Claude Code 2.1.299): an agent wrote its report, then sat in an `until grep -q "^real"`
+  loop that could never match (zsh's `time` prints no `real` line), so the "finished" notice never came; the
+  dispatcher waited as the old rule said, with no wake, for almost 8 hours. Stopping the loop brought "finished" within
+  a minute. The gate is unchanged: this is skill text, and an agent that ignores it still stalls.
 
 ---
 
