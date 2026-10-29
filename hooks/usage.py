@@ -1086,6 +1086,9 @@ def _claim_attempt(sdir, due):
     # save an occasional single request. Upgrade only if fetch.log shows paired 429s.
     """
     path = os.path.join(sdir, "fetch.claim")
+    rl = rate_limited(sdir)
+    if rl:
+        due = max(due, _backoff(rl, due))
     try:
         if time.time() - os.path.getmtime(path) < due:
             return False
@@ -1100,6 +1103,49 @@ def _claim_attempt(sdir, due):
     except OSError:
         return True     # cannot record the attempt; better to fetch than to go blind
     return True
+
+
+# ⭐ A 429 STREAK DOUBLES THE WAIT, owner 2026-10-29. One fetch_seconds after every 429 kept
+# poking the limit every two minutes for the whole of a 22:04-22:4x block (fetch.log); the wait
+# now doubles per consecutive 429 - 2, 4, 8, 16 minutes - capped here. One success clears it.
+BACKOFF_MAX_SECONDS = 1800
+
+
+def rate_limited(sdir):
+    """The current 429 streak {"streak", "since", "last"} (epoch seconds), or None."""
+    rec = read_json(os.path.join(sdir, "fetch.429"), None)
+    return rec if isinstance(rec, dict) and rec.get("streak") else None
+
+
+def _backoff(rl, due):
+    return min(BACKOFF_MAX_SECONDS, due * 2 ** (int(rl["streak"]) - 1))
+
+
+def _note_rate_limit(sdir, hit):
+    """Count a 429 (hit=True) or clear the streak on a success (hit=False)."""
+    path = os.path.join(sdir, "fetch.429")
+    try:
+        if not hit:
+            if os.path.exists(path):
+                os.remove(path)
+            return
+        now = time.time()
+        rec = rate_limited(sdir) or {"streak": 0, "since": now}
+        rec.update(streak=int(rec["streak"]) + 1, last=now)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(rec, f)
+    except OSError:
+        pass                                     # the plain fetch_seconds claim still holds
+
+
+def rate_limit_note(sdir, due):
+    """`API 429 since 22:04, next try 22:38` while a streak lasts, else None."""
+    rl = rate_limited(sdir)
+    if not rl:
+        return None
+    return "API 429 since %s, next try %s" % (
+        time.strftime("%H:%M", time.localtime(rl["since"])),
+        time.strftime("%H:%M", time.localtime(rl["last"] + _backoff(rl, due))))
 
 
 def ensure_fresh(sdir, cfg, force=False):
@@ -1147,7 +1193,10 @@ def ensure_fresh(sdir, cfg, force=False):
     got = fetch(cfg, sdir)
     if isinstance(got, str):
         _log_fetch(sdir, got)
+        if got.startswith("HTTP 429"):
+            _note_rate_limit(sdir, True)
         return prev, got                         # the OLD record survives a failure
+    _note_rate_limit(sdir, False)
     _write_record(sdir, cfg, got, prev)
     return got, None
 
@@ -1734,6 +1783,9 @@ SEVEN_DAY_LABEL = "7d"
 # reaching the gate would change what the brake does.
 VERDICT_ICON = {"GO": "\U0001f7e2", "WARN": "\U0001f7e1", "PACE": "\U0001f7e0",
                 "STOP": "\U0001f534", "NO-DATA": "\u26aa"}
+# \ud83d\udeab replaces the dot while the usage API answers 429 (owner, 2026-10-29): the figures beside it
+# are the last good ones and cannot move. Display only, like the map above.
+RATE_LIMIT_ICON = "\U0001f6ab"
 # Module-level because _bar is called from several places and threading a flag through
 # all of them for one boolean is noise. Set from config once, at entry.
 SHOW_MARK = [True]
@@ -1939,7 +1991,7 @@ def _redraw(lines, erase="\033[K"):
     return "\r" + lines[0] + erase
 
 
-def _watch_line(stamp, data, v, note, cfg, idle=False, burn=None, hook_silent=None):
+def _watch_line(stamp, data, v, note, cfg, idle=False, burn=None, hook_silent=None, blocked=False):
     """The row(s) `--watch` prints, fitted to the terminal ONCE. A list; pure, no I/O.
 
     ⛔ THE BUG THIS FUNCTION EXISTS FOR. `_line()` fits ITSELF to the terminal width - and
@@ -1971,7 +2023,7 @@ def _watch_line(stamp, data, v, note, cfg, idle=False, burn=None, hook_silent=No
     # ⭐ WARN JOINS THE LADDER HERE TOO, via display_state() - see there for why it can only
     # ever turn a GO yellow and never touch a PACE or a STOP.
     state = SLEEP_WORD if idle else display_state(v, data, cfg)
-    word = SLEEP_WORD if idle else VERDICT_ICON.get(state, state)
+    word = SLEEP_WORD if idle else RATE_LIMIT_ICON if blocked else VERDICT_ICON.get(state, state)
     lcfg = dict(cfg)
     if idle:
         # ⭐ ONE key carries the whole idle appearance: _colour() already honours it, so "no
@@ -2719,6 +2771,9 @@ def verdict(sdir, cfg, now=None, data=None, cheap=False):
         level, driver = five_level, "5h"
 
     stale = " [data %d min old - may understate]" % age_min if age_min > cfg["stale_min"] else ""
+    blocked = rate_limit_note(sdir, cfg.get("fetch_seconds", 120)) if stale and sdir else None
+    if blocked:
+        stale = stale[:-1] + "; " + blocked + "]"
 
     # The burn sentence, built here because the glyph follows the PRINTED word (`level`), not
     # the 5h level - see the note beside `show_burn` above.
@@ -3487,6 +3542,11 @@ def watch(sdir, cfg, argv):
                     note = "%.0f min old" % age
                 if reason and (note or age is None):
                     note = "%s; %s" % (note, reason) if note else reason
+                blocked = rate_limit_note(sdir, _interval(cfg))
+                if blocked:
+                    note = "%s; %s" % (note, blocked) if note else blocked
+            else:
+                blocked = None
             # ⭐ ONE FUNCTION OWNS THE WHOLE LINE, INCLUDING ITS WIDTH. This used to assemble
             # the stamp, the body and the verdict word here - and _line() fitted only the
             # BODY, so the sixteen columns added around it overflowed the terminal and the
@@ -3513,7 +3573,7 @@ def watch(sdir, cfg, argv):
             # moment apart from should_fetch()'s own read above - see hook_silent_min().
             lines = _watch_line(time.strftime("%H:%M:%S"), data, v, note, cfg, idle=idle,
                                 hook_silent=hook_silent_min(sdir),
-                                burn=burn_triple(sdir, cfg, data))
+                                burn=burn_triple(sdir, cfg, data), blocked=bool(blocked))
             # ⛔ NO CLIMBING. See _redraw(): the watcher cleared the screen at startup and
             # redraws all of it from an absolute home, because a relative move is only right
             # while nothing else has touched the cursor - and in a VS Code panel it does.
@@ -3888,6 +3948,19 @@ def selftest():
         assert again[1] is None, "a second call must be refused by the claim"
         assert again[0] == good, "the fresh/refused path must still hand back the record"
         assert len(calls) == 1, "the claim did not prevent the second request: %r" % calls
+        # ⭐ A 429 STREAK DOUBLES THE WAIT, capped, and shows as 🚫 plus a note (2026-10-29).
+        assert rate_limited(tmp)["streak"] == 1, rate_limited(tmp)
+        assert _backoff({"streak": 1}, 120) == 120 and _backoff({"streak": 3}, 120) == 480
+        assert _backoff({"streak": 9}, 120) == BACKOFF_MAX_SECONDS
+        _note_rate_limit(tmp, True)
+        os.utime(os.path.join(tmp, "fetch.claim"), (time.time() - 200, time.time() - 200))
+        assert not _claim_attempt(tmp, 120), "streak 2 must wait 240 s, not 120"
+        assert "API 429 since" in (rate_limit_note(tmp, 120) or ""), rate_limit_note(tmp, 120)
+        assert "API 429 since" in verdict(tmp, cfg)["text"], verdict(tmp, cfg)["text"]
+        _bl = _watch_line("07:26:12", good, verdict(tmp, cfg), None, {"width": 300}, blocked=True)[0]
+        assert RATE_LIMIT_ICON in _bl, _bl
+        _note_rate_limit(tmp, False)
+        assert rate_limited(tmp) is None and rate_limit_note(tmp, 120) is None
         # ⛔ And an empty record from a caller must NOT be mistaken for "no data exists".
         assert verdict(tmp, cfg, data={})["verdict"] != "NO-DATA", (
             "an empty dict was accepted as a record instead of falling back to the file")

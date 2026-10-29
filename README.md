@@ -881,7 +881,7 @@ claude-mem 的 server 模式、agent 自己寫錯的專案名。完整清單在 
 12:02:02🟢5h ▓▓▓░░░┃░░░ 34% 1h52m(13:54) 7d ▓▓▓▓┃▓░░░░ 54% 3d22h(Fri 10:00) Fable ▓▓▓░┃░░░░░ 31% 3d22h(Fri 10:00) Burn ▓▓▓▓▓▓▓▓▓▓ .17% 6h36m
 ```
 
-⭐ **判定字換成圓點，而且它就貼在時間戳記後面、`5h` 前面**（擁有者指定，2026-09-01）：🟢 GO、🟡 WARN、🟠 PACE、🔴 STOP、⚪ 還沒有資料。
+⭐ **判定字換成圓點，而且它就貼在時間戳記後面、`5h` 前面**（擁有者指定，2026-09-01）：🟢 GO、🟡 WARN、🟠 PACE、🔴 STOP、⚪ 還沒有資料；🚫 用量 API 回 429 被限流，數字停在最後一次成功的值，附註寫 `API 429 since HH:MM, next try HH:MM`（擁有者 2026-10-29）。
 
 ⭐ **WARN 是第四個狀態，而且它只有顏色。** 只要五小時長條圖的填滿「超過它自己的 ┃」
 —— 也就是你花得比時鐘快 —— 圓點就轉黃，長條圖也轉黃。⛔ **它不會進到 `verdict()`**：
@@ -906,7 +906,7 @@ claude-mem 的 server 模式、agent 自己寫錯的專案名。完整清單在 
 12:02:02🟢5h ▓▓▓░░░┃░░░ 34% 1h52m(13:54) 7d ▓▓▓▓┃▓░░░░ 54% 3d22h(Fri 10:00) Fable ▓▓▓░┃░░░░░ 31% 3d22h(Fri 10:00) Burn ▓▓▓▓▓▓▓▓▓▓ .17% 6h36m
 ```
 
-⭐ **The verdict is a coloured dot, and it sits flush between the timestamp and `5h`** (owner-specified, 2026-09-01): 🟢 GO, 🟡 WARN, 🟠 PACE, 🔴 STOP, ⚪ no data yet.
+⭐ **The verdict is a coloured dot, and it sits flush between the timestamp and `5h`** (owner-specified, 2026-09-01): 🟢 GO, 🟡 WARN, 🟠 PACE, 🔴 STOP, ⚪ no data yet; 🚫 the usage API answers 429, the figures are the last good ones, and the note says `API 429 since HH:MM, next try HH:MM` (owner, 2026-10-29).
 
 ⭐ **WARN is a fourth state and it is colour only.** The dot and the bar turn yellow as soon as
 the five-hour bar's fill passes **its own ┃** — you are spending faster than the clock.

@@ -33,6 +33,18 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.75.15
+
+擁有者 2026-10-29 看到 watcher 整排 `--`、`(43 min old)`，選「加長退避」，並要求「顯示出這種狀態」。
+
+- **用量 API 連續回 429 時，重試間隔加倍。** 原本每次失敗都只等一個 `fetch_seconds`（120 秒）再試，`fetch.log` 記到
+  22:04 起每兩分鐘一個 429、連續 21 次。現在連續的 429 記在 `fetch.429`，等待時間 2、4、8、16 分鐘，最多 30 分鐘；成功一次就清掉。
+- **watcher 上的圓點換成 🚫**，附註寫 `API 429 since HH:MM, next try HH:MM`；`--verdict` 那行的
+  `[data N min old - may understate]` 也加上同一句，讓 session 知道它看到的是被擋住前的舊數字。gate 的判斷方式不變。
+- 驗證：`usage.py --selftest` 加上連續兩次 429 後要等 240 秒、上限 30 分鐘、成功清除、🚫 與附註出現；Windows `test_all` 27/27。
+
+---
+
 ## 0.75.14
 
 擁有者 2026-10-28 選「只改技能說明」。
@@ -3613,6 +3625,22 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.75.15
+
+Owner, 2026-10-29: the watcher showed `--` everywhere and `(43 min old)`; chose "a longer backoff" and asked for
+the state to be shown.
+
+- **Consecutive HTTP 429s from the usage API double the wait.** Every failure used to wait one `fetch_seconds` (120 s);
+  `fetch.log` recorded a 429 every two minutes from 22:04, 21 in a row. The streak now lives in `fetch.429` and the
+  wait is 2, 4, 8, 16 minutes, capped at 30; one success clears it.
+- **The watcher's dot becomes 🚫**, with the note `API 429 since HH:MM, next try HH:MM`; the `--verdict` line's
+  `[data N min old - may understate]` carries the same words, so a session knows its number predates the block.
+  The gate decides exactly as before.
+- Verified: `usage.py --selftest` checks that two 429s wait 240 s, the 30-minute cap, the clear on success, and the
+  🚫 and the note; Windows `test_all` 27/27.
 
 ---
 
