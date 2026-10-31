@@ -66,6 +66,9 @@ CHECKS = [
     # called every report "never created" (2026-10-21). Measured payload shapes, real process.
     ("background agent", [os.path.join(DEBUG_DIR, "test_background_agent.py")]),
     ("usage debug dump", [os.path.join(DEBUG_DIR, "test_usage_debug_dump.py")]),
+    # ⛔ One watcher per VS Code window is normal; before 0.75.16 processes arriving together all
+    # fetched (measured 2-3 requests in one second). Many processes, one instant, one fetch.
+    ("fetch single flight", [os.path.join(DEBUG_DIR, "test_fetch_single_flight.py")]),
     # ⚠ Runs the watch LOOP for a few seconds and counts what comes out. The defect it
     # covers - an idle watcher redrawing a too-wide line for ever - cannot be seen from a
     # pure function, only from the loop that never returns.

@@ -33,6 +33,23 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.75.16
+
+擁有者 2026-11-01：「我需要每個 VSCode 都開 Usage Watch … 請修正 plugin 程式，即使開多個 usage.py 也只打一次查詢，不要各自查詢」，並要求 Win / Mac 通用。
+
+- **現象：** 用量 API 持續回 429（10/14 起 622 筆，10/30、10/31 各約 70 筆）。這台 Mac 同時有 3 個 `usage.py --watch`
+  （每個 VS Code 視窗一個），而 10/30 以來出現 429 的 96 個秒數中，有 42 個是同一秒送出 2–3 個請求。
+- **原因：** 「上次是誰查的」原本是先讀時間戳、再寫入新的兩個步驟。同一瞬間到達的程序全都讀到舊的時間戳，全都去查。
+  原程式註解就寫著「fetch.log 出現成對 429 時要升級成真正的鎖」。
+- **修正：** 檢查與登記這兩步改由一個 `O_CREAT|O_EXCL` 鎖檔（狀態資料夾裡的 `fetch.lock`）包住，Windows 與 macOS 通用。
+  同時到達的程序只有一個能拿到鎖，其他的直接不查；鎖只持有幾毫秒，持有的程序若當掉，10 秒後鎖檔視為失效並清除。
+  0.75.15 的 429 加倍退避也在鎖裡面判斷。每個視窗照樣可以開自己的 watcher，數字都來自同一份紀錄。
+- **測試：** 新的 `test_fetch_single_flight.py`（在 `test_all` 裡）：16 個程序在同一瞬間要求，連續 5 輪，每輪只有 1 個被允許查詢；
+  拿掉鎖時 16 個全被允許（突變測試，4 個突變全部被抓到）。
+- **以機器為單位（擁有者 2026-11-01 確認：「這個查詢應該以機器為單位而不是以帳號為單位」）：** Mac 和 Windows 登入同一個帳號
+  （`acct` 雜湊比對相同），兩台機器各自每段時間查一次，不做跨機器協調。
+- 證據：`Memory/tasks/20261101-070355-usage-single-flight/`。
+
 ## 0.75.15
 
 擁有者 2026-10-29 看到 watcher 整排 `--`、`(43 min old)`，選「加長退避」，並要求「顯示出這種狀態」。
@@ -3627,6 +3644,28 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.75.16
+
+Owner, 2026-11-01: "I need a Usage Watch in every VS Code window … fix the plugin so that however many usage.py run,
+only one query goes out", the same way on Windows and macOS.
+
+- **Symptom:** the usage API keeps answering 429. fetch.log holds 622 since 10-14, about 70 a day on 10-30 and 10-31.
+  The Mac runs 3 `usage.py --watch` (one per VS Code window), and since 10-30, 42 of the 96 seconds that logged a 429
+  sent 2-3 requests in the same second.
+- **Cause:** "who tried last" was a read of the old claim and a separate write of the new one, so processes arriving
+  together all read the old claim and all fetched. The code's own note said to upgrade to a real lock once fetch.log
+  showed paired 429s.
+- **Fix:** an `O_CREAT|O_EXCL` lock file (`fetch.lock` in the state dir) wraps the check and the claim, on Windows and
+  POSIX alike. Of processes arriving together, one gets the lock and the rest do not fetch. The lock is held for
+  milliseconds; a lock whose holder died is cleared after 10 s. The 0.75.15 429 backoff is decided inside the lock.
+  Every window can keep its own watcher; all read one record.
+- **Tests:** new `test_fetch_single_flight.py` (in `test_all`): 16 processes asking at one instant, 5 rounds, exactly
+  one granted each time; without the lock all 16 were granted (4 of 4 mutations killed).
+- **Per machine, by design.** Owner, 2026-11-01: 「這個查詢應該以機器為單位而不是以帳號為單位」. The Mac and Windows are signed
+  in to the same account (the `acct` hash matches); each machine queries once per interval. There is no
+  coordination across machines.
+- Evidence: `Memory/tasks/20261101-070355-usage-single-flight/`.
 
 ## 0.75.15
 

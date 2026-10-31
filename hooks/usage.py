@@ -1080,11 +1080,49 @@ def _claim_attempt(sdir, due):
     in rather than re-rolled here - see _interval(). Jitter also reduces how often this
     function has to do anything, by stopping independent processes arriving together.
 
-    # ponytail: mtime clock, not a real mutex. Two processes hitting the same instant
-    # still get two calls; the cost is one wasted call, bounded and rare. A real lock
-    # (O_EXCL plus stale-owner recovery plus release-on-crash) is a lot of machinery to
-    # save an occasional single request. Upgrade only if fetch.log shows paired 429s.
+    ⛔ THE CHECK AND THE WRITE ARE ONE STEP, UNDER `fetch.lock` (0.75.16). Until then this was an
+    mtime clock, not a mutex, and its note said to upgrade "only if fetch.log shows paired 429s".
+    Measured 2026-11-01 on a Mac with three watchers (one per VS Code window): since 10-30, 42 of
+    the 96 seconds that logged a 429 had 2-3 requests in the SAME second - every process that
+    arrived together read the old claim before any of them wrote the new one.
+    ⇒ An O_CREAT|O_EXCL lock file: exactly one process at a time may check and claim. One that
+    finds it taken does not fetch - the holder is deciding, and decides for everyone. The fd is
+    closed at once, so the remove never meets Windows' open-file rule.
     """
+    lock = os.path.join(sdir, "fetch.lock")
+    for _ in range(2):
+        try:
+            os.makedirs(sdir, exist_ok=True)
+            os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        except FileExistsError:
+            try:
+                if time.time() - os.path.getmtime(lock) < FETCH_LOCK_STALE_SECONDS:
+                    return False                 # another process is checking right now
+                # shortcut: two processes that both find the same dead lock can each remove it and
+                # both proceed - one extra call after a crash, not worth a lease; revisit if logged.
+                os.remove(lock)                  # its holder died between create and remove
+            except OSError:
+                return False                     # it went away meanwhile: its holder decided
+            continue
+        except OSError:
+            if os.path.exists(lock):
+                return False                     # Windows refuses a lock being removed: still busy
+            return _claim_decide(sdir, due)      # cannot lock at all: the old unlocked check
+        try:
+            return _claim_decide(sdir, due)
+        finally:
+            try:
+                os.remove(lock)
+            except OSError:
+                pass                             # left behind, it goes stale after a few seconds
+    return False
+
+
+FETCH_LOCK_STALE_SECONDS = 10    # the lock is held for microseconds; older means its holder died
+
+
+def _claim_decide(sdir, due):
+    """The check-and-write itself. Call it only under fetch.lock - see _claim_attempt()."""
     path = os.path.join(sdir, "fetch.claim")
     rl = rate_limited(sdir)
     if rl:
