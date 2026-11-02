@@ -4427,9 +4427,9 @@ def skill_active_notice(name, session_id=None):
 
     ⭐ IT SAYS THE CALL HAPPENED, and that is all it can say. It fires on PostToolUse (a declined
     call fires nothing). Whether the agent then FOLLOWS the skill is the agent's business:
-    unattended-work also has the agent print its own ACTIVE line, and measured 2026-10-07 a model
-    printed that line twice with no Skill call at all - a resumed session repeating what it had
-    printed before. So this line is the evidence of an invocation; the agent's line is a claim.
+    until 0.75.17 unattended-work also had the agent print its own ACTIVE line, and measured
+    2026-10-07 a model printed that line twice with no Skill call at all - a resumed session
+    repeating what it had printed before. So this line is the only evidence of an invocation.
     """
     s = str(name or "").strip()
     for own in OWN_SKILLS:
@@ -4505,7 +4505,7 @@ def note_unattended_declaration(payload, root, sdir, cfg, sid):
     except Exception as exc:
         log(root, "SKILL-SEEN-CHECK-FAILED %r" % (exc,))
     return (" ⛔ The owner declared this run unattended (%r). Invoke "
-            "`dispatch-guard:unattended-work` now and print its ACTIVE line. From here a dispatch "
+            "`dispatch-guard:unattended-work` now. From here a dispatch "
             "naming a model above `max_model_price` is refused rather than asked - nobody is "
             "watching to answer - and the first dispatch is refused until that skill is loaded."
             % hit)

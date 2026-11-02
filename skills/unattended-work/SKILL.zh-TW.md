@@ -3,16 +3,12 @@
 > ⚠ **這是給人讀的參考翻譯，不是 skill 本身。**
 > skill 只讀同目錄的 [SKILL.md](SKILL.md)，英文版才是唯一有效的依據。
 > 英文版更新後這份可能落後；兩邊不一致時以英文版為準。
-> ⛔ 開場那一行確認句**必須照英文版原文印出**，不要印這份的翻譯。
+**六條規則一行看完：** 循序派工 · 派工前計畫先落到硬碟 · 反駁修正本身，不只是程式 · 兩輪就做停滯測試 ·
+每個失敗放行的防護都做突變檢查 · 交回前過退出門檻。不打算遵守其中某一條，就用 owner 的語言說出是哪一條、為什麼。
 
-**第一個輸出 —— 在任何事情之前，印出這一行：**
-
-> ⭐ **`unattended-work` ACTIVE** — sequential dispatch · plan on disk before dispatch ·
-> refute the fix, not just the code · stall test at 2 rounds · mutation-check every
-> fail-open guard · exit bar before handing back.
-
-那是 owner 用來分辨「skill 真的載入了」和「agent 只是掃過一個檔案」的唯一方法。
-⛔ 如果你不打算遵守其中某一條，就說出是哪一條、為什麼，不要印那一行。
+⭐ **不要自己印確認句（0.75.17）。** `Skill` 呼叫一回來，dispatch-guard 自己就會顯示
+`⭐ unattended-work ACTIVE — dispatch-guard saw the skill invoked`：那才是 owner 判斷 skill 載入的證據，模型偽造不了。
+agent 自己印的橫幅只是宣稱（見下方「兩行 ACTIVE」），而且它是固定的英文，會跟 owner「回覆用他的語言」的規則衝突。
 
 ⭐ **這個 skill 要防的失敗不是「agent 什麼都沒做」**，而是**看起來完成了、其實是錯的、
 而且很有自信的輸出**。⚠ **你專案自己的指示位階高於這個 skill**；專案檔案更嚴格的地方，
@@ -215,9 +211,9 @@ HANDOFF.md 一旦落到硬碟上，你這一輪在 PACE/STOP 結束時，gate �
 
 ⚠ **兩行 ACTIVE，意思不一樣（0.71.0）。** `Skill` 呼叫一回來，dispatch-guard 自己會顯示
 `⭐ unattended-work ACTIVE — dispatch-guard saw the skill invoked`：那才是「skill 真的被載入」的證據。
-上面那一行、也就是**你**印的那一行，是你說你採用了這些規則 —— 是宣稱，不是證明：2026-10-07 實測，
-模型在完全沒有 `Skill` 呼叫的情況下印了兩次，是一個恢復的 session 在重複它之前印過的東西。
-⇒ 只有在這個 session 真的叫過這支 skill 之後才印；發現自己在照這些規則做、卻沒有那次呼叫，就去叫它。
+0.75.17 以前 agent 還會自己再印一行橫幅 —— 那是宣稱，不是證明：2026-10-07 實測，
+模型在完全沒有 `Skill` 呼叫的情況下印了兩次，是一個恢復的 session 在重複它之前印過的東西。所以現在不再要求 agent 印任何一行。
+⇒ 發現自己在照這些規則做、這個 session 卻沒有那次 `Skill` 呼叫，就去叫它。
 ⭐ **hook 有觸發，仍然不等於規則有被遵守。**
 
 ## 20. 這個 skill 沒有涵蓋的

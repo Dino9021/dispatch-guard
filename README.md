@@ -704,7 +704,7 @@ claude plugin marketplace remove dispatch-guard
 
 ```mermaid
 flowchart TD
-  trigger{"擁有者說了<br/>無人職守、無人值守、無人模式、自動模式、做完再叫我、unattended<br/>或指名這支 skill"} --> loadUnattended["載入 unattended-work，hook 顯示 ⭐ unattended-work ACTIVE<br/>agent 也印出它自己的 ACTIVE 那一行<br/>宣告過的 run 沒載入：hook 拒絕第一次派工一次"]
+  trigger{"擁有者說了<br/>無人職守、無人值守、無人模式、自動模式、做完再叫我、unattended<br/>或指名這支 skill"} --> loadUnattended["載入 unattended-work，hook 顯示 ⭐ unattended-work ACTIVE<br/>宣告過的 run 沒載入：hook 拒絕第一次派工一次"]
   loadUnattended --> planFirst["§2 計畫和每份提示詞先落到硬碟<br/>沒有就由 hook 拒絕派工"]
   planFirst --> sequential["§1 一次派一個，不要求背景、不大量生成<br/>違反的派工 hook 都拒絕"]
   sequential --> wave["§3 實作 → 會執行的反駁者 → 修正 → 把修正再送去反駁"]
@@ -2543,7 +2543,7 @@ cowork's line also carries a `/rename <project>-<role>` tip (0.72.1, see the cow
 
 ```mermaid
 flowchart TD
-  trigger{"The owner said<br/>無人職守, 無人值守, 無人模式, 自動模式, 做完再叫我 or unattended<br/>or named this skill"} --> loadUnattended["Load unattended-work, the hook shows ⭐ unattended-work ACTIVE<br/>and the agent prints its own ACTIVE line<br/>declared run without it: the hook refuses the first dispatch once"]
+  trigger{"The owner said<br/>無人職守, 無人值守, 無人模式, 自動模式, 做完再叫我 or unattended<br/>or named this skill"} --> loadUnattended["Load unattended-work, the hook shows ⭐ unattended-work ACTIVE<br/>declared run without it: the hook refuses the first dispatch once"]
   loadUnattended --> planFirst["§2 The plan and every prompt land on disk first<br/>without them the hook refuses the dispatch"]
   planFirst --> sequential["§1 One dispatch at a time, no requested background, no mass-spawn<br/>the hook refuses each of those"]
   sequential --> wave["§3 Implement → executing refuter → fix → refute the fix"]

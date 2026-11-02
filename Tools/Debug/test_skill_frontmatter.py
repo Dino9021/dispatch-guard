@@ -118,7 +118,44 @@ def main():
             failed += 1
             print("FAIL  %-40s %s" % (rel, exc))
     print("%d skill(s) checked, %d failed" % (len(found), failed))
-    return 1 if failed else 0
+    return 1 if (failed or check_no_printed_banner(skills_dir)) else 0
+
+
+# ⛔ NO SKILL MAY REQUIRE THE AGENT TO PRINT A FIXED LINE (0.75.17). unattended-work did, and its
+# English banner collided with an owner's Stop hook that blocks mostly-English replies: every turn
+# loading the skill was blocked once (dev-workstation measured 7 of 90 blocks). The invocation
+# evidence is the hook's own systemMessage. Matched on the DEMAND, lower-cased, never the banner.
+DEMANDS = ("**first output", "print this line", "before anything else, print",
+           "第一個輸出", "印出這一行")
+
+
+def demands_printed_line(text):
+    low = text.lower()
+    return [d for d in DEMANDS if d in low]
+
+
+def check_no_printed_banner(skills_dir):
+    old = ("**First output — before anything else, print this line:**" + chr(10) + chr(10)
+           + "> ⭐ **`unattended-work` ACTIVE** — sequential dispatch")
+    look = ("When the `Skill` call returns, dispatch-guard itself shows "
+            "`⭐ unattended-work ACTIVE — dispatch-guard saw the skill invoked`"
+            " | The version in the first output line; new content gets a new version |")
+    if not demands_printed_line(old) or demands_printed_line(look):
+        print("BANNER CONTROL FAILED: old demand not caught, or the hook's line was")
+        return 1
+    bad = []
+    for d in sorted(os.listdir(skills_dir)):
+        for f in sorted(os.listdir(os.path.join(skills_dir, d))) if os.path.isdir(
+                os.path.join(skills_dir, d)) else ():
+            if f.startswith("SKILL") and f.endswith(".md"):
+                hits = demands_printed_line(io.open(os.path.join(skills_dir, d, f),
+                                                    encoding="utf-8").read())
+                if hits:
+                    bad.append("%s/%s: %s" % (d, f, hits))
+    for b in bad:
+        print("FAIL  skill demands an agent-printed line: %s" % b)
+    print("banner check: old demand caught, hook line passed, %d skill file(s) demand one" % len(bad))
+    return 1 if bad else 0
 
 
 if __name__ == "__main__":

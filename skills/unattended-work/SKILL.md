@@ -5,14 +5,16 @@ description: Use whenever the request says unattended, 無人職守, 無人值�
 
 # Unattended work
 
-**First output — before anything else, print this line:**
+**The six rules in one line:** sequential dispatch · plan on disk before dispatch · refute the
+fix, not just the code · stall test at 2 rounds · mutation-check every fail-open guard · exit
+bar before handing back. If you do not intend to follow one of them, tell the owner which and
+why, in the owner's language.
 
-> ⭐ **`unattended-work` ACTIVE** — sequential dispatch · plan on disk before dispatch ·
-> refute the fix, not just the code · stall test at 2 rounds · mutation-check every
-> fail-open guard · exit bar before handing back.
-
-It is how the owner tells "the skill loaded" from "the agent skimmed a file". If you do not
-intend to follow one of those rules, say which and why instead of printing it.
+⭐ **Print no confirmation line of your own (0.75.17).** dispatch-guard itself shows
+`⭐ unattended-work ACTIVE — dispatch-guard saw the skill invoked` when the `Skill` call returns;
+that is the owner's evidence the skill loaded, and a model cannot fake it. An agent-printed
+banner was only a claim (see "Two ACTIVE lines" below), and as fixed English text it collided
+with an owner's rule that replies are in their own language.
 
 The failure this skill prevents is not "the agent did nothing" — it is confident wrong
 output that looks finished. **Your project's own instructions outrank this skill**; where a
@@ -235,11 +237,11 @@ The session-start reminder ships in the plugin (`hooks/unattended.py`); switch i
 
 ⚠ **Two ACTIVE lines, and they mean different things (0.71.0).** When the `Skill` call returns,
 dispatch-guard itself shows `⭐ unattended-work ACTIVE — dispatch-guard saw the skill invoked`:
-that is the evidence the skill was loaded. The line above, the one YOU print, says you adopted
-the rules - a claim, not proof: measured 2026-10-07, a model printed it twice with no `Skill`
-call at all, repeating what a resumed session had printed before. ⇒ Print it only after
-invoking the skill in this session; if you find yourself following these rules without that
-call, invoke the skill. A hook that fired is still not a rule that was followed.
+that is the evidence the skill was loaded. Until 0.75.17 the agent printed a banner of its own
+as well - a claim, not proof: measured 2026-10-07, a model printed it twice with no `Skill`
+call at all, repeating what a resumed session had printed before. So no agent-printed line is
+asked for any more. ⇒ If you find yourself following these rules without a `Skill` call in
+this session, invoke the skill. A hook that fired is still not a rule that was followed.
 
 ## 20. Not covered here
 

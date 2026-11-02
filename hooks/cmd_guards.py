@@ -1515,7 +1515,7 @@ def unattended_first(payload, ctx, enabled=True):
     return _v(DENY, "guard_unattended_first",
               "dispatch gate: dispatch refused ONCE - the owner declared this run unattended "
               "(%r) and this session never invoked the `unattended-work` skill. Invoke "
-              "`dispatch-guard:unattended-work` now, print its ACTIVE line, then dispatch again; "
+              "`dispatch-guard:unattended-work` now, then dispatch again; "
               "the next dispatch is allowed either way. It governs review rounds, the stall "
               "test, when you may proceed without the owner, and the exit bar - all of which "
               "apply to what you are about to dispatch." % (word,),

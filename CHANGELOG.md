@@ -33,6 +33,25 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.75.17
+
+擁有者 2026-11-02：「DispatchGuard-Mac 有在線上，DevWK-Win 會找你討論事情，請你們一起解決」。
+
+- **`unattended-work` 不再要求 agent 自己印一行英文確認句。** dev-workstation 新的 Stop hook 會擋下主要是英文的回覆（擁有者的
+  「回覆用正體中文」規則），而這支 skill 規定第一個輸出要照抄 215 個字元的英文橫幅，所以每次載入都會被擋一次，agent 兩條規則
+  不可能同時遵守。DevWK-Win 在 150 個真實回合量到：90 次被擋裡有 7 次只是因為這行橫幅；不印之後變 83 次，沒有新增、也沒有放錯。
+  「skill 有載入」的證據本來就是 hook 自己顯示的 `⭐ unattended-work ACTIVE — dispatch-guard saw the skill invoked`（0.71.0），
+  agent 印的那行早就記載為「宣稱，不是證據」；hook 那行不是模型文字，不會被中文檢查算進去（DevWK-Win 實測）。
+  六條規則的摘要和「不打算遵守哪一條就說出來」保留，改成用 owner 的語言說。
+- 這是 0.71.0 決定（hook 的提示是證據、agent 的那行是宣稱）的延伸，不是新的架構判斷，所以沒有另寫 ADR。
+- 叫 agent「印出 ACTIVE 那一行」的提示一併拿掉：`hooks/unattended.py`、`cmd_guards.py` 的 guard_unattended_first 理由、
+  `dispatch_gate.py` 的宣告提示；README 兩張流程圖同步。
+- **新的關卡：** `test_skill_frontmatter.py` 檢查任何 `skills/*/SKILL*.md` 都不能要求 agent 照抄印出一行（比對要求的字句，不比對橫幅
+  本身）；舊的寫法放回去兩個語言版都會被抓到，cowork 裡「工具輸出第一行寫版本」那句、和 hook 那行的描述不會被誤抓。Windows
+  `test_all` 28/28。
+
+---
+
 ## 0.75.16
 
 擁有者 2026-11-01：「我需要每個 VSCode 都開 Usage Watch … 請修正 plugin 程式，即使開多個 usage.py 也只打一次查詢，不要各自查詢」，並要求 Win / Mac 通用。
@@ -3642,6 +3661,28 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.75.17
+
+Owner, 2026-11-02: "DispatchGuard-Mac is online; DevWK-Win will come to discuss something - solve it together."
+
+- **`unattended-work` no longer asks the agent to print an English confirmation line.** dev-workstation's new Stop hook
+  blocks a mostly-English reply (the owner's reply-in-Traditional-Chinese rule), and this skill made the first output a
+  verbatim 215-character English banner - so every load was blocked once, and no agent could satisfy both. DevWK-Win
+  measured 150 real turns: 7 of 90 blocks were the banner alone; without it, 83, none new and none freed wrongly. The
+  evidence that the skill loaded was already dispatch-guard's own `⭐ unattended-work ACTIVE — dispatch-guard saw the skill
+  invoked` (0.71.0), and the agent's line was already recorded as a claim; the hook line is not model text, so the
+  language check never counts it (measured by DevWK-Win). The six-rule summary and "say which rule you will not follow"
+  stay, in the owner's language.
+- A follow-on under the 0.71.0 decision (hook notice = evidence, agent line = claim), not a new durable judgement, so no
+  ADR.
+- The "print its ACTIVE line" requests are gone too: `hooks/unattended.py`, the guard_unattended_first reason in
+  `cmd_guards.py`, the declaration notice in `dispatch_gate.py`; both README charts follow.
+- **New gate:** `test_skill_frontmatter.py` fails if any `skills/*/SKILL*.md` demands an agent-printed verbatim line
+  (matched on the demand, not the banner); the old wording put back is caught in both languages, while cowork's
+  "version in the first output line" and the prose describing the hook line are not. Windows `test_all` 28/28.
 
 ---
 

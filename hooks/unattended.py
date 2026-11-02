@@ -32,18 +32,18 @@ OFF = ("false", "0", "no", "off")
 REMINDER = (
     "Invoke the unattended-work skill now. It governs review rounds, the stall test, "
     "mutation-checking fail-open guards, when you may proceed without the owner, and the "
-    "exit bar before handing work back. Print its ACTIVE confirmation line as your first "
-    "output."
+    "exit bar before handing work back."
 )
 
 # ⭐ THE LINE THE PERSON SEES, and it exists because the reminder above does not reach them.
 # `additionalContext` goes to the MODEL and nowhere else, so "the skill loaded" and "the hook
 # never ran" looked identical from a chair - the same channel confusion that cost this plugin
 # four separate defects. `systemMessage` is displayed to the user on every hook event, per the
-# shipped reference. => Two halves: this line proves the hook FIRED, and the skill's own ACTIVE
-# line proves the agent ADOPTED it. Neither one alone answers the question.
+# shipped reference. => Two halves: this line proves the hook FIRED, and dispatch-guard's own
+# `⭐ unattended-work ACTIVE` notice on the Skill call proves the skill was INVOKED. Whether the
+# agent then follows it no hook can see; the agent prints no line of its own (0.75.17).
 SEEN = ("dispatch-guard: asked this session to load the unattended-work skill. "
-        "Expect it to answer with a line containing `unattended-work ACTIVE`; if that line "
+        "Expect dispatch-guard's own line containing `unattended-work ACTIVE`; if that line "
         "does not appear, nothing loaded the rules. Turn this off with "
         "announce_unattended_work=false.")
 
