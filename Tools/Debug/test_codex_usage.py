@@ -54,6 +54,20 @@ for line in sys.stdin:
             out({"id": 2, "error": {"code": -32600, "message": "codex account authentication required to read rate limits"}})
         elif mode == "garbage":
             out({"id": 2, "result": {"something": "else"}})
+        elif mode.startswith("map_"):
+            top = {"limitId": "codex", "primary": win(12, 300, now + 3600), "secondary": win(30, 10080, now + 86400)}
+            by = {"codex": top}
+            if mode in ("map_two", "map_odd"):
+                by["img"] = {"limitId": "img", "limitName": "Images" if mode == "map_two" else None,
+                             "primary": win(100, 300, now + 7200), "secondary": None,
+                             "rateLimitReachedType": "primary"}
+            if mode == "map_odd":
+                by["broken"] = "not a snapshot"
+                by["pipe"] = {"limitName": "a|b\nc", "primary": win(5, 300, now + 3600)}
+            res = {"ordinaryUsageAllowed": True, "rateLimitsByLimitId": by}
+            if mode != "map_only":
+                res["rateLimits"] = top
+            out({"id": 2, "result": res})
         else:
             p, s, allowed, reached = {
                 "go": (win(12, 300, now + 3600), win(30, 10080, now + 86400), True, None),
@@ -522,6 +536,50 @@ def case_cli(sdir, fake_dir, fake):
     print("ok - --codex-verdict prints the word, exits 2 at WAIT and 0 at GO, tells once")
 
 
+def case_limits(gate, sdir, root, fake_dir, fake):
+    """ADDENDUM-0.76.1: one word per limit id; only the main bucket decides."""
+    import codex_usage as c
+    write_cfg(sdir, path=fake)
+    args = [sys.executable, repo_path("hooks", "usage.py"), "--codex-verdict", "--dir", sdir]
+    env = dict(os.environ, PYTHONUTF8="1")
+
+    def run(mode, *extra):
+        clear_state(sdir)
+        set_mode(fake_dir, mode)
+        return subprocess.run(args + list(extra), capture_output=True, text=True, env=env, timeout=60)
+
+    # Regression: no map, and a map holding only codex, give the 0.76.0 line exactly.
+    go = run("go").stdout.splitlines()[0]
+    only = run("map_codex_only").stdout.splitlines()[0]
+    assert go.startswith("Codex: GO (5h 12%, weekly 30%; codex: ") and go.endswith(") - use Codex."), go
+    assert only == go, (only, go)
+    # A second bucket at its limit is reported, never decides.
+    two = run("map_two")
+    assert two.returncode == 0, two.stdout
+    line = two.stdout.splitlines()[0]
+    assert line.startswith("Codex: GO (") and " - use Codex. | limit Images: WAIT until " in line, line
+    assert "do not ask the owner" in line and "TELL" not in two.stdout, two.stdout
+    j = json.loads(run("map_two", "--json").stdout)
+    assert j["word"] == "GO" and j["exit"] == 0, j
+    assert [(x["limit_id"], x["word"], x["main"]) for x in j["limits"]] == \
+        [("codex", "GO", True), ("img", "WAIT", False)], j["limits"]
+    assert j["limits"][1]["until_text"] and j["limits"][1]["label"] == "Images", j["limits"]
+    # The gate allows a plain call while only the other bucket is at WAIT.
+    run("map_two")
+    assert decision(run_gate(gate, bash(root, "codex exec -"))) is None
+    # Unnamed -> its id; malformed -> UNAVAILABLE; a label cannot forge a segment.
+    odd = run("map_odd").stdout.splitlines()[0]
+    assert "| limit img: WAIT until" in odd and "| limit broken: UNAVAILABLE - unknown" in odd, odd
+    assert "| limit a b c: GO - usable" in odd and odd.count(" | ") == 3, odd
+    assert odd.startswith("Codex: GO ("), odd
+    # A map with no top-level rateLimits stays probe-failed, exactly as 0.76.0 (no fallback).
+    mo = run("map_only")
+    assert mo.returncode == 3 and "UNAVAILABLE probe-failed" in mo.stdout, mo.stdout
+    clear_state(sdir)
+    print("ok - limits: 0.76.0 line unchanged, other buckets reported not refused, JSON list, "
+          "labels sanitised, no map fallback")
+
+
 def main():
     fresh_scratch()
     with scratch_dir("state") as sdir, scratch_dir("repo") as root, \
@@ -543,6 +601,7 @@ def main():
         case_reset_credit(gate, sdir, root)
         case_end_to_end(sdir, root, fake_dir, fake)
         case_cli(sdir, fake_dir, fake)
+        case_limits(gate, sdir, root, fake_dir, fake)
     print("ok - codex usage: all cases passed")
     return 0
 

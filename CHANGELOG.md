@@ -33,6 +33,21 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.76.1
+
+擁有者 2026-11-11：「是，請加入判斷」—— Game-Mac6 回報 Codex 的文字和圖片是分開計算的額度。
+
+- **Codex 用量判斷改成每種額度各給一個字。** 伺服器列出的每一種額度（`rateLimitsByLimitId`）都接在同一行後面：
+  `| limit <名稱>: <字>[ until <時間>] - <動作>`，`--json` 多一個 `limits` 清單。名稱用額度自己的 limitName，沒有就用 id；
+  不寫死「image」，因為兩台機器目前都只看得到 `codex` 這一種。
+- **只有主額度 `codex` 決定結論、離開碼和把關**；其他額度用完只回報、不擋，也不通知你 —— 從指令看不出一次呼叫會用到哪一種額度。
+  只有 `codex` 一種額度時，輸出和 0.76.0 一字不差。
+- ADR 補充 `Memory/tasks/20261110-164252-codex-usage-gate/ADDENDUM-0.76.1.md`，Codex 審一輪：判 REJECT，理由是「和 0.76.0 完全一樣」
+  說得太滿。已修正：拿掉「頂層沒資料就改讀分類表」的備援，主額度的判斷和 0.76.0 完全相同。
+- `test_codex_usage.py` 新增兩種額度、只有 codex、只有分類表、名稱缺漏或格式錯誤的情境。
+
+---
+
 ## 0.76.0
 
 擁有者 2026-11-10：「你覺得怎麼設計去避免 codex 撞到上限後 agent 還一直叫說不能用，或是默默地再也不用」、
@@ -3685,6 +3700,25 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.76.1
+
+Owner, 2026-11-11: "yes, add it" - Game-Mac6 reported that Codex counts text and image use against separate limits.
+
+- **The Codex verdict gives one word per limit id.** Every limit the server lists in `rateLimitsByLimitId` is
+  appended to the same line as `| limit <label>: <WORD>[ until <time>] - <action>`, and `--json` gains a `limits`
+  list. The label is the limit's limitName, or its id when it has none. No "image" id is hard-coded, because both
+  machines see only `codex` today.
+- **Only the main `codex` limit decides the word, the exit code and the gate.** Another limit at WAIT is reported,
+  never refused and never announced: a command line cannot show which limit a call will spend. With only the
+  `codex` limit, the output is byte-identical to 0.76.0.
+- ADR addendum: `Memory/tasks/20261110-164252-codex-usage-gate/ADDENDUM-0.76.1.md`. Its one Codex round said
+  REJECT because the "identical to 0.76.0" claim was too broad. The fix drops a fallback to the map when there is no
+  top-level snapshot, so the main word now decides exactly as in 0.76.0.
+- `test_codex_usage.py` adds these cases: two limits, a map holding only codex, a map with no top-level snapshot,
+  and unnamed or malformed limits.
 
 ---
 

@@ -315,11 +315,43 @@ def _label(mins):
 
 
 def classify(result, cfg, now):
-    """A probe result -> a record, or None when the shape is not recognised (ADR D4.3-6)."""
+    """A probe result -> a record, or None when the shape is not recognised (ADR D4.3-6).
+
+    The word is the top-level `rateLimits` only, exactly as in 0.76.0; every OTHER bucket of
+    `rateLimitsByLimitId` is reported in `limits`, never used to refuse (ADDENDUM-0.76.1 A2-A4)."""
     rl = result.get("rateLimits")
     allowed = result.get("ordinaryUsageAllowed")
     if not isinstance(rl, dict) or not isinstance(allowed, bool):
         return None
+    rec = _snapshot(rl, allowed, cfg, now)
+    if rec is None:
+        return None
+    main_id = rl.get("limitId") if isinstance(rl.get("limitId"), str) else "codex"
+    rec["limits"] = [_limit(main_id, rl, rec, True)]
+    by = result.get("rateLimitsByLimitId")
+    for key, snap in (by.items() if isinstance(by, dict) else ()):
+        if key == main_id:
+            continue
+        got = _snapshot(snap, None, cfg, now) if isinstance(snap, dict) else None
+        rec["limits"].append(_limit(str(key), snap if isinstance(snap, dict) else {},
+                                    got or {"word": "UNAVAILABLE", "detail": "unrecognised"},
+                                    False))
+    return rec
+
+
+def _limit(limit_id, snap, rec, main):
+    name = snap.get("limitName")
+    label = name if isinstance(name, str) and name.strip() else limit_id
+    label = " ".join(label.replace("|", " ").split())   # a label cannot forge a ` | ` segment
+    until = rec.get("until") if rec.get("word") == "WAIT" else None
+    return {"limit_id": limit_id, "label": label, "word": rec["word"], "until": until,
+            "until_text": None if until is None or rec.get("unknown") else _local(until),
+            "detail": rec.get("detail", ""), "main": main}
+
+
+def _snapshot(rl, allowed, cfg, now):
+    """One RateLimitSnapshot -> {word, detail, until?, unknown?}, or None if unrecognised.
+    `allowed` is ordinaryUsageAllowed for the main bucket, None for the others."""
     wins = []
     for name in ("primary", "secondary"):
         w = rl.get(name)
@@ -615,7 +647,25 @@ def text_of(rec):
     bits = [b for b in (rec.get("detail"), rec.get("path") and "codex: %s" % rec["path"]) if b]
     if bits:
         head += " (%s)" % "; ".join(bits)
-    return "%s - %s" % (head, action(rec))
+    line = "%s - %s" % (head, action(rec))
+    for lim in rec.get("limits") or ():
+        if not lim.get("main"):
+            line += " | " + _limit_text(lim)
+    return line
+
+
+_LIMIT_ACTION = {"GO": "usable", "PACE": "small use only", "UNAVAILABLE": "unknown"}
+
+
+def _limit_text(lim):
+    """` | limit <label>: <WORD>[ until <t>] - <action>` (ADDENDUM-0.76.1 A5)."""
+    w = lim["word"]
+    when = lim.get("until_text") or ("the next check" if w == "WAIT" else None)
+    s = "limit %s: %s" % (lim["label"], w)
+    if w == "WAIT":
+        s += " until %s" % when if lim.get("until_text") else " (reset time unknown)"
+        return s + " - do not use what this limit covers until %s; do not ask the owner" % when
+    return s + " - " + _LIMIT_ACTION.get(w, "unknown")
 
 
 def verdict(sdir, now=None):
@@ -655,6 +705,7 @@ def main(argv, sdir):
     out["exit"] = EXIT[rec["word"]]
     out["text"] = text_of(rec)
     out["until_text"] = _local(rec["until"]) if rec.get("until") else None
+    out["limits"] = rec.get("limits") or []
     if told == "new":
         out["notice"] = "TELL THE OWNER: " + owner_line(rec)
     elif told == "told":
