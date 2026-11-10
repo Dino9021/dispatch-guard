@@ -84,6 +84,8 @@ switch: somebody will want the dispatch gate without the git gate.
 | a search with its errors silenced is refused | `guard_silenced_search` | `2>/dev/null`, `2>$null`, `--no-messages`, and `-s` for grep only (for `rg`, `-s` means `--case-sensitive`) |
 | a delete that **Claude Code itself holds for the owner** is refused first, with a rewrite (0.75.8) | `guard_held_delete` | Bash: `rm` of a relative bare-`*` path (`dir/*`, `*`, `./dir/*`, `"$D"/*`) in a command that also changes directory to a target Claude Code cannot resolve (relative `cd`/`pushd`, a `(cd …)` subshell, an MSYS `/d/…` target on Windows); PowerShell: `Remove-Item`/`rm`/`del`/`ri` of a path ending in a bare `*`. Heredoc bodies and quoted strings are data. Pattern globs (`dir/*.log`), absolute paths, `"${D:?}"/*` and quoted drive-letter `cd` pass — Claude Code runs them. Mirrors a Claude Code check measured on 2.1.291 (bypassPermissions does not clear it; one session waited 7.3 h): re-probe after an update |
 | the **first** dispatch of a run the owner DECLARED unattended is refused when `unattended-work` was never invoked (0.70 — before, every session) | `guard_unattended_first`, `unattended_words` | the owner's prompt containing one of `unattended_words` (無人職守, 無人值守, 無人模式, 自動模式, 做完再叫我, `unattended` as a whole word not followed by `-` or `.` and a word character, so `unattended-work` and `unattended.py` do not count — the unattended-work skill's own trigger words, and a test keeps the gate's list a subset of the skill's) writes the session marker `unattended-declared` (log `UNATTENDED-DECLARED word=…`), and that prompt's hook output asks the model for the skill; the `Skill` call is recorded on `PostToolUse`; refused once, then allowed. An undeclared session is neither refused nor nagged (`CMD-ALLOW(guard_unattended_first no declaration)`). ⭐ Why the words and not "the skill is loaded": the nag itself had loaded the skill in 25 of the 26 sessions that dispatched here in 14 days, so it could not mean absence (owner, 2026-10-06) |
+| a **Codex call** is refused while the Codex account is at its usage limit, measured from the Codex server, or while the owner switched Codex off (0.76.0) | `codex_gate` | reads `codex_usage.json` only, never probes inline; a stale cache starts `usage.py --codex-refresh` detached (at most once per 30 s, never when the switch is off). A call is `codex` (`codex.exe`/`.cmd`/`.ps1`, any path) in command position: at the start, after `;` `&&` `\|\|` `\|` `&` `(` a newline or a shell keyword, PowerShell's `&`/`.`, or inside `$( )` / backticks (3 levels) — comments, single-quoted text and quoted heredocs are data, unquoted heredoc bodies are scanned for substitutions. Passes: `--version`, `-V`, `-h`, `--help`, `help`, `login status`, `app-server generate-json-schema`. Not seen (allowed): `$VAR exec`, `bash -c '…'`, `xargs`, `sudo -u x codex`. The refusal names the reset time and says not to ask the owner. See section 8 |
+| sending the method that **spends a Codex reset credit** is refused, at every verdict (0.76.0; owner: never use them) | `guard_reset_credit` | shell: the command names the method's full path and some command in it is not a read (`grep` `rg` `cat` `head` `tail` `less` `more` `wc` `ls` `echo` `printf` `type` `select-string` `get-content`, `git grep/log/show/diff`); files: `Write`/`Edit`/`MultiEdit`/`NotebookEdit` text matching `method … : … <the method>` as a JSON-RPC value. Prose that names it passes. Best effort: a program that reads the method from a file is unseen |
 | `cd <relative> && …` warned | `guard_relative_cd` | `additionalContext` with **no** permission decision — an `allow` from a hook would suppress the user's own permission prompt |
 | unpushed commits older than the one just made are reported | `guard_unpushed` | `git rev-list --count @{u}..HEAD` on `PostToolUse`; advisory only |
 | a **rewrite of a file that declares itself append-only** is refused — `Write`, `Edit`, `MultiEdit` and the shell alike (0.63.0, the `cowork` skill's rule 3) | `guard_append_only` | the file's first heading contains `append-only` / `append only`, or an `<!-- append-only -->` comment stands on a line of its own, within its first 2 048 bytes — body text does not count, and neither does the comment mentioned inline (0.63.1: the 0.63.0 rule marked the cowork skill's own reading copy, whose rule 3 quotes the comment in backticks). A `Write` must start with the file's current text; an `Edit`'s `old_string` must be the end of the file, its `new_string` must start with it, and an `old_string` that occurs more than once is refused with or without `replace_all` (the tool edits one occurrence; the guard cannot tell which); in the shell, `> path` (quoted paths included), `sed -i`, `tee` without `-a`, `rm`, `truncate`, `cp` **onto** it, `mv` **from or onto** it, `Set-Content`, `Out-File` without `-Append`, `Clear-Content`, `Remove-Item`, `Move-Item` / `Rename-Item` (every operand, positional or named), `Copy-Item` **onto** it, plus `del`, `erase`, `move`, `copy` and the `2>` / `&>` redirects, with every leading `cd` / `Set-Location` / `pushd` REPLACING the cwd in turn when the path is resolved. An `Edit`'s single anchor occurrence must also be at the END of the file (a raw-unique anchor that is an earlier line would insert mid-file). `>>`, `tee -a`, `Add-Content`, reads and copies **out** pass; an unreadable file is logged `CMD-ALLOW(guard_append_only unreadable)` and allowed. A token the gate cannot expand (`$VAR`, `~`, a glob) is logged `CMD-ALLOW(guard_append_only unresolved)` and allowed |
@@ -212,3 +214,47 @@ at a time, no approval needed.
 Some widely-installed skills and tool descriptions dispatch concurrently by design. This
 protocol outranks them: the gate refuses the second dispatch and the skill stops part-way.
 Recognise it — re-run sequentially or get a count — instead of debugging the gate.
+
+## 8. Codex verdict
+
+Before using the Codex CLI, ask once:
+
+    bash ~/.claude/dispatch-guard/run.sh usage.py --codex-verdict          # add --json for a program
+
+It reads the Codex server (`codex app-server` → `account/rateLimits/read`, no model call), cached
+machine-wide in the state dir for 60 s (GO, PACE) or 5 min (WAIT, UNAVAILABLE).
+
+⛔ **Trust the answer only when its first line starts with `Codex:`** (with `--json`: the object
+has `word` and `notice` keys). A plugin older than 0.76.0 does not know the flag and prints the
+CLAUDE verdict instead, with overlapping exit codes (0 GO in both, 2 STOP there and WAIT here) —
+measured on 0.75.17. Anything else, or exit 127 (no plugin), counts as `UNAVAILABLE not-installed`.
+
+Act on the word:
+
+| word (exit code) | what to do |
+|---|---|
+| `GO` (0) | use Codex |
+| `PACE` (1) | small calls only, no large job — the account is shared by every session on every machine |
+| `WAIT <time>` (2) | carry on without Codex, **do not ask the owner**, use it again after `<time>`; the next verdict re-reads the server. `WAIT (reset time unknown)` re-checks every 5 minutes |
+| `UNAVAILABLE not-installed` / `not-logged-in` (3) | carry on without Codex; tell the owner once and ask whether to keep trying |
+| `UNAVAILABLE probe-failed` (3) | the usage check is broken, not Codex: **use Codex anyway** — the call succeeds or fails on its own |
+| `OFF` (4) | do not use Codex until the owner switches it back on |
+
+⭐ **The owner hears each state once per machine.** The first verdict or gate refusal that sees
+a new state prints `TELL THE OWNER: …` (the gate: a screen line); every later one prints
+`(already told on this machine - say nothing)` — then say nothing. A state is `WAIT`, `OFF` or
+one `UNAVAILABLE` reason, never a time: a WAIT whose reset time moves is still the same WAIT.
+GO clears WAIT and OFF at once, UNAVAILABLE after an hour of GO.
+
+⛔ **The verdict fails closed, the gate fails open.** A verdict that cannot be measured is never
+GO — it is UNAVAILABLE. The gate (`codex_gate`, section 3) refuses only a server-measured WAIT
+or OFF and lets everything else through. Codex's own session log never makes a WAIT: a failed
+probe is `UNAVAILABLE probe-failed`, with `(last session log: limit until <time>)` as a note.
+
+⛔ **Never spend a reset credit.** The account holds free "full reset" credits; the owner's
+decision is never to use them, and `guard_reset_credit` refuses sending the method.
+
+Settings, in the state `config.json` only (machine-wide, never per project): `codex.enabled`
+(false → OFF), `codex.path` (where the CLI is; otherwise PATH, then the newest VS Code ChatGPT
+extension's `bin/<platform>/codex`), `codex.pace_pct` (default 90). ADR:
+`Memory/tasks/20261110-164252-codex-usage-gate/ADR.md`.

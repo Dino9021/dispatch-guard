@@ -5658,6 +5658,11 @@ def main():
     argv = sys.argv[1:]
     if "--selftest" in argv:
         return selftest()
+    if "--codex-verdict" in argv or "--codex-refresh" in argv:
+        # ⭐ The Codex verdict (0.76.0) is its own module, delegated to BEFORE any Claude-usage
+        # work, so a Codex change cannot break the Claude verdict (ADR 20261110-164252 D1).
+        import codex_usage
+        return codex_usage.main(argv, state_dir(argv))
     sdir = state_dir(argv)
     cfg = config(sdir)
     if "--fetch-now" in argv:

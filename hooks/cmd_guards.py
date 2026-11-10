@@ -69,6 +69,10 @@ GUARD_DEFAULTS = {
     # every decision logged, one switch each. ADR: Memory/tasks/20260919-204317-cowork-skill-and-hooks.
     "guard_append_only": True,          # deny: a rewrite of a file that declares itself append-only
     "guard_cowork_first": True,         # deny once: a write while a live peer shares this repo
+    # ⭐ THE TWO CODEX GUARDS (0.76.0) - ADR Memory/tasks/20261110-164252-codex-usage-gate. The
+    # decisions live in codex_usage.py; these rows only feed them the command.
+    "codex_gate": True,                 # deny: a Codex call at a server-measured WAIT, or OFF
+    "guard_reset_credit": True,         # deny: sending the method that spends a reset credit
 }
 
 # ⭐ HOW FRESH A PEER'S HEARTBEAT MUST BE to count it as live, in minutes. The gate touches
@@ -1195,6 +1199,55 @@ def g_cowork_first_commit(payload, ctx, segs):
                         what="commit")
 
 
+# ------------------------------------------------------------------- the Codex guards (0.76.0)
+
+def _shell(payload):
+    return "powershell" if payload.get("tool_name") == "PowerShell" else "bash"
+
+
+def g_codex_gate(payload, ctx, segs):
+    """A Codex call while the account is at its usage limit (server-measured), or switched off.
+
+    ⭐ Reads the cache only; a stale one starts a detached refresher - unless this switch is off,
+    which is why the guard reads its own switch FIRST (it is still called when disabled, so the
+    log can say what it would have refused)."""
+    import codex_usage
+    cmd = command_of(payload)
+    if "codex" not in cmd.lower() or not codex_usage.codex_calls(cmd, _shell(payload)):
+        return None
+    cfg = ctx.get("cfg") or {}
+    enabled = _truthy(cfg.get("codex_gate"), GUARD_DEFAULTS["codex_gate"])
+    got = codex_usage.gate(ctx["sdir"], enabled=enabled)
+    if not got:
+        return None
+    return _v(DENY, "codex_gate", got[0], got[1])
+
+
+_RESET_REFUSAL = ("dispatch gate: REFUSED - this would spend one of the Codex account's free reset "
+                  "credits. The owner's decision: never use them. When Codex is at its limit, "
+                  "carry on without it until the reset time the Codex verdict names.")
+
+
+def g_reset_credit(payload, ctx, segs):
+    """A shell command that names the reset-credit method and is not purely reads (ADR D8)."""
+    import codex_usage
+    if codex_usage.shell_sends_reset(command_of(payload), _shell(payload)):
+        return _v(DENY, "guard_reset_credit", _RESET_REFUSAL)
+    return None
+
+
+def f_reset_credit(payload, ctx, tool, path, tool_input):
+    """A file write that sends the reset-credit method as a JSON-RPC method value (ADR D8)."""
+    import codex_usage
+    texts = [tool_input.get("content"), tool_input.get("new_string"), tool_input.get("new_source")]
+    edits = tool_input.get("edits")
+    if isinstance(edits, list):
+        texts += [e.get("new_string") for e in edits if isinstance(e, dict)]
+    if any(codex_usage.sends_reset(t) for t in texts):
+        return _v(DENY, "guard_reset_credit", _RESET_REFUSAL)
+    return None
+
+
 # --------------------------------------------------------------------- the file-tool guards
 # Same shape as the shell guards, with the tool, the resolved path and the tool_input passed
 # in: (payload, ctx, tool, path, tool_input) -> a verdict or None.
@@ -1231,6 +1284,8 @@ def f_cowork_first(payload, ctx, tool, path, tool_input):
 # ⚠ The cowork nag sits BEFORE the relative-cd WARNING: a warning is also a verdict, and the
 # first verdict wins, so a `cd x && git commit` would otherwise never reach the nag.
 GUARDS = (
+    # ⭐ FIRST: spending a reset credit is the one action here nothing can undo.
+    ("guard_reset_credit", g_reset_credit),
     ("guard_commit_branch", g_commit_branch),
     ("guard_add_all", g_add_all),
     ("guard_commit_message_file", g_commit_message_file),
@@ -1240,11 +1295,14 @@ GUARDS = (
     # ⚠ BEFORE the relative-cd WARNING, like the cowork nag: `cd x && rm -f out/*` is its main
     # shape and would otherwise stop at the warning (review N4).
     ("guard_held_delete", g_held_delete),
+    # Before the relative-cd WARNING, for the same reason: `cd x && codex exec …` (ADR D7).
+    ("codex_gate", g_codex_gate),
     ("guard_relative_cd", g_relative_cd),
 )
 
 # The file-tool table. `Write`, `Edit`, `MultiEdit`, `NotebookEdit` reach these from main().
 FILE_GUARDS = (
+    ("guard_reset_credit", f_reset_credit),
     ("guard_append_only", f_append_only),
     ("guard_cowork_first", f_cowork_first),
 )

@@ -60,6 +60,8 @@ skill 是模型看了描述之後**自己決定**要不要用；文件是模型*
 | ⛔ 拒絕**把錯誤訊息吞掉**的搜尋 | `2>/dev/null`、`2>$null`、`--no-messages`、grep 的 `-s` |
 | ⛔ **沒載入 `dispatch-protocol` 就拒絕派工** | 每一次都拒絕，直到它被叫過。`require_dispatch_protocol` |
 | ⭐ 你**宣告無人職守**（prompt 含 無人職守／無人值守／無人模式／自動模式／做完再叫我／unattended）之後，沒載入 `unattended-work` 就派工，**拒絕一次** | 0.70 起只在你宣告的那種 run 才問；沒宣告的 session 派工時不擋也不唸（SessionStart 的提醒不變）。要變成閘門就開 `require_unattended_work` |
+| ⛔ **Codex 用量到上限時拒絕 agent 的 Codex 呼叫**（以 Codex 伺服器的數字為準），退回訊息寫重設時間、叫它別問你 | `codex_gate`（0.76.0）。只讀快取，查不到用量就放行。見下方「Codex 用量判斷」 |
+| ⛔ 拒絕**使用 Codex 免費重設券**的請求 —— 一律不用 | `guard_reset_credit`（0.76.0）。只是提到名稱的文字不擋 |
 | ⚠ `cd <相對路徑> && …` 出警告 | `cd` 失敗時，後面整串安靜地不執行 |
 | ⚠ 有更舊的 commit 沒推，會提醒 | 只提醒，不拒絕 |
 | ⚠ 子 agent 回來了，但**它的提示詞要求的檔案沒有出現** | `guard_agent_report_file`。摘要照樣回來、而且看起來很正常；檔案不存在看起來不正常 |
@@ -1343,6 +1345,28 @@ CronCreate 喚醒（給確切的 cron，在重置之後、OS 排程之前）；�
 
 ---
 
+## Codex 用量判斷
+
+用 Codex CLI 之前先問一次（0.76.0）：
+
+```bash
+bash ~/.claude/dispatch-guard/run.sh usage.py --codex-verdict          # 加 --json 給程式讀
+```
+
+它直接問 Codex 伺服器（`codex app-server` 的 `account/rateLimits/read`，不呼叫模型），整台機器共用一份結果。
+離開碼：`0 GO`、`1 PACE`、`2 WAIT <時間>`、`3 UNAVAILABLE <原因>`、`4 OFF`。每個字該怎麼做，見 PROTOCOL.md 第 8 節。
+
+⛔ **第一行要以 `Codex:` 開頭才算數。** 0.76.0 以前的版本不認得這個參數，會改印 Claude 的用量結論，離開碼還重疊
+（兩邊的 0 都是 GO；舊版的 2 是 STOP，這裡是 WAIT）。其他輸出一律當成 `UNAVAILABLE not-installed`。
+
+- **額度用完（WAIT）就記下重設時間**，先不用 Codex 繼續做、不問你，時間到了再用。
+- **同一件事每台機器只告訴你一次。** 第一個看到的 session 會印 `TELL THE OWNER:`，之後的都印「已經說過了」。
+- **查詢本身壞掉時照用 Codex**，不會因為查不到就從此不用。
+- **免費重設券一律不用**，`guard_reset_credit` 會擋。
+- 設定只在 `~/.claude/dispatch-guard/config.json` 的 `codex` 裡：`enabled`、`path`、`pace_pct`。
+
+---
+
 ## 用量重置後自動續跑
 
 ```bash
@@ -1876,6 +1900,8 @@ one are byte-identical on screen. Each has its own switch; all default to on.
 | ⛔ refuses a search with **its errors silenced** | `2>/dev/null`, `2>$null`, `--no-messages`, and `-s` for grep |
 | ⛔ **refuses every dispatch until `dispatch-protocol` has been invoked** | `require_dispatch_protocol` — that skill is what the gate enforces |
 | ⭐ refuses the **first** dispatch of a run **you declared unattended** (your prompt said 無人職守 / 無人值守 / 無人模式 / 自動模式 / 做完再叫我 / unattended) when `unattended-work` was never invoked | since 0.70 only in a declared run; an undeclared session is neither refused nor nagged at dispatch (the SessionStart reminder is unchanged). A nag, not a gate. `require_unattended_work` makes it a gate |
+| ⛔ **refuses an agent's Codex call while the Codex account is at its usage limit** (measured from the Codex server), naming the reset time and telling it not to ask you | `codex_gate` (0.76.0). Reads a cache only; when usage cannot be measured, the call goes through. See "The Codex verdict" below |
+| ⛔ refuses **spending a free Codex reset credit** — never used | `guard_reset_credit` (0.76.0). Text that only names the method passes |
 | ⚠ warns on `cd <relative> && …` | when the `cd` fails, everything after it silently does not run |
 | ⚠ reports unpushed commits older than the one just made | advisory, never a refusal |
 | ⚠ a sub-agent returned, but **the file its prompt demanded never appeared** | `guard_agent_report_file`. The summary still comes back and still looks normal; a missing file does not |
@@ -3231,6 +3257,33 @@ When the window hits the cap after a relaxation and before its reset, the gate l
 `WALL-HIT` and tells each session that worked in the net zone of that window once, at its next prompt after the reset (a turn the cap cuts just
 ends quietly on screen - the session itself does not know). Three things the verdict handles that a
 raw reading gets wrong: reset arithmetic, weekly false alarms, and burn projection.
+
+---
+
+## The Codex verdict
+
+Ask once before using the Codex CLI (0.76.0):
+
+```bash
+bash ~/.claude/dispatch-guard/run.sh usage.py --codex-verdict          # --json for a program
+```
+
+It asks the Codex server itself (`codex app-server` → `account/rateLimits/read`, no model call), one
+answer shared by the whole machine. Exit codes: `0 GO`, `1 PACE`, `2 WAIT <time>`, `3 UNAVAILABLE
+<reason>`, `4 OFF`. What to do on each word is PROTOCOL.md section 8.
+
+⛔ **Trust it only when the first line starts with `Codex:`.** A plugin older than 0.76.0 does not
+know the flag and prints the CLAUDE verdict, with overlapping exit codes (0 is GO in both; 2 is STOP
+there and WAIT here). Treat anything else as `UNAVAILABLE not-installed`.
+
+- **At the limit (WAIT) the reset time is recorded**: carry on without Codex, do not ask you, use it
+  again after that time.
+- **You hear each state once per machine.** The first session to see it prints `TELL THE OWNER:`;
+  the rest print "already told".
+- **A broken usage check means use Codex anyway**, so a probe failure never retires Codex.
+- **Free reset credits are never used**; `guard_reset_credit` refuses sending one.
+- Settings live only in `~/.claude/dispatch-guard/config.json`, under `codex`: `enabled`, `path`,
+  `pace_pct`.
 
 ---
 

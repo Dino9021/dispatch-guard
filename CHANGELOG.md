@@ -33,6 +33,30 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.76.0
+
+擁有者 2026-11-10：「你覺得怎麼設計去避免 codex 撞到上限後 agent 還一直叫說不能用，或是默默地再也不用」、
+「如果會知道，就不用問，記下下一次哪時候可以用，用量重設後繼續用就好」、「免費重設券不要用就對了」。
+四方（DevWK-Win、DevWK-Mac、DispatchGuard-Win、DispatchGuard-Mac）先定案設計，ADR 經兩輪審查（Claude、Codex），
+兩輪的阻擋問題都已修正；Codex 複查時最後判定仍是 REJECT，只剩一個多行文字的情況，已修正並有測試涵蓋，沒有再送審
+（擁有者授權由 WIN 判斷）：`Memory/tasks/20261110-164252-codex-usage-gate/ADR.md`。
+
+- **新指令 `usage.py --codex-verdict [--json]`**：直接問 Codex 伺服器（`codex app-server` →
+  `account/rateLimits/read`，不呼叫模型），回答 GO／PACE／WAIT <時間>／UNAVAILABLE <原因>／OFF，離開碼 0–4。
+  整台機器共用一份快取（GO/PACE 60 秒、其他 5 分鐘），同時只有一個程序在查。新模組 `hooks/codex_usage.py`。
+- **找 codex**：`config.json` 的 `codex.path` → PATH → 最新版 VS Code ChatGPT 擴充套件裡的 `bin/<平台>/codex`
+  （macOS 的 PATH 上沒有 codex）。
+- **新把關 `codex_gate`**：Codex 用量到上限（以伺服器數字為準）或 `codex.enabled` 為 false 時，拒絕 agent 的
+  Codex 呼叫，寫明重設時間、叫它別問你。只讀快取、不在 hook 裡查詢；快取過期就在背景開一個查詢。查不到用量時一律放行。
+  認得註解、引號、多行文字（heredoc）、`$( )` 與反引號，`grep codex`、`echo codex-notes.md` 這類不會被誤擋。
+- **新把關 `guard_reset_credit`**：擋下使用免費重設券的請求（shell 與檔案寫入），任何用量狀態下都開著。
+- **同一件事每台機器只告訴你一次**：狀態用固定的名稱記，不含時間，重設時間變動不會重複通知；恢復 GO 才清掉。
+- **查詢壞掉時照用 Codex**（不會因為查不到而從此不用），Codex 自己的 session 紀錄只當附註，不會判成 WAIT。
+- 新檢查 `Tools/Debug/test_codex_usage.py`：用假的 codex 演出每一種伺服器回應，並確認只送出三個讀取用的方法。
+  Windows `test_all` 29/29。
+
+---
+
 ## 0.75.17
 
 擁有者 2026-11-02：「DispatchGuard-Mac 有在線上，DevWK-Win 會找你討論事情，請你們一起解決」。
@@ -3661,6 +3685,36 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.76.0
+
+Owner, 2026-11-10: how to stop agents either complaining about Codex over and over once it hits its limit, or
+quietly never using it again - "if it can be known, don't ask; note when it is usable next and carry on after the
+reset" - and "just never use the free reset credits". The design was settled by four parties (DevWK-Win, DevWK-Mac,
+DispatchGuard-Win, DispatchGuard-Mac); the ADR had two review rounds (Claude, Codex) whose blockers were fixed. The
+Codex follow-up's last verdict was still REJECT, on one residual heredoc case; that case is fixed and covered by a
+test, and was not re-reviewed (the owner left it to WIN): `Memory/tasks/20261110-164252-codex-usage-gate/ADR.md`.
+
+- **New command `usage.py --codex-verdict [--json]`**: asks the Codex server (`codex app-server` →
+  `account/rateLimits/read`, no model call) and answers GO / PACE / WAIT <time> / UNAVAILABLE <reason> / OFF,
+  exit codes 0-4. One machine-wide cache (60 s at GO/PACE, 5 min otherwise), one probe at a time. New module
+  `hooks/codex_usage.py`.
+- **Finding codex**: `codex.path` in `config.json`, then PATH, then the newest VS Code ChatGPT extension's
+  `bin/<platform>/codex` (macOS has no codex on PATH).
+- **New guard `codex_gate`**: refuses an agent's Codex call while the account is at its limit (server-measured) or
+  `codex.enabled` is false, naming the reset time and telling it not to ask the owner. It reads the cache only and
+  never probes inside the hook; a stale cache starts a detached refresh. Unmeasurable usage lets the call through.
+  It understands comments, quotes, heredocs, `$( )` and backticks, so `grep codex` or `echo codex-notes.md` pass.
+- **New guard `guard_reset_credit`**: refuses sending the method that spends a free reset credit, in shell commands
+  and file writes, at every verdict.
+- **The owner hears each state once per machine**: states are fixed names with no time in them, so a moving reset
+  time never re-announces; recovery to GO clears them.
+- **A broken probe means use Codex anyway** (it can never retire Codex); Codex's own session log is only a note,
+  never a WAIT.
+- New check `Tools/Debug/test_codex_usage.py`: a fake codex plays every server behaviour and asserts that only the
+  three read methods are sent. Windows `test_all` 29/29.
 
 ---
 

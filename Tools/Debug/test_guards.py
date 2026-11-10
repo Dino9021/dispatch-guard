@@ -478,7 +478,7 @@ def case_append_only(gate, sdir, root):
     before = len(gitlog(root))
     r = ft("Write", board, content=body + "---\n[10:10][S3] took C\n")
     assert decision(r) is None, "Write-as-append refused: %r" % (reason(r),)
-    assert "CMD-ALLOW(checked=2" in gitlog(root)[before:], \
+    assert "CMD-ALLOW(checked=%d" % len(cmd_guards.FILE_GUARDS) in gitlog(root)[before:], \
         "the file-tool guards did not run: %r" % (gitlog(root)[-200:],)
     r = ft("Write", board, content=body.replace("\n", "\r\n") + "---\r\n[10:10][S3] took C\r\n")
     assert decision(r) is None, "a CRLF re-encoding refused a legitimate append: %r" % (reason(r),)
@@ -494,7 +494,7 @@ def case_append_only(gate, sdir, root):
     before = len(gitlog(root))
     r = ft("Edit", board, old_string=tail, new_string=tail + "[10:10][S3] took C\n---\n")
     assert decision(r) is None, "Edit-as-append refused: %r" % (reason(r),)
-    assert "CMD-ALLOW(checked=2" in gitlog(root)[before:], "the Edit guards did not run"
+    assert "CMD-ALLOW(checked=%d" % len(cmd_guards.FILE_GUARDS) in gitlog(root)[before:], "the Edit guards did not run"
     r = ft("Edit", board, old_string=tail.rstrip(), new_string=tail.rstrip() + "\n[10:10][S3] took C\n---")
     assert decision(r) is None, "Edit-as-append without its newline refused: %r" % (reason(r),)
     r = ft("Edit", board, old_string="took A", new_string="took A (fixed)")

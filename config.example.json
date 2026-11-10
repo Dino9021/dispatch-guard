@@ -199,6 +199,21 @@
   },
 
 
+  "_codex": "======== the Codex verdict (0.76.0) ======== machine-wide, THIS file only - never per project. `usage.py --codex-verdict` answers GO / PACE / WAIT <time> / UNAVAILABLE <reason> / OFF from the Codex server; PROTOCOL.md section 8 says what each word means.",
+  "_codex_zh": "======== Codex 用量判斷（0.76.0）======== 整台機器共用，只在這個檔案設定，不能按專案設定。`usage.py --codex-verdict` 向 Codex 伺服器查詢，回答 GO / PACE / WAIT <時間> / UNAVAILABLE <原因> / OFF；每個字代表什麼，見 PROTOCOL.md 第 8 節。",
+  "codex": {
+    "_enabled": "false = OFF: agents do not use Codex, and the gate refuses Codex calls, until you set it back to true.",
+    "_enabled_zh": "false＝OFF：agent 不用 Codex，把關也會擋下 Codex 呼叫，直到你改回 true。",
+    "enabled": true,
+    "_path": "Where the Codex CLI is. Empty = PATH, then the newest VS Code ChatGPT extension's bin/<platform>/codex (macOS has no codex on PATH).",
+    "_path_zh": "Codex CLI 的位置。留空＝先找 PATH，再找最新版 VS Code ChatGPT 擴充套件的 bin/<平台>/codex（macOS 的 PATH 上沒有 codex）。",
+    "path": "",
+    "_pace_pct": "PACE (small calls only) at or above this usage percentage on either Codex window.",
+    "_pace_pct_zh": "任一個 Codex 用量窗口到這個百分比以上就是 PACE（只做小呼叫）。",
+    "pace_pct": 90
+  },
+
+
   "_dispatch": "======== the sub-task rules ======== (these keys, and only these, may also be set per project in <repo>/.claude/dispatch-guard.json)",
   "_dispatch_zh": "======== 子任務規則 ======== （只有這些鍵，可以在 <repo>/.claude/dispatch-guard.json 裡按專案設定）",
 
@@ -323,6 +338,14 @@
     "_guard_relative_cd": "WARN (never refuse) on a chained command starting `cd <relative path>`. When the `cd` fails, every later command in the chain silently does not run and prints a clean-looking nothing. ⚠ It only warns because it cannot test the target: the shell's working directory persists between tool calls and the hook payload does not carry it, so the gate does not know what the path will resolve against. The warning reaches the agent, not the screen - `cd x && …` is ordinary, and a screen line on every routine correction teaches you to ignore the one channel a model cannot suppress.",
     "_guard_relative_cd_zh": "以 `cd <相對路徑>` 開頭的串接指令會出「警告」，永遠不拒絕。`cd` 失敗的時候，後面每一個指令都安靜地不執行，然後印出一個看起來很乾淨的空結果。⚠ 只警告是因為它測不了那個目標：shell 的工作目錄在兩次工具呼叫之間會延續，而 hook payload 不帶那個值，所以 gate 不知道那個路徑會被解析到哪裡去。⭐ 警告只給 agent，不上螢幕 —— `cd x && …` 很日常，而每一次例行修正都跳一行螢幕訊息，只會訓練你忽略「模型唯一無法壓掉的那個管道」。",
     "guard_relative_cd": true,
+
+    "_codex_gate": "Refuse an agent's Codex call while the Codex account is at its usage limit (measured from the Codex server) or `codex.enabled` is false. The refusal names the reset time and tells the agent to carry on without Codex and not to ask you. It reads a cache only and fails open: when usage cannot be measured, the call goes through. PROTOCOL.md section 8.",
+    "_codex_gate_zh": "Codex 帳號用量到上限（以 Codex 伺服器的數字為準），或 `codex.enabled` 是 false 時，擋下 agent 的 Codex 呼叫。退回訊息會寫重設時間，叫 agent 先不用 Codex 繼續做，也不要問你。它只讀快取；查不到用量時一律放行。見 PROTOCOL.md 第 8 節。",
+    "codex_gate": true,
+
+    "_guard_reset_credit": "Refuse sending the method that spends one of the Codex account's free reset credits - the owner's decision is never to use them. On at every verdict, independent of codex_gate. Text that only names the method passes.",
+    "_guard_reset_credit_zh": "擋下「使用 Codex 帳號免費重設券」的請求 —— 擁有者決定永遠不用。任何用量狀態下都開著，和 codex_gate 無關。只是提到那個名稱的文字不擋。",
+    "guard_reset_credit": true,
 
     "_guard_unattended_first": "In a run the OWNER DECLARED unattended (their prompt matched unattended_words), refuse ONE dispatch when this session never invoked the `unattended-work` skill, then allow. ⭐ 0.70: only in a declared run - an undeclared session is neither refused nor nagged (log CMD-ALLOW(guard_unattended_first no declaration)); before 0.70 every session was, and that is what made \"the skill is loaded\" useless as a sign that nobody is watching (owner, 2026-10-06). Measured 2026-08-27: the SessionStart reminder naming that skill was ignored for an entire session and nothing noticed. ⚠ Once only - a skill that fails to load would otherwise deadlock the session at its first dispatch. ⭐ Independent of announce_unattended_work since 0.70.1: that switch silences only the SessionStart reminder; the owner's declaration is what says the skill is wanted here.",
     "_guard_unattended_first_zh": "擁有者「宣告過無人職守」的 run（prompt 命中 unattended_words）裡，這個 session 從來沒有叫過 `unattended-work` skill 的話，「拒絕一次」派工，然後就放行。⭐ 0.70 起只在宣告過的 run 才這樣 —— 沒宣告的 session 不擋也不唸（log CMD-ALLOW(guard_unattended_first no declaration)）；0.70 以前每個 session 都會，而那正是讓「skill 載入了」無法代表「沒人在看」的原因（擁有者，2026-10-06）。2026-08-27 實測：SessionStart 那個指名這支 skill 的提醒，被整個 session 忽略，而且沒有任何東西注意到。⚠ 只拒絕一次 —— 否則一支載入失敗的 skill 會讓 session 在第一次派工就鎖死。⭐ 0.70.1 起和 announce_unattended_work 無關：那個開關只關掉 SessionStart 的提醒；擁有者的宣告才是「這裡要這支 skill」的依據。",
