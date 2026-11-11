@@ -218,6 +218,11 @@ DEFAULTS = {
     # ⭐ A PROMPT AFTER THIS MANY IDLE MINUTES IS A WAKE (0.68, ADR 20261001-085000 D8): a woken
     # session with a live peer is asked to re-check-in on the cowork board. See wake_reason().
     "wake_gap_min": 30,
+    # ⭐ NAME A COWORK SESSION AFTER ITS ROLE (0.77.0, ADR 20261111-213912 rev 4). Both empty = off.
+    # The check-in directory, relative to the repository root, and the name format, e.g.
+    # "Game-{role}". Read by hooks/role_title.py, never here.
+    "cowork_checkin_dir": "",
+    "cowork_name_format": "",
 }
 
 # ⭐ ONE CONFIG READER, TWO FAMILIES. Merging the guard switches into DEFAULTS gives them

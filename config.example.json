@@ -381,7 +381,14 @@
 
     "_wake_gap_min": "A prompt that arrives after this many minutes without any hook from the same session counts as a WAKE (0.68.0): with a live peer in the repository, or after this session used the cowork skill, the gate then asks it to re-read the shared board and rewrite its own check-in with this session id if a field in it changed, before other work (0.69.1: a current check-in is left alone - every rewrite wakes the peers watching the channel) (cowork rule 2: a wake is a restart). Its own alarm's wake prompt and a SessionStart after resume / clear / compact count as wakes regardless. Default 30 - a pick, not a measurement. A bad value (string, 0, negative) uses the default. It is a reminder, never a refusal.",
     "_wake_gap_min_zh": "同一個 session 隔了這麼多分鐘沒有任何 hook、又收到輸入時，算「被叫醒」（0.68.0）：同一個 repo 有其他活著的 session，或這個 session 用過 cowork skill 時，gate 會請它先重讀協力板、核對自己的報到檔、session id 等欄位有變才重寫，再做別的事（0.69.1：沒變就不寫，每重寫一次都會叫醒監看通道的同伴）（cowork 規則 2：被叫醒也算重開）。自己鬧鐘的喚醒提示、resume／clear／compact 之後的 SessionStart 一律算被叫醒。預設 30 —— 這是選的，不是量出來的。設錯（字串、0、負數）就用預設。只提醒，絕不拒絕。",
-    "wake_gap_min": 30
+    "wake_gap_min": 30,
+
+    "_cowork_checkin_dir": "NAME A COWORK SESSION AFTER ITS ROLE (0.77.0). The folder of cowork check-in files, relative to the repository root (e.g. Memory/checkin), one <role>.md per role. With cowork_name_format set too, hooks/role_title.py finds the ONE file holding this session's id and, when the session's name differs from the role's name, sets it (SessionStart on resume, and every prompt). It never takes a name another live session holds, and does nothing for a headless session. Both keys empty (the default) = off. Usually set per project in .claude/dispatch-guard.json.",
+    "_cowork_checkin_dir_zh": "讓 cowork session 自動用角色的名字（0.77.0）。報到檔所在的資料夾，相對於儲存庫根目錄（例如 Memory/checkin），一個角色一個 <角色>.md。cowork_name_format 也設了的話，hooks/role_title.py 會找出「唯一一個」寫著這個 session id 的檔，名字跟角色名字不一樣時就改過來（重開時的 SessionStart，以及每次輸入）。另一個開著的 session 已經用這個名字就不改；沒人看的 session 不動。兩個都留空（預設）＝關閉。通常寫在專案的 .claude/dispatch-guard.json。",
+    "cowork_checkin_dir": "",
+    "_cowork_name_format": "The session name for a role: {role} is replaced by the check-in file's name without .md, e.g. \"Game-{role}\" gives Game-G1 for G1.md. Letters, digits and hyphens only. No default: a format without {role} counts as off.",
+    "_cowork_name_format_zh": "角色對應的 session 名字：{role} 換成報到檔檔名（去掉 .md），例如 \"Game-{role}\" 對 G1.md 得到 Game-G1。只能用英文字母、數字、連字號。沒有預設值：沒有 {role} 就當作關閉。",
+    "cowork_name_format": ""
   },
 
 

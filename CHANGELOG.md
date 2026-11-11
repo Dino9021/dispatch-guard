@@ -33,6 +33,22 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.77.0
+
+擁有者 2026-11-11：「先做本地端改名」、「A」—— 重開後不用再一個一個 /rename，session 自動用角色的名字。ADR：`Memory/tasks/20261111-213912-auto-role-identity/ADR.md`（第 4 版）。
+
+- **新的 hook `hooks/role_title.py`（SessionStart、UserPromptSubmit）。** 專案在 `.claude/dispatch-guard.json` 設
+  `cowork_checkin_dir`（報到檔資料夾）和 `cowork_name_format`（例如 `"Game-{role}"`）才會啟用，兩個都要設。
+  角色＝報到資料夾裡「唯一一個」寫著這個 session id 的 `*.md` 的檔名。
+- **只在名字不一樣時才改。** 重開（resume）時 Claude Code 本來就會恢復舊名字，所以名字已經對就什麼都不做；
+  不對（例如手動改過，或全新分頁剛寫好報到檔）就用 hook 的 `sessionTitle` 改回角色名字。不送訊息、不多跑一輪。
+- **不會搶別人的名字：** 另一個還開著的 session 已經叫這個名字就不改，並告訴 session；讀不到 session 清單也不改。
+  兩個報到檔都寫著同一個 id 也不改。沒人看的 session（`claude -p`）完全不動。
+- **遠端（Remote Control）的名字不在範圍內**：hook 改的名字不會推到已經存在的遠端連線，另列待辦（`Memory/PENDING.md`）。
+- 測試：`test_role_title.py`（8 組，三個破壞測試都抓得到）。
+
+---
+
 ## 0.76.3
 
 擁有者 2026-11-11：「做」—— Game-Mac6 實測產圖有自己的額度，0.76.2 的「產圖扣主額度」是錯的。
@@ -3728,6 +3744,25 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.77.0
+
+Owner, 2026-11-11: "do the local name first", "A" - no more /rename after every restart; a session takes its role's name. ADR: `Memory/tasks/20261111-213912-auto-role-identity/ADR.md` (revision 4).
+
+- **New hook `hooks/role_title.py` (SessionStart, UserPromptSubmit).** Off unless the project sets both
+  `cowork_checkin_dir` (the check-in folder) and `cowork_name_format` (e.g. `"Game-{role}"`) in
+  `.claude/dispatch-guard.json`. The role is the stem of the ONE `*.md` in that folder holding this session's id.
+- **It renames only when the name differs.** A resume already restores the stored title, so a correct name is left
+  alone; a wrong one (renamed by hand, or a fresh tab whose check-in was just written) is set back through the hook's
+  `sessionTitle`. No message is sent and no extra turn runs.
+- **It never takes another session's name:** a name another live session holds is not set (the session is told), nor
+  is one when the session registry cannot be read, nor when two check-ins hold the same id. Headless `claude -p`
+  sessions are untouched.
+- **The Remote Control name is out of scope:** a hook title does not reach an existing Remote Control bridge; tracked
+  in `Memory/PENDING.md`.
+- Tests: `test_role_title.py` (8 groups, three mutations killed).
 
 ---
 

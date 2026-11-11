@@ -287,6 +287,20 @@ only when the list shows two rows with the name or an error asks you to disambig
 `last confirmed` is older than your message's premise, do not send - the holder has restarted or
 the name was recycled; the file is the thing to fix, by its holder.
 
+⭐ **Not in the list? Look at the trunk before giving up.** The holder may be on another machine and
+have rewritten its check-in without your copy having it yet: `git fetch`, read
+`origin/<trunk>:<dir>/<role>.md`, and look for THAT name. Still not in the list: do not send; try
+later.
+
+⭐ **dispatch-guard can keep the name for you (0.77.0).** With `cowork_checkin_dir` and
+`cowork_name_format` (e.g. `"Game-{role}"`) set in `.claude/dispatch-guard.json`, the hook finds the
+one check-in that holds a session's id and sets that session's name to the role's name whenever they
+differ - on a resume and on every prompt - so nobody has to `/rename` after a restart. A new tab: the
+owner names its role in one sentence, the session writes its check-in with its session id and that
+name, and the name follows on the next prompt. A hand-made `/rename` reverts at the next prompt. It
+never takes a name another live session holds. ⚠ It sets the LOCAL name (the tab and the live list);
+the Remote Control name on claude.ai is not changed by it.
+
 ⚠ **Across machines, and for Remote Control or cloud sessions, a successful send proves delivery,
 not reading - nothing reports back.** Put anything that matters in a file as well (3.6).
 
