@@ -33,6 +33,20 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.76.2
+
+擁有者 2026-11-11：「修正 plugin 就好」—— 0.76.1 的前提「文字和圖片是分開的額度」實測不成立。
+
+- **產生圖片扣的就是主額度 `codex`。** 這台 Mac 的 Codex 紀錄（`~/.codex/sessions`）裡，11-11 01:00 之後有 150 個
+  呼叫 `image_gen` 的 session，全部記在 `limit_id: codex`。
+- **`premium` 是主額度用完後的備用扣款（團隊工作區點數）。** 11-10 23:58 主額度 5 小時到 100%（01:06 重設），之後
+  23:57–00:01 的 49 次呼叫改扣 `premium`，點數是 0，全部回「Your workspace is out of credits」。那段時間主額度本來就是
+  WAIT，所以判斷本身沒錯，**程式不改**。
+- PROTOCOL.md「8. Codex verdict」與 README 拿掉「例如圖片額度」，並寫明：看到 `premium` 的點數用完，就是主額度在 WAIT，
+  等它重設，不必請人補點數。
+
+---
+
 ## 0.76.1
 
 擁有者 2026-11-11：「是，請加入判斷」—— Game-Mac6 回報 Codex 的文字和圖片是分開計算的額度。
@@ -3700,6 +3714,21 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.76.2
+
+Owner, 2026-11-11: "just fix the plugin" - 0.76.1's premise, "text and images are separate quotas", was measured false.
+
+- **Image generation is charged to the main `codex` limit.** In this Mac's Codex logs (`~/.codex/sessions`), 150
+  sessions after 11-11 01:00 called `image_gen`, all recorded under `limit_id: codex`.
+- **`premium` is the overflow once the main limit is spent (workspace credits).** The main 5h limit hit 100% at
+  11-10 23:58 (reset 01:06); the 49 calls from 23:57 to 00:01 fell over to `premium`, found zero credits, and all
+  failed with "Your workspace is out of credits". The main limit was at WAIT throughout, so the verdict was right:
+  **no code change**.
+- PROTOCOL.md "8. Codex verdict" and the README drop "for example an image quota" and say that a `premium`
+  out-of-credits failure is the main limit at WAIT: wait for its reset; nobody needs to refill anything.
 
 ---
 

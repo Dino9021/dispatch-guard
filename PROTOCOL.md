@@ -240,8 +240,9 @@ Act on the word:
 | `UNAVAILABLE probe-failed` (3) | the usage check is broken, not Codex: **use Codex anyway** — the call succeeds or fails on its own |
 | `OFF` (4) | do not use Codex until the owner switches it back on |
 
-⭐ **Other Codex limits (0.76.1).** The server may list more than one limit (for example a
-separate image quota). The word above is the main `codex` limit's, and only it decides the exit
+⭐ **Other Codex limits (0.76.1).** The server may list more than one limit. ⚠ Image generation
+is NOT one of them: measured 2026-11-10/11 on a team account, `image_gen` calls were charged to the
+main `codex` limit (0.76.2). The word above is the main `codex` limit's, and only it decides the exit
 code and the gate. Each other limit the server lists is appended to the same line:
 `| limit <label>: <WORD>[ until <time>] - <action>`. `<label>` is the limit's name, or its id when
 it has none. At `WAIT`, do not use what that limit covers until that time, do not ask the owner,
@@ -249,7 +250,10 @@ and keep using other calls. Programs read `--json` → `limits`: `{limit_id, lab
 until_text, detail, main}`, with the main limit first. Such a limit is reported, never refused: a
 command line cannot show which limit a call will spend. A call that fails with
 `usageLimitExceeded` names its own `limitId` and `resetsAt` — that failure is the reliable signal
-for a limit the verdict does not list.
+for a limit the verdict does not list. ⚠ Exception, measured: once the main `codex` limit is spent,
+calls fall over to `limitId: premium` (`workspace_member_credits_depleted`, "Your workspace is out
+of credits") when the workspace has no credits. That is the MAIN limit at `WAIT`, not a separate
+quota and not something to ask anyone to refill: re-ask the verdict and use Codex after its time.
 
 ⭐ **The owner hears each state once per machine.** The first verdict or gate refusal that sees
 a new state prints `TELL THE OWNER: …` (the gate: a screen line); every later one prints

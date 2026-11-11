@@ -1361,8 +1361,10 @@ bash ~/.claude/dispatch-guard/run.sh usage.py --codex-verdict          # 加 --j
 
 - **額度用完（WAIT）就記下重設時間**，先不用 Codex 繼續做、不問你，時間到了再用。
 - **同一件事每台機器只告訴你一次。** 第一個看到的 session 會印 `TELL THE OWNER:`，之後的都印「已經說過了」。
-- **其他種類的額度另外列出**（0.76.1，例如圖片額度）：每一種都接在同一行後面，`| limit <名稱>: <字>`。
+- **其他種類的額度另外列出**（0.76.1）：每一種都接在同一行後面，`| limit <名稱>: <字>`。
   只有主額度 `codex` 會決定結論與把關；其他額度用完時只回報、不擋。
+  ⚠ 產生圖片**不是**另一種額度，扣的就是主額度 `codex`（0.76.2 實測）。主額度用完時，呼叫會改扣
+  `premium`（團隊工作區點數），點數是 0 就回「workspace is out of credits」—— 那就是主額度在 WAIT，等它重設即可。
 - **查詢本身壞掉時照用 Codex**，不會因為查不到就從此不用。
 - **免費重設券一律不用**，`guard_reset_credit` 會擋。
 - 設定只在 `~/.claude/dispatch-guard/config.json` 的 `codex` 裡：`enabled`、`path`、`pace_pct`。
@@ -3282,9 +3284,12 @@ there and WAIT here). Treat anything else as `UNAVAILABLE not-installed`.
   again after that time.
 - **You hear each state once per machine.** The first session to see it prints `TELL THE OWNER:`;
   the rest print "already told".
-- **Other Codex limits are listed separately** (0.76.1, for example an image quota): each is appended
+- **Other Codex limits are listed separately** (0.76.1): each is appended
   to the same line as `| limit <label>: <WORD>`. Only the main `codex` limit decides the word and the
   gate; another limit at WAIT is reported, never refused.
+  ⚠ Image generation is **not** a separate limit; it is charged to the main `codex` limit (measured,
+  0.76.2). Once the main limit is spent, calls fall over to `premium` (workspace credits), and with no
+  credits they fail with "workspace is out of credits" - that is the main limit at WAIT; wait for its reset.
 - **A broken usage check means use Codex anyway**, so a probe failure never retires Codex.
 - **Free reset credits are never used**; `guard_reset_credit` refuses sending one.
 - Settings live only in `~/.claude/dispatch-guard/config.json`, under `codex`: `enabled`, `path`,
