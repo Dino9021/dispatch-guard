@@ -1363,7 +1363,10 @@ bash ~/.claude/dispatch-guard/run.sh usage.py --codex-verdict          # 加 --j
 - **同一件事每台機器只告訴你一次。** 第一個看到的 session 會印 `TELL THE OWNER:`，之後的都印「已經說過了」。
 - **其他種類的額度另外列出**（0.76.1）：每一種都接在同一行後面，`| limit <名稱>: <字>`。
   只有主額度 `codex` 會決定結論與把關；其他額度用完時只回報、不擋。
-  ⚠ 產生圖片**不是**另一種額度，扣的就是主額度 `codex`（0.76.2 實測）。主額度用完時，呼叫會改扣
+  ⭐ **產生圖片有自己的額度，伺服器不會列出來**（0.76.3 實測）：只會在產圖失敗時出現
+  `image generation failed: http 429 ... usage_limit_reached ... resets_at`。查詢時會讀 Codex 最近 24 小時的紀錄，
+  把它接成 `| limit image generation: WAIT until <時間>`；時間過了、或產圖又成功了就不再顯示。
+  （0.76.2 說「產圖扣主額度」是錯的。）主額度用完時，呼叫會改扣
   `premium`（團隊工作區點數），點數是 0 就回「workspace is out of credits」—— 那就是主額度在 WAIT，等它重設即可。
 - **查詢本身壞掉時照用 Codex**，不會因為查不到就從此不用。
 - **免費重設券一律不用**，`guard_reset_credit` 會擋。
@@ -3287,8 +3290,11 @@ there and WAIT here). Treat anything else as `UNAVAILABLE not-installed`.
 - **Other Codex limits are listed separately** (0.76.1): each is appended
   to the same line as `| limit <label>: <WORD>`. Only the main `codex` limit decides the word and the
   gate; another limit at WAIT is reported, never refused.
-  ⚠ Image generation is **not** a separate limit; it is charged to the main `codex` limit (measured,
-  0.76.2). Once the main limit is spent, calls fall over to `premium` (workspace credits), and with no
+  ⭐ **Image generation has its own limit, which the server does not list** (measured, 0.76.3): it shows
+  only as `image generation failed: http 429 ... usage_limit_reached ... resets_at`. The verdict reads
+  Codex's last 24 h of session logs and appends `| limit image generation: WAIT until <time>`, until
+  that time passes or an image is produced again. (0.76.2's "charged to the main limit" was wrong.)
+  Once the main limit is spent, calls fall over to `premium` (workspace credits), and with no
   credits they fail with "workspace is out of credits" - that is the main limit at WAIT; wait for its reset.
 - **A broken usage check means use Codex anyway**, so a probe failure never retires Codex.
 - **Free reset credits are never used**; `guard_reset_credit` refuses sending one.

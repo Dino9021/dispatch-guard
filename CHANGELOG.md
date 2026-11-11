@@ -33,6 +33,20 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.76.3
+
+擁有者 2026-11-11：「做」—— Game-Mac6 實測產圖有自己的額度，0.76.2 的「產圖扣主額度」是錯的。
+
+- **產生圖片有自己的額度，伺服器的用量查詢不會列出來。** 11-11 05:32 起，121 個 session 的 `image_gen` 回
+  `image generation failed: http 429 ... usage_limit_reached ... resets_at 14:46`，同時主額度 5 小時只用了 5%–77%，文字照常可用。
+  0.76.2 的錯：只數了「有呼叫產圖」的 session，沒有讀工具回傳的錯誤。
+- **`--codex-verdict` 會讀 Codex 最近 24 小時的紀錄**（`$CODEX_HOME/sessions`），找最新一次產圖被拒，在同一行後面加
+  `| limit image generation: WAIT until <時間>`，`--json` 的 `limits` 多一筆 `image_generation`。時間過了、或之後產圖又成功
+  （只認 `image_gen` 自己的結果，`view_image` 讀圖不算）就不再顯示。只回報、不擋，主額度的結論與離開碼不變。
+- 測試：`test_codex_usage.py` 新增產圖額度情境，並讓整組測試改用空的 Codex 紀錄夾，真實紀錄不會混進測試。三個破壞測試都抓得到。
+
+---
+
 ## 0.76.2
 
 擁有者 2026-11-11：「修正 plugin 就好」—— 0.76.1 的前提「文字和圖片是分開的額度」實測不成立。
@@ -3714,6 +3728,23 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.76.3
+
+Owner, 2026-11-11: "do it" - Game-Mac6 measured that images have their own limit; 0.76.2's "charged to the main limit" was wrong.
+
+- **Image generation has its own limit, which the usage read does not list.** From 11-11 05:32, `image_gen` in 121
+  sessions failed with `image generation failed: http 429 ... usage_limit_reached ... resets_at 14:46` while the main
+  5h limit was at 5-77% and text kept working. 0.76.2's mistake: it counted sessions that called image_gen without
+  reading the tool's error.
+- **`--codex-verdict` reads Codex's last 24 h of session logs** (`$CODEX_HOME/sessions`), finds the newest image
+  refusal, and appends `| limit image generation: WAIT until <time>`; `--json` `limits` gains an `image_generation`
+  entry. It disappears once that time passes or image_gen produces an image again (only image_gen's own result
+  counts; a view_image output does not). Reported, never refused; the main word and exit code are unchanged.
+- Tests: `test_codex_usage.py` gains the image-limit cases, and the whole suite now runs on an empty Codex home so
+  real logs never reach a case. Three mutations killed.
 
 ---
 

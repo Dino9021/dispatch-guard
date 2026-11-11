@@ -580,10 +580,68 @@ def case_limits(gate, sdir, root, fake_dir, fake):
           "labels sanitised, no map fallback")
 
 
+def case_image_limit(gate, sdir, root, fake_dir, fake):
+    """0.76.3: the image limit is read from image_gen's 429 in Codex's rollouts."""
+    import codex_usage as c
+    home = os.path.join(fake_dir, "imghome")
+    d = os.path.join(home, "sessions", "2026", "11", "11")
+    os.makedirs(d, exist_ok=True)
+    now = time.time()
+    iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(t))
+    reset = int(now + 3 * 3600)
+    # Shapes copied from real rollouts (compact JSON, one record per line).
+    dump = lambda o: json.dumps(o, separators=(",", ":"))
+    out = lambda t, items: dump({"timestamp": iso(t), "type": "response_item", "payload": {
+        "type": "function_call_output", "call_id": "c", "output": items}})
+    refusal = out(now - 120, [{"type": "input_text", "text":
+        "image generation failed: http 429 Too Many Requests: Some(%s)" % json.dumps(dump(
+            {"error": {"type": "usage_limit_reached", "resets_at": reset}}))}])
+    # image_gen's result: JSON text, so the image_url key arrives escaped.
+    gen_out = out(now - 50, [{"type": "input_text",
+                              "text": dump({"image_url": "data:image/png;base64,AAAA"})}])
+    # view_image: an input_image item, key not escaped.
+    view_out = out(now - 50, [{"type": "input_image", "image_url": "data:image/png;base64,AAAA"}])
+
+    def write(*lines):
+        with open(os.path.join(d, "rollout-x.jsonl"), "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        return c.image_limit(now, home)
+
+    got = write(refusal)
+    assert got and got["word"] == "WAIT" and got["until"] == reset and not got["main"], got
+    # view_image output carries image data too: it must not read as a produced image.
+    assert write(refusal, view_out), "a view_image output cleared the image limit"
+    # An image_gen result after the refusal means images work again; one before it does not.
+    assert write(refusal, gen_out) is None, "an image produced after the refusal"
+    assert write(gen_out.replace(iso(now - 50), iso(now - 300)), refusal), "an older image cleared it"
+    # A past reset time is no limit.
+    assert write(refusal.replace(str(reset), str(int(now - 60)))) is None
+    assert write() is None
+    # End to end: GO stays GO, the image limit is appended, the gate allows a plain call.
+    write(refusal)
+    keep = os.environ["CODEX_HOME"]
+    os.environ["CODEX_HOME"] = home
+    try:
+        clear_state(sdir)
+        set_mode(fake_dir, "go")
+        write_cfg(sdir, path=fake)
+        rec = c.verdict(sdir)
+        line = c.text_of(rec)
+        assert line.startswith("Codex: GO (") and " | limit image generation: WAIT until " in line, line
+        assert c.EXIT[rec["word"]] == 0, rec
+        assert decision(run_gate(gate, bash(root, "codex exec -"))) is None
+    finally:
+        os.environ["CODEX_HOME"] = keep
+        clear_state(sdir)
+    print("ok - image limit: read from image_gen's 429, cleared only by image_gen output, reported not refused")
+
+
 def main():
     fresh_scratch()
     with scratch_dir("state") as sdir, scratch_dir("repo") as root, \
             scratch_dir("fake") as fake_dir, scratch_dir("ext") as ext:
+        # The real ~/.codex logs must never reach a case: an empty Codex home by default.
+        os.environ["CODEX_HOME"] = os.path.join(fake_dir, "emptyhome")
         fixture_repo(root)
         os.makedirs(os.path.join(root, ".claude"), exist_ok=True)
         gate = load_gate(sdir)
@@ -602,6 +660,7 @@ def main():
         case_end_to_end(sdir, root, fake_dir, fake)
         case_cli(sdir, fake_dir, fake)
         case_limits(gate, sdir, root, fake_dir, fake)
+        case_image_limit(gate, sdir, root, fake_dir, fake)
     print("ok - codex usage: all cases passed")
     return 0
 

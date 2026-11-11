@@ -34,6 +34,7 @@ FOUR THINGS THAT ARE EASY TO MISREAD
 Standard library only, like everything else here.
 """
 
+import datetime
 import glob
 import json
 import os
@@ -426,6 +427,60 @@ def session_log_note(now):
     return ""
 
 
+IMAGE_SCAN_AGE = 86400     # rollouts older than this cannot hold a live image refusal
+IMAGE_SCAN_FILES = 400
+_IMAGE_REFUSED = "image generation failed: http 429"
+_RESETS_AT = re.compile(r'resets_at\\*"\s*:\s*(\d{9,})')
+_TIMESTAMP = re.compile(r'^\{"timestamp"\s*:\s*"([^"]+)"')
+# image_gen's result is JSON text inside a tool output, so its key arrives escaped; a
+# view_image output is an input_image item whose key is not (measured 2026-11-11).
+_IMAGE_MADE = r'\"image_url\":\"data:image/'
+
+
+def _line_time(line):
+    m = _TIMESTAMP.match(line)
+    if not m:
+        return None
+    try:
+        return datetime.datetime.strptime(m.group(1)[:19], "%Y-%m-%dT%H:%M:%S").replace(
+            tzinfo=datetime.timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def image_limit(now, home=None):
+    """The image-generation limit as a `limits` entry, or None (0.76.3).
+
+    account/rateLimits/read does not list it (measured 2026-11-11): it shows only as an image_gen
+    tool error `image generation failed: http 429 ... usage_limit_reached ... resets_at` in Codex's
+    rollouts. WAIT until the newest refusal's resets_at, unless image_gen produced an image after
+    it - only image_gen's own result counts: view_image outputs carry image data too."""
+    try:
+        home = home or os.environ.get("CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex")
+        files = [f for f in glob.glob(os.path.join(home, "sessions", "*", "*", "*", "rollout-*.jsonl"))
+                 if now - os.path.getmtime(f) < IMAGE_SCAN_AGE]
+        files = sorted(files, key=os.path.getmtime)[-IMAGE_SCAN_FILES:]
+        refused, resets, produced = None, None, None
+        for f in files:
+            with open(f, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if _IMAGE_REFUSED in line:
+                        t, m = _line_time(line), _RESETS_AT.search(line)
+                        if t and m and (refused is None or t > refused):
+                            refused, resets = t, float(m.group(1))
+                    elif _IMAGE_MADE in line:
+                        t = _line_time(line)
+                        if t and (produced is None or t > produced):
+                            produced = t
+        if refused is None or resets <= now or (produced and produced > refused):
+            return None
+        return {"limit_id": "image_generation", "label": "image generation", "word": "WAIT",
+                "until": resets, "until_text": _local(resets), "detail": "from Codex session logs",
+                "main": False}
+    except Exception:
+        return None
+
+
 def compute(sdir, now=None):
     """Probe and classify. Always returns a record; never raises."""
     now = now or time.time()
@@ -456,6 +511,9 @@ def compute(sdir, now=None):
                    detail=(why + (" " + note if note else "")))
         return rec
     rec.update(got)
+    img = image_limit(now)
+    if img:
+        rec["limits"] = list(rec.get("limits") or []) + [img]
     return rec
 
 

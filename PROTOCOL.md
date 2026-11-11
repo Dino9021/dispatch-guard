@@ -240,9 +240,13 @@ Act on the word:
 | `UNAVAILABLE probe-failed` (3) | the usage check is broken, not Codex: **use Codex anyway** — the call succeeds or fails on its own |
 | `OFF` (4) | do not use Codex until the owner switches it back on |
 
-⭐ **Other Codex limits (0.76.1).** The server may list more than one limit. ⚠ Image generation
-is NOT one of them: measured 2026-11-10/11 on a team account, `image_gen` calls were charged to the
-main `codex` limit (0.76.2). The word above is the main `codex` limit's, and only it decides the exit
+⭐ **Other Codex limits (0.76.1).** The server may list more than one limit. ⭐ **Image generation
+has its own limit that the server does NOT list (0.76.3, measured 2026-11-11):** `image_gen` fails
+with `image generation failed: http 429 ... usage_limit_reached ... resets_at` while the main limit
+is far from full. The verdict reads that error from Codex's session logs (`$CODEX_HOME/sessions`,
+the last 24 h) and appends `| limit image generation: WAIT until <time>`, until `resets_at` passes
+or `image_gen` produces an image again. (0.76.2 said images were charged to the main limit - wrong:
+it counted image calls without reading their errors.) The word above is the main `codex` limit's, and only it decides the exit
 code and the gate. Each other limit the server lists is appended to the same line:
 `| limit <label>: <WORD>[ until <time>] - <action>`. `<label>` is the limit's name, or its id when
 it has none. At `WAIT`, do not use what that limit covers until that time, do not ask the owner,
