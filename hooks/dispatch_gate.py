@@ -3454,6 +3454,7 @@ def release_slot(sdir, cfg, session_id, tool_use_id):
 #   <sid>.bgkid-<agent>-<child>   background work that agent started itself (one file each:
 #                                 no read-modify-write, and no wait for the pointer - ADR r2 N1/N3)
 #   <sid>.bgdone-<agent>          that agent was released as finished (the detector, ADR D4)
+#   <sid>.bgstop-<agent>          that agent was released on a TaskStop (0.78.1)
 #   <sid>.tmp-slotN               the temp file of a slot rewrite
 
 
@@ -3572,13 +3573,18 @@ def background_slot(sdir, cfg, session_id, agent, scan=False):
 def _seen_after_release(root, sdir, session_id, agent):
     """ADR D4: a background agent released as finished is active again - a kind of child work
     the gate does not record, or a resume. Logged once; nothing is re-claimed."""
-    done = state_path(sdir, session_id, "bgdone-" + _bg_key(agent))
-    if os.path.exists(done):
-        try:
-            os.remove(done)
-        except OSError:
-            pass
-        log(root, "BG-AGENT-ACTIVE-AFTER-RELEASE agent=%s" % agent)
+    # ⭐ 0.78.1: a STOPPED agent has its own marker and line. Active again after a TaskStop is
+    # normally a SendMessage resume (measured 2026-10-25, Reglow b8ac8036) - expected, uncounted
+    # (ADR 20261021 G3) - and must not read as "a finished agent was released too early".
+    for kind, line in (("bgdone-", "BG-AGENT-ACTIVE-AFTER-RELEASE"),
+                       ("bgstop-", "BG-AGENT-ACTIVE-AFTER-STOP")):
+        done = state_path(sdir, session_id, kind + _bg_key(agent))
+        if os.path.exists(done):
+            try:
+                os.remove(done)
+            except OSError:
+                pass
+            log(root, "%s agent=%s" % (line, agent))
 
 
 def note_background_activity(root, sdir, cfg, payload):
@@ -3650,6 +3656,75 @@ def on_background_launch(payload, root, sdir, cfg, agent):
                                       % (held.get("desc") or agent))
 
 
+def _release_background(root, sdir, sid, agent, p, pointer, kid_files, how, marker="bgdone-"):
+    """Remove a background agent's slot `p` and its markers; True when the slot was released.
+
+    ⚠ Retried: on Windows a reader holding the slot file makes the remove fail for a moment.
+    """
+    for attempt in range(3):
+        try:
+            os.remove(p)
+            break
+        except FileNotFoundError:
+            log(root, "RELEASE-MISS(background, slot already gone) agent=%s" % agent)
+            return False
+        except OSError as exc:
+            if attempt == 2:
+                log(root, "RELEASE-FAILED(background) agent=%s %r" % (agent, exc))
+                return False
+            time.sleep(0.05)
+    for f in [pointer] + kid_files:
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+    try:
+        with open(state_path(sdir, sid, marker + _bg_key(agent)), "w", encoding="utf-8"):
+            pass
+    except OSError:
+        pass
+    log(root, "RELEASE(background %s) agent=%s" % (how, agent))
+    return True
+
+
+def on_task_stop(payload, root, sdir, cfg):
+    """PostToolUse of TaskStop: a background AGENT the harness confirms it stopped frees its slot now.
+
+    ⛔ WITHOUT THIS A STOPPED AGENT HELD ITS SLOT UNTIL slot_ttl_min (0.78.1, ADR
+    Memory/tasks/20261112-1440-taskstop-release). Measured 2026-11-12 (Game-Mac5): TaskStop said
+    "Successfully stopped task", no SubagentStop released it, the next dispatch was refused twice,
+    and the session renamed the slot file by hand. A failed stop fires PostToolUseFailure, never
+    this event, so reaching here means the stop succeeded. A Bash shell (another task type) is
+    ignored. `background_slot` checks the record, so a slot another dispatch now holds is never freed.
+    ⚠ A stopped agent CAN be resumed by SendMessage (measured 2026-10-25); it then runs uncounted, as
+    every resumed background agent already does (ADR 20261021 G3), and logs BG-AGENT-ACTIVE-AFTER-STOP.
+    """
+    resp = payload.get("tool_response")
+    if isinstance(resp, str):
+        try:
+            resp = json.loads(resp)
+        except ValueError:
+            return
+    if not isinstance(resp, dict) or resp.get("task_type") != "local_agent" \
+            or not str(resp.get("message") or "").startswith("Successfully stopped"):
+        return
+    agent = str(resp.get("task_id") or (payload.get("tool_input") or {}).get("task_id") or "")
+    if not agent:
+        return
+    sid = payload.get("session_id")
+    pointer = state_path(sdir, sid, "bgslot-" + _bg_key(agent))
+    p, held = background_slot(sdir, cfg, sid, agent, scan=True)
+    if not p:
+        log(root, "RELEASE-MISS(stopped, no slot) agent=%s" % agent)
+        return
+    root = held.get("root") or root
+    prefix = "%s.bgkid-%s-" % (safe_session(sid), _bg_key(agent))
+    kid_files = glob.glob(os.path.join(sdir, "state", glob.escape(prefix) + "*"))
+    if _release_background(root, sdir, sid, agent, p, pointer, kid_files, "stopped", "bgstop-"):
+        record_progress(root, cfg, held.get("folder"), held.get("desc"), held.get("at"),
+                        "STOPPED by TaskStop - slot released")
+
+
 def on_subagent_stop(payload, root, sdir, cfg):
     """A sub-agent ended a turn. Release its slot if it is a BACKGROUND agent that is done.
 
@@ -3687,29 +3762,8 @@ def on_subagent_stop(payload, root, sdir, cfg):
         record_progress(root, cfg, held.get("folder"), held.get("desc"), held.get("at"),
                         "WAITING on its own background work (%s) - slot held" % ", ".join(live))
         return
-    for attempt in range(3):
-        try:
-            os.remove(p)
-            break
-        except FileNotFoundError:
-            log(root, "RELEASE-MISS(background, slot already gone) agent=%s" % agent)
-            return
-        except OSError as exc:
-            if attempt == 2:
-                log(root, "RELEASE-FAILED(background) agent=%s %r" % (agent, exc))
-                return
-            time.sleep(0.05)
-    for f in [pointer] + kid_files:
-        try:
-            os.remove(f)
-        except OSError:
-            pass
-    try:
-        with open(state_path(sdir, sid, "bgdone-" + _bg_key(agent)), "w", encoding="utf-8"):
-            pass
-    except OSError:
-        pass
-    log(root, "RELEASE(background finished) agent=%s" % agent)
+    if not _release_background(root, sdir, sid, agent, p, pointer, kid_files, "finished"):
+        return
     record_progress(root, cfg, held.get("folder"), held.get("desc"), held.get("at"),
                     "FINISHED in the background: %s"
                     % (payload.get("last_assistant_message") or "(no text returned)"))
@@ -5079,6 +5133,13 @@ def main():
                 post_note = arm_on_handoff_write(root, sdir, cfg, sid) or ""
         except Exception as exc:
             log(root, "HANDOFF-NOTE-FAILED %r" % (exc,))
+        # ⭐ 0.78.1: a stopped background agent frees its slot now, not at slot_ttl_min.
+        # Never returns: the rest of PostToolUse still runs for this call.
+        if tool == "TaskStop":
+            try:
+                on_task_stop(payload, root, sdir, cfg)
+            except Exception as exc:
+                log(root, "TASKSTOP-RELEASE-FAILED %r" % (exc,))
 
     # ⛔ A TOOL CALL THAT FAILS FIRES PostToolUseFailure, AND PostToolUse NEVER RUNS. So
     # until this branch existed, EVERY failed dispatch kept its slot for the full

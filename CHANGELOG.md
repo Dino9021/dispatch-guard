@@ -33,6 +33,16 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.78.1
+
+擁有者 2026-11-12：主動停掉代理後，名額不該還要空等。
+
+- **用 TaskStop 成功停掉背景代理時，它的派工名額當場收回。**之前要等到它最後一次動作後 30 分鐘
+  （`slot_ttl_min`）才回收；今天 Game-Mac5 停掉代理後，下一次派工被擋了兩次，最後是手動改名額檔才派出去。
+  只認 `task_type: local_agent`；停掉的是背景 shell 就不理。名額會先核對紀錄，所以別的派工佔著的名額不會被誤放。
+  log 記 `RELEASE(background stopped)`。ADR：`Memory/tasks/20261112-1440-taskstop-release/ADR.md`。
+- 沒涵蓋：按 Esc 中斷「前景」代理，行為不變。
+
 ## 0.78.0
 
 擁有者 2026-11-12：「強制」—— 重開後的 session 讀到「先報到」的提醒卻跳過，今天量到兩次。
@@ -3765,6 +3775,17 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.78.1
+
+Owner, 2026-11-12: a deliberately stopped agent must not leave the session waiting for its slot.
+
+- **A successful TaskStop of a background agent releases its dispatch slot at once.** It used to wait for
+  `slot_ttl_min` (30 min after the agent's last hook); today Game-Mac5's next dispatch was refused twice after a stop,
+  until the slot file was renamed by hand. Only `task_type: local_agent` counts; a stopped background shell is
+  ignored. The slot record is checked, so a slot another dispatch holds is never freed. Logged as
+  `RELEASE(background stopped)`. ADR: `Memory/tasks/20261112-1440-taskstop-release/ADR.md`.
+- Not covered: interrupting a FOREGROUND agent with Esc is unchanged.
 
 ## 0.78.0
 

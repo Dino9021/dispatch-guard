@@ -313,6 +313,47 @@ def main():
             "a failure in the sub-agent-event handling took the rest of the event with it"
         os.rmdir(sfile("bgkid-aX-aKID"))
 
+        # 16. A SUCCESSFUL TaskStop OF A BACKGROUND AGENT FREES ITS SLOT AT ONCE (0.78.1, ADR
+        # Memory/tasks/20261112-1440-taskstop-release). Measured result shape, Claude Code 2.1.322.
+        def task_stop(task_id, task_type="local_agent", as_text=False):
+            resp = {"message": "Successfully stopped task: %s (x)" % task_id, "task_id": task_id,
+                    "task_type": task_type, "command": "x"}
+            return fire(env, dict(base, hook_event_name="PostToolUse", tool_name="TaskStop",
+                                  tool_use_id="toolu_STOP_%s" % task_id,
+                                  tool_input={"task_id": task_id},
+                                  tool_response=json.dumps(resp) if as_text else resp))
+        assert dispatch("toolu_BG4", "stopped review", 8).get("permissionDecision") == "allow"
+        post("toolu_BG4", launched("aBG4", "stopped review"))
+        agent_event("aBG4", event="PostToolUse", tool="Bash",
+                    response={"stdout": "", "backgroundTaskId": "bkid4"})
+        task_stop("bkid4", task_type="local_bash")          # a shell: ignored
+        task_stop("aOTHER")                                  # another agent: no slot of its own
+        assert (held() or {}).get("agent") == "aBG4", "a stop of something else freed the slot"
+        assert "RELEASE-MISS(stopped, no slot) agent=aOTHER" in gate_log()
+        task_stop("aBG4")
+        assert held() is None, "a successful TaskStop did not release the agent's slot"
+        assert "RELEASE(background stopped) agent=aBG4" in gate_log()
+        assert "STOPPED by TaskStop - slot released" in progress(), progress()
+        assert not os.path.exists(sfile("bgslot-aBG4")), "the pointer outlived the stop"
+        assert not os.path.exists(sfile("bgkid-aBG4-bkid4")), "a child record outlived the stop"
+        assert dispatch("toolu_AFTERSTOP", "redo", 9).get("permissionDecision") == "allow", \
+            "the next dispatch was still refused after the stop"
+        post("toolu_AFTERSTOP", launched("aBG5", "redo"))
+        fire(env, dict(base, hook_event_name="PostToolUse", tool_name="TaskStop",
+                       tool_use_id="toolu_STOP_BAD", tool_input={"task_id": "aBG5"},
+                       tool_response={"message": "Error: Task aBG5 is not running",
+                                      "task_id": "aBG5", "task_type": "local_agent"}))
+        assert (held() or {}).get("agent") == "aBG5", "a stop that did not succeed freed the slot"
+        task_stop("aBG5", as_text=True)                      # a JSON-string response also works
+        assert held() is None, "a TaskStop whose response is a JSON string was ignored"
+        assert os.path.exists(sfile("bgstop-aBG5")) and not os.path.exists(sfile("bgdone-aBG5"))
+        n_rel = gate_log().count("RELEASE(background")
+        assert stop("aBG5") is None and held() is None       # a late SubagentStop: a no-op
+        assert gate_log().count("RELEASE(background") == n_rel, "a late SubagentStop released again"
+        # ... it logs the STOP line, never the "finished agent released too early" one.
+        assert "BG-AGENT-ACTIVE-AFTER-STOP agent=aBG5" in gate_log()
+        assert "BG-AGENT-ACTIVE-AFTER-RELEASE agent=aBG5" not in gate_log()
+
         # 15. THE HARNESS MUST ACTUALLY SEND THE EVENT.
         with open(repo_path("hooks", "hooks.json"), encoding="utf-8") as f:
             assert "SubagentStop" in json.load(f)["hooks"], \

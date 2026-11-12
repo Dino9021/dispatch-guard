@@ -1745,6 +1745,7 @@ dispatch_gate.py        ← 每次工具呼叫都是新行程，跟上面沒有�
   Claude Code 2.1.299 起預設把派工放到背景：`PostToolUse` 一啟動就觸發。0.75.7 起 gate 保留名額，
   等那個代理的 `SubagentStop`（而且它自己啟動的背景工作都結束了）才釋放 —— 所以每個名額在它自己的代理做完時就空出來，
   已核准的並行在 gate 這裡變成滑動視窗；「一批 N 個跑完再下一批」要靠派工的人自己守。
+  ⭐ 用 `TaskStop` 主動停掉背景代理成功時，名額當場收回，不用等（0.78.1）。
   ⚠ 一個背景代理在等自己的長時間背景工作、超過 `slot_ttl_min`（30 分鐘）都沒有任何 hook 時，名額會被回收（log 會寫 `RECLAIM(... background agent <id>)`）。
 - ⛔ **它壞掉時是「放行」。** 一個因為自己當掉就拒絕所有東西的守門員，比它要守的規則更糟。
   ⚠ 代價是：**沒有出現拒絕，不等於它有在跑。**
@@ -3741,7 +3742,8 @@ Read this before trusting it. Every item is a way it can look like it is working
   `PostToolUse` fires at launch. Since 0.75.7 the gate keeps the slot and releases it on that agent's
   `SubagentStop` (once no background work of its own is still running) — so each slot frees as its
   own agent finishes, and an approved concurrency is a rolling window at the gate. Batches of N are
-  kept by the dispatcher. ⚠ A background agent that waits on a long background job of its own fires no
+  kept by the dispatcher. ⭐ A successful `TaskStop` of a background agent frees its slot at once
+  (0.78.1). ⚠ A background agent that waits on a long background job of its own fires no
   hook meanwhile; past `slot_ttl_min` (30) its slot is reclaimed (logged as
   `RECLAIM(... background agent <id>)`).
 - ⛔ **It fails OPEN.** A gate that refused everything because it crashed would be worse than the
