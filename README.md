@@ -69,6 +69,7 @@ skill 是模型看了描述之後**自己決定**要不要用；文件是模型*
 | ⭐ **模型太貴**的子代理派工：有人在就**跳確認框問你**，沒人在（headless、或你宣告無人職守）就**拒絕**，任務資料夾有你寫的 `MODEL-APPROVED` 就直接放行 | `max_model_price`，預設 **5**（每百萬輸入 token 美元）；`over_price` auto／ask／deny（0.70） |
 | ⛔ 拒絕**改寫一個自己宣告只能追加的檔案** —— `Write`、`Edit`、shell 一律 | `guard_append_only`（0.63.0）。第一個標題含 `append-only`，或帶 `<!-- append-only -->`。追加（`>>`、`tee -a`、接在最後一行之後的 Edit）放行 |
 | ⭐ 這個 repo 裡有**另一個活著的 session**、而你沒載入 `cowork`，第一次寫入或 commit **拒絕一次** | `guard_cowork_first`、`peer_alive_min`（15 分鐘）。只是提醒，一個 session 一次 |
+| ⛔ 工作階段**被重開後沒有重新報到**，第一次寫入或 commit **拒絕一次**（有人在、而且 repo 裡有別的活 session 或用過 `cowork`） | `guard_wake_checkin`（0.78.0）。報到＝寫進協作板、帶有自己 session id 的內容；寫了就放行，已經是最新的重試一次也放行 |
 | ⭐ **claude-mem 的記憶搜尋沒指定專案，自動限定在本專案** —— 沒裝 claude-mem 就什麼都不做 | `guard_claude_mem_project`（0.72.0）。不拒絕、不跳過權限提示。見下方「claude-mem 搜尋限定在本專案」 |
 
 ⭐ **價格從 Anthropic 官方定價頁抓，不是手打的。**
@@ -791,7 +792,7 @@ flowchart TD
   loadCowork --> crossMachine{"跨機器？"}
   crossMachine -->|"是"| writeTest["第 13 條：兩個方向分別做寫入測試<br/>細節在 reference/cross-machine.md"]
   crossMachine -->|"否"| checkIn
-  writeTest --> checkIn["第 2 條：寫自己角色的 check-in 檔<br/>醒來也算重啟，欄位變了才重寫"]
+  writeTest --> checkIn["第 2 條：寫自己角色的 check-in 檔<br/>醒來也算重啟，欄位變了才重寫<br/>重開後還沒報到：hook 拒絕第一次寫入或 commit 一次"]
   checkIn --> searchFirst["第 6 條：開始之前先搜共用紀錄"]
   searchFirst --> claim["第 1、3 條：在只能追加的共用紀錄上認領<br/>只拿沒人拿的，更正也用追加<br/>改寫宣告為 append-only 的檔，hook 會擋"]
   claim --> authorFile["產出寫進自己的作者檔<br/>一人一檔，細節在 reference/coordination.md 3.1"]
@@ -804,11 +805,11 @@ flowchart TD
   waitPeer -->|"是"| armWake["第 13 條：先設喚醒<br/>同機用 notify_when_idle，跨機用 watch-folder.ps1<br/>貼一行 WAITING，醒來沒事就不寫"]
   armWake -->|"醒來有新東西"| checkIn
   waitPeer -->|"否"| searchFirst
-  class loadCowork,claim gate
+  class loadCowork,checkIn,claim gate
   classDef gate fill:#fde2e1,stroke:#c0392b,stroke-width:2px,color:#000
 ```
 
-⭐ **其中兩條是閘門，不是文字。** 上面表格最後兩列：
+⭐ **其中三條是閘門，不是文字。** 對應上面表格裡的三列：
 
 - **只能追加的檔案只能變大**（`guard_append_only`）。檔案自己宣告 —— 第一個標題含 `append-only`，
   或帶 `<!-- append-only -->` 註解。對這種檔案，`Write` 要以現有內容開頭、`Edit` 要接在檔尾之後、
@@ -820,6 +821,10 @@ flowchart TD
   就會被拒絕一次，訊息叫你 `Skill(dispatch-guard:cowork)`。叫過之後不再唸；沒叫也只唸這一次。
   ⛔ **它只看得到同一台機器的 peer** —— 心跳是本機狀態目錄裡的檔。跨機任務沒有任何東西會提醒你，
   站在那裡的只有第 13 條。
+- **重開後先報到再寫**（`guard_wake_checkin`，0.78.0）。有人在的工作階段被重開（resume）、repo 裡有
+  別的活 session 或用過 cowork 時，第一次寫入或 commit 如果不是報到，會被拒絕一次。報到＝寫進協作板、
+  帶有自己 session id 的內容（用檔案工具寫，或提交時工作區／暫存區裡新增的一行）。已經是最新的就重試，
+  一樣放行。無頭 resume、子 agent、`/clear`、內容壓縮、閒置太久只有提醒、不擋。
 
 ⚠ **這個 skill 只指向 plugin 裡有的檔案。** 規則已經在 `unattended-work` 或 `dispatch-protocol` 的，
 cowork 只指過去、不重述 —— 一條規則只有一份正本。`Tools/Debug/test_guards.py` 用相似度掃描加標題
@@ -1916,6 +1921,7 @@ one are byte-identical on screen. Each has its own switch; all default to on.
 | ⭐ a sub-agent whose model **costs too much**: **asks you** (a permission dialog) when a person can answer, **refuses** when nobody can (headless, or a run you declared unattended), and lets it through when your `MODEL-APPROVED` is in the task folder | `max_model_price`, default **5** ($/M input tokens); `over_price` auto / ask / deny (0.70) |
 | ⛔ refuses a **rewrite of a file that declares itself append-only** — `Write`, `Edit` and the shell alike | `guard_append_only` (0.63.0). First heading contains `append-only`, or the file carries `<!-- append-only -->`. Appends (`>>`, `tee -a`, an Edit after the last line) pass |
 | ⭐ **another live session in this repository** and `cowork` not loaded: the first write or commit is refused **once** | `guard_cowork_first`, `peer_alive_min` (15 min). A nag, once per session |
+| ⛔ a session **resumed without re-checking-in**: the first write or commit is refused **once** (attended, with a live peer or `cowork` used) | `guard_wake_checkin` (0.78.0). A check-in is a board write carrying its own session id; that write passes, and a retry passes when it is already current |
 | ⭐ **a claude-mem memory search with no project is scoped to this project** — without claude-mem installed it does nothing | `guard_claude_mem_project` (0.72.0). Never refuses, never skips the permission prompt. See "claude-mem searches scoped to this project" below |
 
 ⛔ **Every one of these exists because the rule was already written down, read, and broken
@@ -2675,7 +2681,7 @@ flowchart TD
   loadCowork --> crossMachine{"Across machines?"}
   crossMachine -->|"yes"| writeTest["Rule 13: write-test each direction separately<br/>the detail is reference/cross-machine.md"]
   crossMachine -->|"no"| checkIn
-  writeTest --> checkIn["Rule 2: write your ROLE's check-in file<br/>a wake is a restart, rewrite only a field that changed"]
+  writeTest --> checkIn["Rule 2: write your ROLE's check-in file<br/>a wake is a restart, rewrite only a field that changed<br/>resumed and not checked in: the hook refuses the first write or commit once"]
   checkIn --> searchFirst["Rule 6: search the shared record before you start"]
   searchFirst --> claim["Rules 1 and 3: claim on the append-only shared record<br/>take only what is unclaimed, correct by appending<br/>the hook refuses a rewrite of a file marked append-only"]
   claim --> authorFile["Produce into your own author-named file<br/>one file per writer, detail in reference/coordination.md 3.1"]
@@ -2688,11 +2694,11 @@ flowchart TD
   waitPeer -->|"yes"| armWake["Rule 13: arm a wake-up first<br/>notify_when_idle on one machine, watch-folder.ps1 across machines<br/>post one WAITING line, a wake with nothing new writes nothing"]
   armWake -->|"woken, something new"| checkIn
   waitPeer -->|"no"| searchFirst
-  class loadCowork,claim gate
+  class loadCowork,checkIn,claim gate
   classDef gate fill:#fde2e1,stroke:#c0392b,stroke-width:2px,color:#000
 ```
 
-⭐ **Two of the rules are gates, not prose.** The last two rows of the table above:
+⭐ **Three of the rules are gates, not prose.** Three rows of the table above:
 
 - **An append-only file may only grow** (`guard_append_only`). The file declares itself — its
   first heading contains `append-only`, or it carries `<!-- append-only -->`. For such a file a
@@ -2707,6 +2713,11 @@ flowchart TD
   invoked it never nags again; not invoked, it still nags only that once. ⛔ **It sees only
   same-machine peers** — the heartbeat is a file in this machine's state directory. On a
   cross-machine job nothing prompts you at all; rule 13 is what stands there.
+- **Resumed: check in before you write** (`guard_wake_checkin`, 0.78.0). After an attended resume, with
+  a live peer in the repository or cowork used, the first write or commit that is not a check-in is
+  refused once. A check-in is a board write carrying this session's id (a file-tool write, or a line
+  added in the working tree or index at commit time). A current check-in just retries and passes.
+  Headless resumes, sub-agents, `/clear`, compaction and idle gaps get the reminder only.
 
 ⚠ **This skill points only at files the plugin ships.** Where a rule already lives in
 `unattended-work` or `dispatch-protocol`, cowork points at it and does not restate it — one

@@ -174,7 +174,15 @@ fire for it. ⇒ On a cross-machine job **nothing prompts you at all**, and rule
 `cross-machine.md` are the only things standing there. Do not read this section as cover for
 a migration.
 
-Switches: `guard_append_only`, `guard_cowork_first`, `peer_alive_min` - in the plugin's
+**`guard_wake_checkin` (rule 2, 0.78.0).** After an attended resume in a repository with a live peer, or once
+this session has used `cowork`, the first `Write` / `Edit` (any file tool) / `git commit` that is not a
+check-in is refused **once**. A check-in is a write to the board that carries THIS session's id: a file-tool
+write to a `checkin`/`cowork` path, or a commit whose working-tree or staged board changes add a line with the
+id. Rewrite the check-in, or retry if it is already current; the next call goes through either way. A
+headless resume, a sub-agent, `/clear`, compaction and an idle gap are not refused (they get the reminder only).
+Shell writes are not gated until the commit.
+
+Switches: `guard_append_only`, `guard_cowork_first`, `guard_wake_checkin`, `peer_alive_min` - in the plugin's
 `config.json` or `<repo>/.claude/dispatch-guard.json` under `dispatch`. A switched-off guard
 still logs what it would have refused.
 

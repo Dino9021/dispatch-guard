@@ -3010,6 +3010,14 @@ def cowork_wake_note(payload, root, sdir, cfg, now=None):
             return "", None
         log(root, "WAKE-CHECKIN-NUDGE why=%s peers=%d cowork=%s"
             % (why.replace(" ", "-"), len(peers), "seen" if seen else "not-seen"))
+        # ⭐ 0.78.0 (ADR 20261112-074900 E1): at an ATTENDED resume, not for a sub-agent, the reminder is
+        # backed by guard_wake_checkin - the first write / commit that is not a check-in is refused once.
+        # A headless resume that stops must not check in (coordination.md 2.8); idle gaps, /clear and
+        # compaction change no name or [ref], so they keep the reminder only.
+        if (payload.get("hook_event_name") == "SessionStart" and payload.get("source") == "resume"
+                and attended() and not payload.get("agent_id")):
+            cmd_guards._write(ctx["state"](cmd_guards.WAKE_MARK), why)
+            log(root, "WAKE-CHECKIN-DUE sid=%s" % str(sid)[:8])
         who = (" while %d other session%s work%s in this repository"
                % (len(peers), "" if len(peers) == 1 else "s", "s" if len(peers) == 1 else "")
                if peers else "")

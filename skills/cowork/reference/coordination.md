@@ -233,7 +233,9 @@ once watchers see the whole channel tree, `checkin/` included, every rewrite wak
 peer that rewrites its own in turn wakes you back - a ping-pong with no content (`cross-machine.md`
 1.8). A watcher you armed yourself exiting is not a restart either: nothing about you changed. ⭐ The dispatch-guard hook
 says so at the wake when a peer shares the repository or this session has used this skill (log
-line `WAKE-CHECKIN-NUDGE`). ⚠ A headless resume that finds nothing left for its task and stops
+line `WAKE-CHECKIN-NUDGE`). ⛔ Since 0.78.0 an attended RESUME is also enforced: the first write or commit that
+is not a check-in carrying this session's id is refused once (`guard_wake_checkin`; the reminder alone was
+measured to be skipped). ⚠ A headless resume that finds nothing left for its task and stops
 does NOT check in - it would overwrite the role's check-in with an id that is about to vanish.
 
 ```

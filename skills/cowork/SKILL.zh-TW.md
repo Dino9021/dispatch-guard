@@ -142,7 +142,14 @@ dispatch-guard 的 hook 看得到這台機器上每個 session 的每一次工�
 session 永遠不算 peer，這個守衛對它永遠不會觸發。⇒ 跨機任務**完全沒有東西會提醒你**，站在那裡的只有
 第 13 條和 `cross-machine.md`。不要把這一節當成搬家時的保護。
 
-開關：`guard_append_only`、`guard_cowork_first`、`peer_alive_min` —— 放在 plugin 的 `config.json`
+**`guard_wake_checkin`（第 2 條，0.78.0）。** 有人在的工作階段被重開（resume）之後，如果這個 repository 裡
+有另一個活的 session，或這個 session 用過 `cowork`，第一次不是報到的 `Write` / `Edit`（任何檔案工具）/
+`git commit` 會被拒絕**一次**。報到＝寫進協作板、而且帶有**這個** session id 的內容：用檔案工具寫進
+`checkin` / `cowork` 路徑，或提交時工作區或暫存區裡協作板新增的一行帶有這個 id。去重寫報到；已經是最新的
+就直接重試。下一次呼叫無論如何都放行。無頭的 resume、子 agent、`/clear`、內容壓縮、閒置太久都不擋（只有提醒）。
+透過 shell 的寫入要到提交時才會被檢查。
+
+開關：`guard_append_only`、`guard_cowork_first`、`guard_wake_checkin`、`peer_alive_min` —— 放在 plugin 的 `config.json`
 或 `<repo>/.claude/dispatch-guard.json` 的 `dispatch` 底下。關掉的 guard 仍會記錄它本來會拒絕什麼。
 
 ---

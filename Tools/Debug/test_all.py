@@ -55,6 +55,8 @@ CHECKS = [
     # ⚠ 0.76.0: the Codex verdict and gate, against a FAKE codex - the real one is never run,
     # and the fake asserts the probe sent only the three read methods (never a reset credit).
     ("codex usage",   [os.path.join(DEBUG_DIR, "test_codex_usage.py")]),
+    # ⚠ 0.78.0: a resumed session's first write is refused once until it re-checks-in (owner: 強制).
+    ("wake checkin",  [os.path.join(DEBUG_DIR, "test_wake_checkin.py")]),
     # ⚠ 0.77.0: naming a cowork session after its role - fixture check-ins and a fixture registry only.
     ("role title",    [os.path.join(DEBUG_DIR, "test_role_title.py")]),
     # ⚠ 0.75.12: the one way to delete scratch. Refusals run --dry-run, deletes touch fixtures only.

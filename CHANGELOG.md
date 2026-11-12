@@ -33,6 +33,25 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.78.0
+
+擁有者 2026-11-12：「強制」—— 重開後的 session 讀到「先報到」的提醒卻跳過，今天量到兩次。
+
+- **新的 guard `guard_wake_checkin`。** 有人在的 session 被重開（resume），而 repo 裡有別的活 session 或用過 cowork 時，
+  第一次不是報到的寫入（任何檔案工具）或 `git commit` 會被拒絕一次。報到＝寫進協作板、帶有自己 session id 的內容：
+  用檔案工具寫進 `cowork_checkin_dir`（沒設就是路徑裡有 `checkin` / `cowork` 資料夾，`skills/` 除外），或提交時工作區
+  ／暫存區相對 HEAD 新增的一行帶有這個 id（hook 在串接的 `git add` 之前就執行，所以兩者都看）。已經是最新的就重試，
+  一樣放行；之後不再擋。
+- 無頭 resume（照協作規則不該報到）、子 agent、`/clear`、內容壓縮、鬧鐘、閒置太久都只有原本的提醒、不擋。
+- 推翻 ADR 20261001-085000 D8「只提醒、不拒絕」，用的是 D8 自己寫的重新評估條件。新 ADR：
+  `Memory/tasks/20261112-074900-wake-checkin-enforced/ADR.md`；MAC 先審（一個阻擋問題：無頭 resume），Claude 審查員一輪
+  判 REJECT（串接提交時板子還沒加入暫存區），已修並有那個形狀的測試，沒有再送審。
+- 已知沒擋到的：透過 shell 的寫入要到提交才檢查；第一輪只讀不寫的 session 不會被擋；完全沒人打字時不會動作
+  （那要靠之後可選的 `initialUserMessage`）。
+- 新測試 `Tools/Debug/test_wake_checkin.py`；README 協作流程圖的「報到」格改成紅色（hook 會擋）。
+
+---
+
 ## 0.77.0
 
 擁有者 2026-11-11：「先做本地端改名」、「A」—— 重開後不用再一個一個 /rename，session 自動用角色的名字。ADR：`Memory/tasks/20261111-213912-auto-role-identity/ADR.md`（第 4 版）。
@@ -3744,6 +3763,27 @@ GATE-ERROR NameError("name 'now' is not defined")
 ```
 
 **The fix:** update to 0.7.0 or later, then open a new session.
+
+---
+
+## 0.78.0
+
+Owner, 2026-11-12: "enforce it" - a resumed session read the "check in first" reminder and skipped it, measured twice today.
+
+- **New guard `guard_wake_checkin`.** After an attended resume, with a live peer in the repository or cowork used, the
+  first write (any file tool) or `git commit` that is not a check-in is refused once. A check-in is a board write
+  carrying this session's id: a file-tool write inside `cowork_checkin_dir` (else a path with a `checkin` / `cowork`
+  directory, `skills/` excluded), or a commit whose working tree or index adds a line with the id against HEAD (the hook
+  runs before a chained `git add`, so both are read). A current check-in just retries and passes; it never repeats.
+- Headless resumes (which must not check in), sub-agents, `/clear`, compaction, the alarm and idle gaps keep the
+  reminder only.
+- Overturns ADR 20261001-085000 D8 ("a reminder, not a refusal") through D8's own reconsideration clause. New ADR:
+  `Memory/tasks/20261112-074900-wake-checkin-enforced/ADR.md`. MAC pre-reviewed it (one blocker: headless resume); one
+  Claude round said REJECT (a chained commit stages the board too late), fixed and covered by a test of that exact shape,
+  not re-reviewed.
+- Known gaps: shell writes are seen only at the commit; a read-only first turn is not refused; with nobody typing
+  nothing runs (an opt-in `initialUserMessage` is for later).
+- New check `Tools/Debug/test_wake_checkin.py`; the README cowork chart marks the check-in box as a gate.
 
 ---
 

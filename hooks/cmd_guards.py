@@ -73,6 +73,8 @@ GUARD_DEFAULTS = {
     # decisions live in codex_usage.py; these rows only feed them the command.
     "codex_gate": True,                 # deny: a Codex call at a server-measured WAIT, or OFF
     "guard_reset_credit": True,         # deny: sending the method that spends a reset credit
+    # 0.78.0, ADR Memory/tasks/20261112-074900-wake-checkin-enforced: owner 「強制」.
+    "guard_wake_checkin": True,         # deny once: first write/commit after a resume, until checked in
 }
 
 # ⭐ HOW FRESH A PEER'S HEARTBEAT MUST BE to count it as live, in minutes. The gate touches
@@ -1199,6 +1201,116 @@ def g_cowork_first_commit(payload, ctx, segs):
                         what="commit")
 
 
+# ------------------------------------------------- re-check-in after a resume (0.78.0)
+
+# ⛔ D8 (ADR 20261001-085000) said "a reminder, not a refusal". Measured 2026-11-12: a resumed session
+# read the reminder and skipped it twice; the owner chose to enforce. ADR
+# Memory/tasks/20261112-074900-wake-checkin-enforced. The mark is written by dispatch_gate.cowork_wake_note
+# only at an attended SessionStart resume with a live peer or cowork used (E1).
+WAKE_MARK = "wake-checkin-due"
+_BOARD_DIRS = ("checkin", "cowork")
+
+
+def _checkin_rel(ctx, path):
+    """True when `path` is a check-in path (E3): inside cowork_checkin_dir, else inside this repository
+    with a `checkin`/`cowork` directory component, `skills/` excluded."""
+    root = os.path.normcase(os.path.abspath(ctx.get("root") or "."))
+    p = os.path.normcase(os.path.abspath(path or ""))
+    if not p.startswith(root + os.sep):
+        return False
+    rel = p[len(root) + 1:].replace("\\", "/")
+    folder = ((ctx.get("cfg") or {}).get("cowork_checkin_dir") or "").strip().strip("/\\")
+    if folder:
+        return rel.lower().startswith(folder.replace("\\", "/").lower() + "/")
+    parts = rel.lower().split("/")
+    return parts[0] != "skills" and any(d in parts[:-1] for d in _BOARD_DIRS)
+
+
+def _checkin_pathspecs(ctx):
+    folder = ((ctx.get("cfg") or {}).get("cowork_checkin_dir") or "").strip().strip("/\\")
+    if folder:
+        return [folder.replace("\\", "/")]
+    return [":(glob,icase)**/%s/**" % d for d in _BOARD_DIRS] + [":(exclude)skills/**"]
+
+
+def _committed_checkin(ctx, sid):
+    """True / False: does the working tree or index add a line with `sid` under a check-in path (E2,
+    R1-B1: the hook runs before `git add` in a chained commit)? None when git cannot say."""
+    root, specs = ctx["root"], _checkin_pathspecs(ctx)
+    rc, out = _git(root, ["diff", "HEAD", "-U0", "--"] + specs)
+    if rc != 0:
+        return None
+    if any(l.startswith("+") and not l.startswith("+++") and sid in l for l in out.splitlines()):
+        return True
+    rc, out = _git(root, ["ls-files", "--others", "--exclude-standard", "--"] + specs)
+    if rc != 0:
+        return None
+    for rel in out.splitlines():                  # a new, untracked check-in file
+        text = _read(os.path.join(root, rel))
+        if text and sid in text:
+            return True
+    return False
+
+
+def _wake_refusal(ctx, why, what):
+    sid = ctx.get("sid") or "?"
+    return _v(DENY, "guard_wake_checkin",
+              "dispatch gate: %s refused ONCE - this session was resumed (%s) and has not re-checked-in. "
+              "Re-read the shared board; if this role's check-in does not carry session id `%s` and its "
+              "current runtime name (and [ref] for same-machine peers), rewrite it now - a board write "
+              "carrying that id is allowed. If the check-in is already current, retry this call: it is "
+              "allowed either way." % (what, why or "resumed", sid),
+              "dispatch-guard: first write after a resume refused once - the agent is asked to re-check-in.")
+
+
+def wake_checkin(payload, ctx, is_checkin, what):
+    """The shared decision. `is_checkin` is True / False / None (cannot tell -> no verdict, mark kept)."""
+    if payload.get("agent_id"):
+        return None                               # a sub-agent's call; the mark stays for the parent
+    mark = ctx["state"](WAKE_MARK)
+    if not os.path.exists(mark):
+        return None
+    cfg = ctx.get("cfg") or {}
+    enabled = _truthy(cfg.get("guard_wake_checkin"), GUARD_DEFAULTS["guard_wake_checkin"])
+    if is_checkin is None:
+        ctx["log"]("CMD-ALLOW(guard_wake_checkin git-unreadable) mark kept")
+        return None
+    if is_checkin:
+        if enabled:
+            os.remove(mark)
+            ctx["log"]("WAKE-CHECKIN-DONE %s" % what)
+        return None
+    v = _wake_refusal(ctx, _read(mark), what)
+    if enabled:
+        try:
+            os.remove(mark)
+        except OSError:
+            pass
+    return v
+
+
+def g_wake_checkin(payload, ctx, segs):
+    """The commit half: a `git commit` while the mark stands."""
+    if not any(_COMMIT.match(s) for s in segs):
+        return None
+    if payload.get("agent_id") or not os.path.exists(ctx["state"](WAKE_MARK)):
+        return None
+    return wake_checkin(payload, ctx, _committed_checkin(ctx, ctx.get("sid") or "\0"), "commit")
+
+
+def f_wake_checkin(payload, ctx, tool, path, tool_input):
+    """The file-tool half: a write is a check-in when it lands on a check-in path AND carries the id."""
+    if payload.get("agent_id") or not os.path.exists(ctx["state"](WAKE_MARK)):
+        return None
+    sid = ctx.get("sid") or "\0"
+    texts = [tool_input.get("content"), tool_input.get("new_string"), tool_input.get("new_source")]
+    edits = tool_input.get("edits")
+    if isinstance(edits, list):
+        texts += [e.get("new_string") for e in edits if isinstance(e, dict)]
+    ok = _checkin_rel(ctx, path) and any(isinstance(t, str) and sid in t for t in texts)
+    return wake_checkin(payload, ctx, ok, "%s to `%s`" % (tool, os.path.basename(path or "?")))
+
+
 # ------------------------------------------------------------------- the Codex guards (0.76.0)
 
 def _shell(payload):
@@ -1292,6 +1404,8 @@ GUARDS = (
     ("guard_append_only", g_append_only),
     ("guard_silenced_search", g_silenced_search),
     ("guard_cowork_first", g_cowork_first_commit),
+    # 0.78.0: after cowork_first (load the skill first), before relative_cd (whose warning would win).
+    ("guard_wake_checkin", g_wake_checkin),
     # ⚠ BEFORE the relative-cd WARNING, like the cowork nag: `cd x && rm -f out/*` is its main
     # shape and would otherwise stop at the warning (review N4).
     ("guard_held_delete", g_held_delete),
@@ -1305,6 +1419,7 @@ FILE_GUARDS = (
     ("guard_reset_credit", f_reset_credit),
     ("guard_append_only", f_append_only),
     ("guard_cowork_first", f_cowork_first),
+    ("guard_wake_checkin", f_wake_checkin),
 )
 
 
