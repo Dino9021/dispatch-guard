@@ -33,6 +33,33 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.80.0
+
+這一版連同 0.79.0 一起發布（0.79.0 沒有單獨發布過）。
+
+- **log 在結果記錄好之後就刪。**擁有者 2026-11-14：「log 只是為了萬一中斷時能看到進度，所以工作完成、結果寫入報告和數據表後就可以刪」、
+  「只刪 log」、「只管以後」、外部模型「保留最終回覆」。某一次執行（子任務、Codex 呼叫、測試）的結果寫進報告、數據表或
+  `progress.md` 後，由啟動它的人先把只有 log 才有的東西（數字、出錯那一行、session id）抄過去，再用絕對路徑刪那一個檔案。
+  探測、測試資料、量測用的副本、報告引用的檔案照留；git 已追蹤的 log 不動。改在 dispatch-protocol（中英）和子任務規則第 8 條，
+  寫法與全域 user-CLAUDE.md（dev-workstation a277b7f）一致。ADR：`Memory/tasks/20261114-105000-delete-logs-after-report/ADR.md`。
+- **主 session 自己寫的任務產物也要放進任務資料夾（WIN，74e2546）。**擁有者 2026-11-13「請你處理」：Claude Code 的系統提示叫每個
+  session 一律用它的 scratchpad，結果 Apo-E1 把任務產物寫在那裡。SessionStart 的提示和 dispatch-protocol（中英）現在寫明這條規則
+  也管主 session、而且優先於系統預設；只提醒，不擋。
+
+## 0.79.0
+
+擁有者 2026-11-12：「不應該有開關，應該直接可以運作才對，只要擁有者命名了就要成功，未來除非擁有者改名，否則就要一直成功自動改名」、
+「任何人 update 了 plugin 都要能運作才對」。
+
+- **擁有者取的名字，重開後自動恢復，不用任何設定，每個專案都生效。**有人在的 session 重開（resume）時，如果它有存著的名字 N，
+  開始時先變成 `N_`（擁有者選的底線），擁有者傳第一句話時改回 `N`。因為是 hook 在這一輪設的名字，之後才開的遠端控制也會拿到 N
+  （FINDINGS 2026-11-11）。同一個名字 Claude Code 會直接忽略，所以要先換再換回來。
+- `N_` 期間用 `N` 傳訊息照樣送得到（名字前綴唯一就會送達，2026-11-12 實測）；有別的名字也以 N 開頭時，寄件人會看到候選清單。
+- 擁有者在中途改名，以擁有者的為準。別的活 session 已經用了 N，就不搶，留在 `N_` 並請 session 告訴擁有者。
+- 不恢復：含空格、中文或 `.` 的名字；全新分頁、內容壓縮、`/clear`、子 agent、無頭 session。在第一句話之前就開的遠端控制會叫 `N_`；
+  重開前就叫錯名字、重新連上的遠端控制還是錯的（要手動改一次）。
+- 0.77.0 的角色設定還在：兩個鍵都設了，恢復的是角色名字（同樣兩步）。ADR：`Memory/tasks/20261112-144435-owner-name-restore/ADR.md`。
+
 ## 0.78.1
 
 擁有者 2026-11-12：主動停掉代理後，名額不該還要空等。
@@ -3775,6 +3802,42 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.80.0
+
+Released together with 0.79.0 (0.79.0 was never published on its own).
+
+- **A run's log is deleted once its result is recorded.** Owner 2026-11-14: "a log is only there to show progress if a
+  run is cut off, so once the work is done and the results are in the report and data tables it can go"; scope "logs
+  only"; "from now on only"; keep an external model's final reply. When a run's result (a sub-task, a Codex call, a test
+  run) is in its report, data table or `progress.md`, whoever started it copies in what only the log holds (a number,
+  the failing line, a session id) and deletes that one file by its absolute path. Probes, fixtures, measured copies and
+  anything a report cites stay; a log git already tracks is left alone. In dispatch-protocol (en/zh) and sub-task rule 8,
+  worded like the global user-CLAUDE.md (dev-workstation a277b7f). ADR:
+  `Memory/tasks/20261114-105000-delete-logs-after-report/ADR.md`.
+- **The main session's own task output goes in the task folder too (WIN, 74e2546).** Owner 2026-11-13: Claude Code's
+  system prompt tells every session to always use its scratchpad, and Apo-E1 wrote task output there. The SessionStart
+  context and dispatch-protocol (en/zh) now say the rule binds the main session as well and overrides that default; a
+  reminder, not a refusal.
+
+## 0.79.0
+
+Owner, 2026-11-12: "there should be no switch - it should simply work; once the owner names it, it must succeed, every
+time, until the owner renames it" and "it must work for anyone who updates the plugin".
+
+- **The owner's session name comes back after every restart, with no setting, in every project.** An attended resume of
+  a session with a stored name N shows `N_` (the owner's underscore) until the owner's first prompt, then `N`. That is a
+  title the hook set in this run, so a Remote Control opened after the first prompt takes N too (FINDINGS 2026-11-11).
+  An equal title is ignored by Claude Code, hence the two steps.
+- During `N_` a message to `N` still arrives (a unique name prefix is delivered, measured 2026-11-12); if another name
+  also starts with N the sender is shown the candidates.
+- An owner rename in between wins. If another live session holds N, it is not taken: the session keeps `N_` and is told
+  to tell the owner.
+- Not restored: names with spaces, CJK or `.`; fresh tabs, compaction, `/clear`, sub-agents, headless sessions. A Remote
+  Control opened before the first prompt is named `N_`; a bridge that was wrongly named before the restart reattaches
+  wrongly named (rename it once by hand).
+- The 0.77.0 role keys still work: with both set, the role name is restored (same two steps). ADR:
+  `Memory/tasks/20261112-144435-owner-name-restore/ADR.md`.
 
 ## 0.78.1
 

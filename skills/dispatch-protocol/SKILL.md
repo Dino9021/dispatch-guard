@@ -32,10 +32,29 @@ the first one's evidence — so the run that failed is the one whose files are g
 this repository's own checks, where every child process cleared a shared scratch directory on
 startup and only the LAST one's files survived a full run.
 
-⭐ **Keep the evidence, delete the build.** What the sub-task ran and what it printed (build logs
-too), probes, small fixtures, diffs - and anything its report cites or a finding depends on (a
-mutation fixture, the copy a claim was measured on), whatever its size - stay after it finishes:
-they are the only way to answer "what did that agent actually see?" after it is gone.
+⛔ **This binds the main session too, not only sub-tasks.** Claude Code's own system prompt
+tells every session to "always use" its scratchpad directory for temporary files. That is the
+harness's default, and this project rule overrides it: whatever a task produces, including what
+YOU write yourself without dispatching anything (probes, captured output, notes, evidence), goes
+in the task folder. The scratchpad is only for throwaway files that nothing will cite, such as a
+commit-message file. Measured 2026-11-13: a main session (Apo-E1) wrote its task output to the
+scratchpad because "the system default said so", so the project's evidence was not in
+`Memory/tasks/`.
+
+⭐ **Keep the evidence, delete the build.** What the sub-task ran, probes, small fixtures, diffs - and
+anything its report cites or a finding depends on (a mutation fixture, the copy a claim was measured
+on), whatever its size - stay after it finishes: they are the only way to answer "what did that agent
+actually see?" after it is gone.
+
+⭐ **A log goes once its result is recorded (owner, 2026-11-14: 「log 只是為了萬一中斷時能看到進度」).** A
+log - a `*.log`, `codex-NN-log.txt`, a captured stdout/stderr of a build, test or tool run - exists to
+show progress if the run is cut off. When THAT run's result is written into its report, data table or
+`progress.md`, whoever started the run deletes the log: first copy in anything only the log holds (a
+number, the failing line, a Codex session id, tokens used), then delete the single file by its absolute
+path (`rm "<path>"`, PowerShell `Remove-Item -LiteralPath "<path>"`) - never a glob or a directory.
+A log a report, a pending item or a committed file names by path is evidence and stays; a log git
+already tracks is left alone; in a repository that commits task folders, delete it before the commit.
+ADR `Memory/tasks/20261114-105000-delete-logs-after-report/`.
 
 ⛔ **What can be rebuilt does NOT stay.** A copy of a project, dependency folders and build output
 (`node_modules`, `.build`, `DerivedData`, `SourcePackages`, `ModuleCache`, `target`, `dist`,
@@ -285,8 +304,10 @@ quality is yours.
 ## External model runs
 
 The gate cannot see them, so this rule is kept by you: capture the prompt, the log, and the
-output **verbatim** into the task folder (the supervisor captures — the tool cannot).
-Record the verdict in `progress.md`, never by editing the output file.
+output **verbatim** into the task folder while the run is in progress (the supervisor captures — the
+tool cannot). Record the verdict in `progress.md`, never by editing the output file. Once the result is
+recorded - with anything only the log holds, such as the session id - delete the log (the log rule
+above). Keep the prompt and the final output. Same wording as the global user-CLAUDE.md.
 
 ## If you are the one who was dispatched
 

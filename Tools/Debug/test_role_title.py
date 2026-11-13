@@ -131,6 +131,63 @@ def main():
                            capture_output=True, text=True, env=env, timeout=60)
         assert r.returncode == 0 and r.stdout.strip() == "", "an equal title must print nothing: %r" % r.stdout
         n += 1
+    # 0.79.0 (ADR Memory/tasks/20261112-144435-owner-name-restore): the owner's name, no setting.
+    with scratch_dir("restore-unit") as d:
+        rs = rt.restore_start
+        assert rs(start("resume", "DispatchGuard-Mac"), "") == ("DispatchGuard-Mac_", "DispatchGuard-Mac")
+        assert rs(start("resume"), "") == (None, ""), "no stored title: nothing to restore"
+        assert rs(start("resume", "has space"), "") == (None, ""), "spaces are not restorable (0.72.1)"
+        assert rs(start("resume", "名字"), "") == (None, "")
+        assert rs(start("resume", "a_b-1"), "") == ("a_b-1_", "a_b-1"), "an inner underscore is fine"
+        # a temp name left by a run with no prompt is stripped ONLY when this session remembered N
+        assert rs(start("resume", "Win_"), "Win") == ("Win_", "Win")
+        assert rs(start("resume", "Foo_"), "") == ("Foo__", "Foo_"), "an owner's own `Foo_` is kept"
+        assert rs(start("resume", "Old"), "", role="Game-G1") == ("Game-G1_", "Game-G1"), "role name wins"
+        n += 1
+        rp = lambda cur, r: rt.restore_prompt(ups(cur), "Game-G1", SID, config_dir=r)
+        free = registry(os.path.join(d, "free"), [{"sessionId": "zzz", "name": "Other", "pid": os.getpid()}])
+        assert rp("Game-G1_", free) == ("Game-G1", "", None)
+        assert rp("Renamed", free) == (None, "", None), "an owner rename in between wins"
+        taken = registry(os.path.join(d, "taken"), [{"sessionId": "zzz", "name": "Game-G1", "pid": os.getpid()}])
+        title, line, once = rp("Game-G1_", taken)
+        assert title is None and "keeps Game-G1_" in line and once == "restore-taken", line
+        title, line, once = rp("Game-G1_", os.path.join(d, "missing"))
+        assert title is None and "could not be read" in line and once == "restore-noregistry", line
+        n += 1
+    with scratch_dir("restore-e2e") as d:
+        root = os.path.join(d, "repo")                       # NO .claude/dispatch-guard.json: no setting
+        os.makedirs(root)
+        open(os.path.join(root, ".git"), "w").close()
+        state = os.path.join(d, "state")
+        env = dict(os.environ, CLAUDE_CONFIG_DIR=registry(d, []), CLAUDE_CODE_SESSION_ATTENDED="1",
+                   CLAUDE_DISPATCH_DIR=state)
+
+        def hook(payload, env_=env):
+            r = subprocess.run([sys.executable, repo_path("hooks", "role_title.py")],
+                               input=json.dumps(dict(payload, cwd=root)), capture_output=True, text=True,
+                               env=env_, timeout=60)
+            assert r.returncode == 0, r.stderr
+            return json.loads(r.stdout)["hookSpecificOutput"] if r.stdout.strip() else None
+
+        out = hook(start("resume", "DispatchGuard-Mac"))
+        assert out and out.get("sessionTitle") == "DispatchGuard-Mac_", out
+        out = hook(ups("DispatchGuard-Mac_"))
+        assert out and out.get("sessionTitle") == "DispatchGuard-Mac", out
+        assert hook(ups("DispatchGuard-Mac")) is None, "a second prompt must change nothing"
+        # a temp name left behind (closed before any prompt) comes back as N, not N_
+        assert hook(start("resume", "DispatchGuard-Mac"))["sessionTitle"] == "DispatchGuard-Mac_"
+        assert hook(start("resume", "DispatchGuard-Mac_"))["sessionTitle"] == "DispatchGuard-Mac_"
+        assert hook(ups("DispatchGuard-Mac_"))["sessionTitle"] == "DispatchGuard-Mac"
+        # an owner rename between start and prompt wins
+        hook(start("resume", "A-Name"))
+        assert hook(ups("Owner-New")) is None
+        assert hook(ups("Owner-New")) is None, "the pending restore must be gone after the rename"
+        # never: a startup, a sub-agent, a headless session, compaction
+        assert hook(start("startup", "X")) is None
+        assert hook(dict(start("resume", "X"), agent_id="a1")) is None
+        assert hook(start("resume", "X"), env_=dict(env, CLAUDE_CODE_SESSION_ATTENDED="0")) is None
+        assert hook(start("compact", "X")) is None
+        n += 1
     print("role title: %d groups passed" % n)
 
 

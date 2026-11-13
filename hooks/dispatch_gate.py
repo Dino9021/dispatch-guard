@@ -390,9 +390,13 @@ anything YOU dispatch in turn.
    intermediate file you write - probes, captured output, half-built scripts, fixtures -
    goes under {task_root}/<task>/scratch/<your-subtask>/, never the system temp directory
    and never a path another sub-task also uses. KEEP THE EVIDENCE when you finish - what
-   you ran and what it printed (build logs too), and anything your report cites or a
-   finding depends on: it is the only way anyone can answer "what did that agent actually
-   see?" after you are gone. But AFTER your report is written, DELETE WHAT CAN BE REBUILT
+   you ran, probes, fixtures, and anything your report cites or a finding depends on: it is
+   the only way anyone can answer "what did that agent actually see?" after you are gone.
+   A LOG GOES ONCE ITS RESULT IS IN YOUR REPORT: a *.log or captured run output exists only
+   to show progress if you are cut off - copy into the report anything only it holds (a
+   number, the failing line, a session id), then delete that one file by its absolute path,
+   never a glob; keep one your report cites by path, and one git already tracks.
+   And AFTER your report is written, DELETE WHAT CAN BE REBUILT
    that nothing in the report points at - a copy of a project, dependency folders and build
    output (node_modules, .build, DerivedData, SourcePackages, ModuleCache, target, dist,
    build) - ONLY inside your own scratch/<your-subtask>/, never the repository's folders or
@@ -4184,7 +4188,12 @@ def on_session_start(payload, root, sdir, cfg):
             "a time, no background dispatch (one the harness backgrounds by itself counts "
             "until it finishes), no Workflow, and the plan plus every "
             "sub-task prompt are written to %s/<YYYYMMDD-HHMMSS-task-name>/%s BEFORE any "
-            "dispatch%s.%s %s Before "
+            "dispatch%s. ⛔ Everything a task produces - plans, reports, probes, captured "
+            "output, evidence - goes in its task folder (intermediate files under "
+            "<task>/scratch/<NN-purpose>/), INCLUDING your own files in this main session, not "
+            "only a sub-task's: the scratchpad or temp directory the harness names is only for "
+            "throwaway files nothing will cite (a commit-message file); the harness's 'always "
+            "use the scratchpad' does not override this project rule.%s %s Before "
             "dispatching a wave run `%s --verdict` for GO/PACE/STOP - never interpret the "
             "raw numbers yourself.%s%s"
             % (cfg["protocol_doc"], cfg["task_root"], cfg["plan_glob"],
@@ -6070,6 +6079,9 @@ def selftest():
     for token in ("SCRATCH FILES GO IN THE TASK FOLDER", "KEEP THE EVIDENCE, DELETE THE BUILD",
                   "{task_root}/<task>/scratch/", "ONLY inside your own scratch/<your-subtask>/",
                   "anything your report cites", "NEVER DELETE THROUGH A LINK",
+                  # ⭐ 0.80.0: a log goes once its result is recorded (owner 2026-11-14; ADR
+                  # Memory/tasks/20261114-105000-delete-logs-after-report).
+                  "A LOG GOES ONCE ITS RESULT IS IN YOUR REPORT", "by its absolute path,\n   never a glob",
                   # ⭐ 0.75.8: the delete shape Claude Code holds for the owner (guard_held_delete,
                   # ADR Memory/tasks/20261021-105230-held-delete-guard D2).
                   "NEVER `rm` A\n   RELATIVE `dir/*`", "Claude Code stops that for the owner's approval",

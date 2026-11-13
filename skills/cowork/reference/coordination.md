@@ -303,6 +303,13 @@ name, and the name follows on the next prompt. A hand-made `/rename` reverts at 
 never takes a name another live session holds. ⚠ It sets the LOCAL name (the tab and the live list);
 the Remote Control name on claude.ai is not changed by it.
 
+⭐ **Since 0.79.0 a named session keeps its name with no setting at all.** After a restart the hook
+gives a session whose owner named it the name `<name>_` (a trailing underscore) until its first
+prompt, then `<name>` again - set by the hook in the new run, so a Remote Control opened AFTER that
+prompt carries the right name too. ⇒ **`<name>_` in the live list is that same session, mid-restore.**
+A send to `<name>` still reaches it (a unique name prefix is delivered); if another name also starts
+with `<name>`, the error lists the candidates - pick by `[ref]`. Don't conclude the holder is gone.
+
 ⚠ **Across machines, and for Remote Control or cloud sessions, a successful send proves delivery,
 not reading - nothing reports back.** Put anything that matters in a file as well (3.6).
 
