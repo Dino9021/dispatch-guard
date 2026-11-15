@@ -93,6 +93,8 @@ CHECKS = [
     # ⚠ Runs the cowork folder watcher for real. Through 0.69.0 it listed only the top folder,
     # and two sessions answered each other in subfolders neither watcher could see.
     ("watch folder", [os.path.join(DEBUG_DIR, "test_watch_folder.py")]),
+    # 0.81.0: browser tab labels against a throwaway Chrome (ADR Memory/tasks/20261115-090000-browser-tab-labels).
+    ("browser tabs", [os.path.join(DEBUG_DIR, "test_browser_tabs.py")]),
     # ⚠ Runs the cleaner for real against a fixture install. It had no check, and on macOS it
     # missed the project files, the hook's fallback log and the 0.75 launchd jobs.
     ("cleaner", [os.path.join(DEBUG_DIR, "test_clean.py")]),

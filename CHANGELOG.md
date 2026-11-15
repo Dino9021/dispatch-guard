@@ -33,6 +33,14 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.81.0
+
+- **瀏覽器分頁標上「埠-編號 角色」的小工具，放進外掛（從 Game 移植）。**擁有者 2026-11-14：「請你在 tab 頁籤上面標注號碼與使用人的名字」
+  「未來不管誰開 Play Wright 都要這樣處理」；2026-11-15：「加進這個 plugin 中」。`skills/cowork/tools/browser_tabs.cjs`：
+  `label <埠> <角色> [網址片段]` 標自己的分頁，`keep <埠>` 每秒把換頁後掉了的標籤補回。直接跟 Chrome 的除錯埠溝通，不需要 Playwright、
+  不用安裝任何套件（Node 22 以上）。不搶別的角色的分頁；一個瀏覽器只跑一個守門程式；不會關分頁或瀏覽器；頁面裡的程式碼與 Game 版一致，
+  兩邊同時跑不會互相打架。協作規則 `coordination.md` 2.10。ADR：`Memory/tasks/20261115-090000-browser-tab-labels/ADR.md`。
+
 ## 0.80.0
 
 這一版連同 0.79.0 一起發布（0.79.0 沒有單獨發布過）。
@@ -3802,6 +3810,15 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.81.0
+
+- **Browser tab labels ("[port-n role]"), ported from Game into the plugin.** Owner 2026-11-14: label every tab with its
+  number and user, for anyone who opens Playwright; 2026-11-15: "add it to this plugin". `skills/cowork/tools/browser_tabs.cjs`:
+  `label <port> <role> [url-part]` tags your tabs, `keep <port>` puts lost tags back every second. Talks to Chrome's
+  DevTools port directly - no Playwright, nothing to install (Node 22+). Never takes another role's tab; one keeper per
+  browser; never closes a tab or the browser; the in-page code matches Game's, so both can run on one browser. Cowork
+  `coordination.md` 2.10. ADR: `Memory/tasks/20261115-090000-browser-tab-labels/ADR.md`.
 
 ## 0.80.0
 

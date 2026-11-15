@@ -316,6 +316,23 @@ not reading - nothing reports back.** Put anything that matters in a file as wel
 **Otherwise:** the one failure mode that makes no noise: the message arrives, to a session with
 a different role, which may act on it.
 
+### 2.10 A shared browser: label every tab you drive
+
+**Do:** when you drive a browser by program (Playwright, or Chrome over its DevTools port) that other
+sessions or the owner also see, every tab you use starts with `[<port>-<n> <role>] ` (e.g. `[9334-1 G1] `)
+and tabs nobody uses read `閒置`. The owner, 2026-11-14: 「請你在 tab 頁籤上面標注號碼與使用人的名字」「這樣我才知道
+現在是誰在用，要跟誰說話」「未來不管誰開 Play Wright 都要這樣處理」. The plugin ships the tool (Node 22+, nothing to
+install):
+- `node "<plugin>/skills/cowork/tools/browser_tabs.cjs" label <port> <role> [url-part]` after you connect -
+  tags the tabs whose URL holds `url-part` (all untagged or idle ones without it); never takes a tab tagged
+  for another role. Re-run it after a full navigation, or keep a keeper running.
+- `node "<plugin>/skills/cowork/tools/browser_tabs.cjs" keep <port>` in the background (the harness's
+  background option, not `&`): every second it puts back a tag a navigation removed, and tags new tabs
+  `閒置`. One per browser - a second one exits by itself; it exits when the browser goes away. It never
+  closes a tab or the browser. Mark your tabs `閒置` again (label with role `閒置`) or close them when done.
+
+**Otherwise:** the owner looks at five windows of tabs and cannot tell whom to talk to.
+
 ---
 
 ## Part 3 - The shared record
