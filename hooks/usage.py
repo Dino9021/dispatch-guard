@@ -945,7 +945,10 @@ def fetch(cfg=None, sdir=None):
     except urllib.error.HTTPError as exc:
         if exc.code == 429:
             # ⛔ Not retried, and not worked around. See FETCH_FLOOR_SECONDS.
-            return "HTTP 429 rate limited - backing off, NOT retrying"
+            # The server's Retry-After (seconds) rides in the text; _note_rate_limit() keeps it.
+            ra = (exc.headers.get("Retry-After") or "").strip() if exc.headers else ""
+            return "HTTP 429 rate limited%s - backing off, NOT retrying" % (
+                " (Retry-After %s s)" % ra if ra.isdigit() else "")
         if exc.code in (401, 403):
             return "HTTP %d - token expired or rejected" % exc.code
         return "HTTP %d" % exc.code
@@ -1156,11 +1159,17 @@ def rate_limited(sdir):
 
 
 def _backoff(rl, due):
+    # ⭐ The server's own Retry-After wins over the doubling, owner 2026-11-18: 「對方說等 11 分鐘，
+    # 就等 11 分鐘」. Still capped; the caller's max(due, ...) keeps fetch_seconds as the floor.
+    ra = rl.get("retry_after")
+    if isinstance(ra, (int, float)) and ra > 0:
+        return min(BACKOFF_MAX_SECONDS, ra)
     return min(BACKOFF_MAX_SECONDS, due * 2 ** (int(rl["streak"]) - 1))
 
 
-def _note_rate_limit(sdir, hit):
-    """Count a 429 (hit=True) or clear the streak on a success (hit=False)."""
+def _note_rate_limit(sdir, hit, reason=""):
+    """Count a 429 (hit=True) or clear the streak on a success (hit=False).
+    `reason` is fetch()'s text; a `(Retry-After N s)` in it is stored as retry_after."""
     path = os.path.join(sdir, "fetch.429")
     try:
         if not hit:
@@ -1170,6 +1179,8 @@ def _note_rate_limit(sdir, hit):
         now = time.time()
         rec = rate_limited(sdir) or {"streak": 0, "since": now}
         rec.update(streak=int(rec["streak"]) + 1, last=now)
+        m = re.search(r"Retry-After (\d+) s", reason or "")
+        rec["retry_after"] = int(m.group(1)) if m else None
         with open(path, "w", encoding="utf-8") as f:
             json.dump(rec, f)
     except OSError:
@@ -1232,7 +1243,7 @@ def ensure_fresh(sdir, cfg, force=False):
     if isinstance(got, str):
         _log_fetch(sdir, got)
         if got.startswith("HTTP 429"):
-            _note_rate_limit(sdir, True)
+            _note_rate_limit(sdir, True, got)
         return prev, got                         # the OLD record survives a failure
     _note_rate_limit(sdir, False)
     _write_record(sdir, cfg, got, prev)
@@ -3999,6 +4010,17 @@ def selftest():
         assert RATE_LIMIT_ICON in _bl, _bl
         _note_rate_limit(tmp, False)
         assert rate_limited(tmp) is None and rate_limit_note(tmp, 120) is None
+        # ⭐ Retry-After wins over the doubling, capped (owner 2026-11-18).
+        assert _backoff({"streak": 3, "retry_after": 692}, 120) == 692
+        assert _backoff({"streak": 1, "retry_after": 99999}, 120) == BACKOFF_MAX_SECONDS
+        _note_rate_limit(tmp, True, "HTTP 429 rate limited (Retry-After 692 s) - backing off")
+        _note_rate_limit(tmp, True, "HTTP 429 rate limited (Retry-After 692 s) - backing off")
+        assert rate_limited(tmp)["retry_after"] == 692, rate_limited(tmp)
+        os.utime(os.path.join(tmp, "fetch.claim"), (time.time() - 700, time.time() - 700))
+        assert _claim_attempt(tmp, 120), "past Retry-After the next try must be allowed"
+        _note_rate_limit(tmp, True, "HTTP 429 rate limited - backing off")
+        assert rate_limited(tmp)["retry_after"] is None, "a 429 without the header drops it"
+        _note_rate_limit(tmp, False)
         # ⛔ And an empty record from a caller must NOT be mistaken for "no data exists".
         assert verdict(tmp, cfg, data={})["verdict"] != "NO-DATA", (
             "an empty dict was accepted as a record instead of falling back to the file")

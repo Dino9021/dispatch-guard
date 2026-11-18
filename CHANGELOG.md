@@ -33,6 +33,14 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.81.1
+
+- **用量查詢被限速時，照伺服器說的時間再試。**擁有者 2026-11-18：「對方說等 11 分鐘，就等 11 分鐘」。`/api/oauth/usage`
+  回 429 時帶的 `Retry-After`（秒）現在記在 `fetch.429`，下一次查詢就排在那個時間之後，取代原本 2、4、8、16 分鐘的倍增等待；
+  仍以 30 分鐘為上限、`fetch_seconds` 為下限。沒帶這個標頭的 429 照舊倍增。實測：這個帳號 13:24 起持續 429，`Retry-After 692`；
+  換成 Claude CLI 的 User-Agent 結果一樣，Claude Code 自己也呼叫同一個端點，所以沒有別的來源可以讀。
+  `fetch.log` 的 429 行現在附上 `(Retry-After N s)`。
+
 ## 0.81.0
 
 - **瀏覽器分頁標上「埠-編號 角色」的小工具，放進外掛（從 Game 移植）。**擁有者 2026-11-14：「請你在 tab 頁籤上面標注號碼與使用人的名字」
@@ -3810,6 +3818,15 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.81.1
+
+- **A rate-limited usage read now waits as long as the server says.** Owner 2026-11-18: "if it says wait 11 minutes,
+  wait 11 minutes". The `Retry-After` (seconds) on a `/api/oauth/usage` 429 is now kept in `fetch.429`, and the next
+  read is scheduled after it, in place of the 2/4/8/16-minute doubling; still capped at 30 minutes, floored at
+  `fetch_seconds`. A 429 without that header doubles as before. Measured: this account answered 429 from 13:24 on with
+  `Retry-After 692`; a Claude CLI User-Agent got the same, and Claude Code itself calls the same endpoint, so there is
+  no other source to read. The 429 line in `fetch.log` now carries `(Retry-After N s)`.
 
 ## 0.81.0
 
