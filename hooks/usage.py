@@ -57,6 +57,7 @@ Standard library only, by design. No pip install, no npm install, nothing to ven
 import atexit
 import datetime
 import glob
+import hashlib
 import json
 import os
 import random
@@ -654,8 +655,33 @@ def _interval(cfg):
 KEYCHAIN_SERVICE = "Claude Code-credentials"
 
 
-def _keychain_credentials():
-    """The credentials blob from the macOS keychain, or None. READ ONLY.
+def _claude_config_dir():
+    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+
+
+def _keychain_services():
+    """Both names Claude Code may keep its keychain item under.
+
+    ⭐ With $CLAUDE_CONFIG_DIR set, Claude Code keeps and REFRESHES the item under
+    `Claude Code-credentials-<sha256(config dir)[:8]>`, and the plain name is left to expire.
+    Measured 2026-11-22 on the Mac: `.zprofile` gained CLAUDE_CONFIG_DIR, the suffixed item
+    appeared six minutes later, and every fetch after the plain item's expiry said "OAuth
+    token expired" for nine hours. Evidence:
+    Memory/tasks/20261122-104947-keychain-config-dir-suffix/FINDINGS.md.
+    """
+    digest = hashlib.sha256(_claude_config_dir().encode("utf-8")).hexdigest()[:8]
+    return (KEYCHAIN_SERVICE, KEYCHAIN_SERVICE + "-" + digest)
+
+
+def _blob_expiry(blob):
+    inner = blob.get("claudeAiOauth")
+    inner = inner if isinstance(inner, dict) else blob
+    exp = inner.get("expiresAt")
+    return exp if isinstance(exp, (int, float)) and not isinstance(exp, bool) else 0
+
+
+def _keychain_item(service):
+    """One keychain item's credentials blob, or None. READ ONLY.
 
     ⚠ `security` is run with no shell and a timeout, and its output is never logged or
     returned as text: on failure the caller gets None and degrades to "no data", the same
@@ -663,7 +689,7 @@ def _keychain_credentials():
     prompt, 583 bytes, keys `claudeAiOauth` and `organizationUuid`.
     """
     try:
-        r = subprocess.run(["security", "find-generic-password", "-s", KEYCHAIN_SERVICE,
+        r = subprocess.run(["security", "find-generic-password", "-s", service,
                             "-w"], capture_output=True, text=True, timeout=10)
         if r.returncode != 0:
             return None
@@ -671,6 +697,14 @@ def _keychain_credentials():
         return blob if isinstance(blob, dict) else None
     except Exception:
         return None
+
+
+def _keychain_credentials():
+    """The credentials blob from the macOS keychain, or None: of the items under
+    _keychain_services() that exist, the one whose token expires LATEST - the one Claude
+    Code is still refreshing, whichever way $CLAUDE_CONFIG_DIR is set today."""
+    blobs = [b for b in map(_keychain_item, _keychain_services()) if b]
+    return max(blobs, key=_blob_expiry, default=None)
 
 
 def _read_credentials():
@@ -682,9 +716,9 @@ def _read_credentials():
     keychain asked, which is where Claude Code keeps it there: before this, every fetch on a
     Mac failed with "no OAuth token" and the watcher never showed a number.
     ⚠ Re-read on every call, file and keychain alike - see _token_and_expiry().
+    ⚠ The file lives in $CLAUDE_CONFIG_DIR when that is set, ~/.claude otherwise.
     """
-    blob = read_json(os.path.join(os.path.expanduser("~"), ".claude",
-                                  ".credentials.json"), None)
+    blob = read_json(os.path.join(_claude_config_dir(), ".credentials.json"), None)
     if not isinstance(blob, dict) and sys.platform == "darwin":
         blob = _keychain_credentials()
     return blob if isinstance(blob, dict) else {}
@@ -3898,7 +3932,8 @@ def selftest():
     # and every case counts the keychain calls it made.
     _saved_env = os.environ.pop("ANTHROPIC_TOKEN", None)
     _saved_reader, _saved_run, _saved_platform = read_json, subprocess.run, sys.platform
-    _kc = {"calls": 0, "rc": 0, "out": ""}
+    _saved_cfgdir = os.environ.pop("CLAUDE_CONFIG_DIR", None)
+    _kc = {"calls": 0, "rc": 0, "out": "", "by": None, "asked": []}
 
     class _Done:
         def __init__(self, rc, out):
@@ -3908,11 +3943,15 @@ def selftest():
         assert cmd[:2] == ["security", "find-generic-password"], cmd
         assert "shell" not in kw, "the keychain read must not go through a shell"
         _kc["calls"] += 1
+        _kc["asked"].append(cmd[3])
+        if _kc["by"] is not None:                # per-service answers; absent = not found
+            out = _kc["by"].get(cmd[3])
+            return _Done(0 if out else 44, out or "")
         return _Done(_kc["rc"], _kc["out"])
 
-    def _case(platform, file_blob, rc=0, out=""):
+    def _case(platform, file_blob, rc=0, out="", by=None):
         sys.platform = platform
-        _kc.update(calls=0, rc=rc, out=out)
+        _kc.update(calls=0, rc=rc, out=out, by=by, asked=[])
         globals()["read_json"] = lambda path, fallback=None: (
             (file_blob if file_blob is not None else fallback)
             if path.endswith(".credentials.json") else _saved_reader(path, fallback))
@@ -3925,25 +3964,54 @@ def selftest():
         # The file wins wherever it exists, and the keychain is then never asked.
         for plat in ("win32", "darwin", "linux"):
             assert _case(plat, _file_blob, out=_kc_blob) == ("sk-FAKE-file", "o-file", 0), plat
-        # No file on a Mac: the keychain answers - token AND org id, the two readers.
-        assert _case("darwin", None, out=_kc_blob) == ("sk-FAKE-kc", "o-kc", 2)
+        # No file on a Mac: the keychain answers - token AND org id, the two readers, each
+        # asking both item names.
+        assert _case("darwin", None, out=_kc_blob) == ("sk-FAKE-kc", "o-kc", 4)
         # No file elsewhere: the keychain is not a thing there, so it is never asked.
         assert _case("win32", None, out=_kc_blob) == (None, None, 0)
         assert _case("linux", None, out=_kc_blob) == (None, None, 0)
         # A keychain that refuses, or answers with something that is not the blob: no token,
         # no exception - the same "no data" a missing file gives.
-        assert _case("darwin", None, rc=44, out="") == (None, None, 2)
-        assert _case("darwin", None, out="not json") == (None, None, 2)
-        assert _case("darwin", None, out="[1, 2]") == (None, None, 2)
+        assert _case("darwin", None, rc=44, out="") == (None, None, 4)
+        assert _case("darwin", None, out="not json") == (None, None, 4)
+        assert _case("darwin", None, out="[1, 2]") == (None, None, 4)
+        # ⭐ $CLAUDE_CONFIG_DIR RENAMES THE ITEM (2026-11-22): the suffix is sha256 of the
+        # config dir, ~/.claude when unset, and of the two items the LATER expiry wins - the
+        # stale plain item must not shadow the one Claude Code is refreshing, either way.
+        def _kc_tok(tok, exp):
+            return json.dumps({"claudeAiOauth": {"accessToken": tok, "expiresAt": exp}})
+        os.environ["CLAUDE_CONFIG_DIR"] = "/Users/someone/.claude"
+        _suf = KEYCHAIN_SERVICE + "-" + hashlib.sha256(b"/Users/someone/.claude").hexdigest()[:8]
+        assert _keychain_services() == (KEYCHAIN_SERVICE, _suf), _keychain_services()
+        _old, _new = _kc_tok("sk-old", 1000), _kc_tok("sk-new", 2000)
+        assert _case("darwin", None, by={KEYCHAIN_SERVICE: _old, _suf: _new})[0] == "sk-new"
+        assert _kc["asked"][:2] == [KEYCHAIN_SERVICE, _suf], _kc["asked"]
+        assert _case("darwin", None, by={KEYCHAIN_SERVICE: _new, _suf: _old})[0] == "sk-new"
+        assert _case("darwin", None, by={_suf: _old})[0] == "sk-old"
+        assert _case("darwin", None, by={KEYCHAIN_SERVICE: _old})[0] == "sk-old"
+        assert _case("darwin", None, by={})[0] is None
+        # The file follows $CLAUDE_CONFIG_DIR too.
+        _seen = []
+        globals()["read_json"] = lambda path, fallback=None: _seen.append(path) or fallback
+        sys.platform = "win32"
+        _read_credentials()
+        assert _seen == [os.path.join("/Users/someone/.claude", ".credentials.json")], _seen
+        os.environ.pop("CLAUDE_CONFIG_DIR")
+        _home_suf = hashlib.sha256(os.path.join(os.path.expanduser("~"), ".claude")
+                                   .encode("utf-8")).hexdigest()[:8]
+        assert _keychain_services()[1] == KEYCHAIN_SERVICE + "-" + _home_suf
         # $ANTHROPIC_TOKEN still wins, and the keychain is not asked for the token.
         os.environ["ANTHROPIC_TOKEN"] = "sk-env"
         assert _case("darwin", None, out=_kc_blob)[0] == "sk-env"
     finally:
         os.environ.pop("ANTHROPIC_TOKEN", None)
+        os.environ.pop("CLAUDE_CONFIG_DIR", None)
         subprocess.run, sys.platform = _saved_run, _saved_platform
         globals()["read_json"] = _saved_reader
         if _saved_env is not None:
             os.environ["ANTHROPIC_TOKEN"] = _saved_env
+        if _saved_cfgdir is not None:
+            os.environ["CLAUDE_CONFIG_DIR"] = _saved_cfgdir
 
     # The floor is enforced, not merely documented.
     # ⛔ 120 IS ASSERTED AS A LITERAL, not as FETCH_FLOOR_SECONDS. Writing the constant on

@@ -33,6 +33,14 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.81.2
+
+- **Mac 設了 `CLAUDE_CONFIG_DIR` 之後，用量照樣讀得到。**擁有者 2026-11-22：「claude usage watcher 好像查不到用量了」。
+  設了這個環境變數，Claude Code 會把登入憑證改存在鑰匙圈的 `Claude Code-credentials-<設定資料夾路徑 sha256 前 8 碼>`，
+  並且只更新這一個；舊的 `Claude Code-credentials` 就放著過期。之前只讀舊名稱，所以 token 過期後每次查詢都說
+  `OAuth token expired`，Mac 上的用量停了九個小時。現在兩個名稱都讀，取到期時間比較晚的那個；`.credentials.json`
+  也改從 `$CLAUDE_CONFIG_DIR` 讀（沒設就照舊是 `~/.claude`）。
+
 ## 0.81.1
 
 - **用量查詢被限速時，照伺服器說的時間再試。**擁有者 2026-11-18：「對方說等 11 分鐘，就等 11 分鐘」。`/api/oauth/usage`
@@ -3818,6 +3826,15 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.81.2
+
+- **Usage is read on a Mac that sets `CLAUDE_CONFIG_DIR`.** Owner 2026-11-22: "the usage watcher seems unable to read
+  usage". With that variable set, Claude Code keeps its credentials in the keychain item
+  `Claude Code-credentials-<first 8 hex of sha256 of the config dir>` and refreshes only that one, leaving the plain
+  `Claude Code-credentials` to expire. Only the plain name was read, so once its token expired every read said
+  `OAuth token expired` and the Mac's usage froze for nine hours. Both names are now read and the later expiry wins;
+  `.credentials.json` is read from `$CLAUDE_CONFIG_DIR` too (`~/.claude` when unset, as before).
 
 ## 0.81.1
 
