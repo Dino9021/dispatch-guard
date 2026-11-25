@@ -29,6 +29,9 @@ import stat
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import scratch_root  # noqa: E402  - where a task's scratch lives (0.83.0)
+
 # The rebuildable directories rule 8 names (PREPEND in dispatch_gate.py) - --build removes these and nothing else.
 BUILD_DIRS = ("node_modules", ".build", "DerivedData", "SourcePackages", "ModuleCache", "target", "dist", "build")
 _REPARSE_POINT = 0x400        # FILE_ATTRIBUTE_REPARSE_POINT: junctions and symlinks on Windows
@@ -67,9 +70,45 @@ def anchor(path, depth_needed=True):
     raise Refused("not below a folder named scratch or scratchpad")
 
 
+def _external(path, depth_needed):
+    """(anchor, parts below it) for a path under the configured scratch_root (0.83.0), None when not under it.
+
+    ⛔ Under a configured root the legacy "outermost folder named scratch" rule is never used: the anchor is the
+    structural `<root>/<key>/<task>/scratch`, every component from `<root>/<key>` down must not be a link, and
+    nothing is deletable while the root is not valid right now (unmounted, no marker, itself a link) - the
+    configured value decides "under it", valid or not. ADR Memory/tasks/20261125-203407-scratch-root-on-cache-disk D5.
+    """
+    hit = scratch_root.under_configured(path)
+    if hit is None:
+        return None
+    root, parts = hit
+    real, mode, reason = scratch_root.check_root(scratch_root.configured(scratch_root.state_dir()), None)
+    if mode != "external":
+        raise Refused("under scratch_root, which is not usable right now: %s" % (reason or mode))
+    if len(parts) < 3 or parts[2].lower() != "scratch":
+        raise Refused("under scratch_root but not in <root>/<key>/<task>/scratch/ - only a task's scratch is deletable")
+    below = parts[3:]
+    if depth_needed and len(below) < 2:
+        raise Refused("only %d level(s) below `scratch` - a path must be at least 2 below it (a whole sub-task "
+                      "folder is its evidence)" % len(below))
+    cur = real
+    for name in parts[:-1]:                            # <key> down to the target's parent
+        cur = os.path.join(cur, name)
+        if not os.path.lexists(cur):
+            break
+        if is_link(cur):
+            raise Refused("`%s` on the way is a link or junction - the delete would land elsewhere" % cur)
+    return os.path.join(real, *parts[:3]), below
+
+
 def check(path, depth_needed=True):
     """The checks every deletion passes, on the absolute form. Returns the anchor directory, or raises Refused."""
     try:
+        ext = _external(path, depth_needed)
+        if ext is not None:
+            if ext[1] and _tracked(ext[0], os.path.join(*ext[1])):
+                raise Refused("git tracks files under it - that is a repository's commit to make")
+            return ext[0]
         top, below = anchor(path, depth_needed)
         cur = top
         for name in below[:-1]:                       # strictly below the anchor, down to the parent

@@ -199,9 +199,64 @@ def main():
         finally:
             sc.subprocess.run = real_run
 
+    external_cases()
     print("ok - scratch_clean deletes copies and build output only below scratch, never through a link, refuses "
-          "`..`, depth, git-tracked and unanswerable checks, keeps a read-only hard link's original")
+          "`..`, depth, git-tracked and unanswerable checks, keeps a read-only hard link's original; under a "
+          "configured scratch_root only <root>/<key>/<task>/scratch/<NN>/... while the root is valid")
     return 0
+
+
+def external_cases():
+    """0.83.0: a path under the machine's configured scratch_root (ADR 20261125-203407 D5).
+
+    ⚠ OUTSIDE the repository on purpose: a root below Tools/Debug/scratch has a folder named `scratch` in it,
+    which the validation rightly refuses. A private temp folder, removed at the end, with its own state dir.
+    """
+    import json
+    import shutil
+    import tempfile
+    tmp = os.path.realpath(tempfile.mkdtemp(prefix="dg-ext-"))
+    try:
+        sdir = os.path.join(tmp, "state")
+        root = os.path.join(tmp, "cache", "dg-root")
+        os.makedirs(sdir)
+        os.makedirs(root)
+        with open(os.path.join(sdir, "config.json"), "w", encoding="utf-8") as fh:
+            json.dump({"scratch_root": root}, fh)
+        open(os.path.join(root, ".dispatch-guard-scratch-root"), "w").close()
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", CLAUDE_DISPATCH_DIR=sdir)
+
+        def go(*args):
+            r = subprocess.run([sys.executable, SCRIPT] + list(args), capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", cwd=repo_path(), env=env)
+            assert r.stdout.strip().splitlines()[-1].startswith("scratch_clean: "), r.stdout + r.stderr
+            return r.returncode, r.stdout
+
+        task = os.path.join(root, "proj-0123456789abcdef", "20261125-000000-t")
+        put(os.path.join(task, "scratch", "01", "copy", "a.txt"))
+        put(os.path.join(task, "other", "01", "x"))
+        rc, out = go(os.path.join(task, "scratch", "01", "copy"))
+        assert rc == 0 and "DELETED" in out and not os.path.exists(os.path.join(task, "scratch", "01", "copy")), out
+        for path, word in ((os.path.join(task, "scratch", "01"), "at least 2 below"),
+                           (os.path.join(task, "other", "01", "x"), "only a task's scratch"),
+                           (os.path.join(task, "scratch"), "only 0 level")):
+            rc, out = go("--dry-run", path)
+            assert rc == 1 and "REFUSED" in out and word in out and "WOULD-DELETE" not in out, (word, out)
+        elsewhere = os.path.join(tmp, "elsewhere")
+        put(os.path.join(elsewhere, "keep.txt"))
+        link_dir(os.path.join(task, "scratch", "02"), elsewhere)
+        rc, out = go("--dry-run", os.path.join(task, "scratch", "02", "keep.txt"))
+        assert rc == 1 and "link or junction" in out, out
+        put(os.path.join(task, "scratch", "03", "y"))
+        os.remove(os.path.join(root, ".dispatch-guard-scratch-root"))
+        rc, out = go("--dry-run", os.path.join(task, "scratch", "03", "y"))
+        assert rc == 1 and "not usable right now" in out, out          # marker gone: nothing deletable
+        assert os.path.exists(os.path.join(elsewhere, "keep.txt"))
+    finally:
+        link = os.path.join(tmp, "cache", "dg-root", "proj-0123456789abcdef", "20261125-000000-t", "scratch", "02")
+        if os.path.lexists(link):
+            (os.rmdir if WIN else os.unlink)(link)
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

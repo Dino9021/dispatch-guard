@@ -38,6 +38,7 @@ CHECKS = [
     # output when the fallback could not be exercised, rather than skipping quietly.
     ("shim", [repo_path("hooks", "shim.py"), "--selftest"]),
     ("usage",         [repo_path("hooks", "usage.py"), "--selftest"]),
+    ("scratch root",  [repo_path("hooks", "scratch_root.py"), "--selftest"]),
     ("unattended",    [repo_path("hooks", "unattended.py"), "--selftest"]),
     ("install",       [os.path.join(DEBUG_DIR, "test_install.py")]),
     ("resume cancel", [os.path.join(DEBUG_DIR, "test_resume_cancel.py")]),

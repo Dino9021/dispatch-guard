@@ -71,6 +71,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import cmd_guards  # noqa: E402  - the silent-failure guards; see its docstring
 import model_pricing  # noqa: E402  - the published price table; see its docstring
+import scratch_root  # noqa: E402  - where a task's scratch lives (0.83.0)
 import shim  # noqa: E402  - the version-free launcher; see its docstring
 import usage  # noqa: E402  - same folder, stdlib-only, no install step
 
@@ -388,19 +389,22 @@ anything YOU dispatch in turn.
    `dispatch-protocol`.
 8. SCRATCH FILES GO IN THE TASK FOLDER: KEEP THE EVIDENCE, DELETE THE BUILD. Every
    intermediate file you write - probes, captured output, half-built scripts, fixtures -
-   goes under {task_root}/<task>/scratch/<your-subtask>/, never the system temp directory
-   and never a path another sub-task also uses. SCRATCH IS NEVER COMMITTED. KEEP THE
+   goes under {scratch_where}<your-subtask>/{scratch_note}, never the system temp directory
+   and never a path another sub-task also uses (<task> is your task folder's name; when
+   this differs from the path in your work order, write where THIS says and state the path
+   you used in your report). SCRATCH IS NEVER COMMITTED. KEEP THE
    EVIDENCE - what you ran, probes, fixtures, and anything your report cites or a finding
    depends on: it is the only way anyone can answer "what did that agent actually see?"
-   after you are gone. KEPT MEANS MOVED TO {task_root}/<task>/evidence/<your-subtask>/ -
-   move it first, check it arrived, THEN cite that evidence/ path (a report cut off halfway
-   must never cite a file still in scratch). Never put a credential, key, token or machine
+   after you are gone. KEPT MEANS COPIED TO {task_root}/<task>/evidence/<your-subtask>/ -
+   copy it as <name>.partial, check it is complete, rename it to <name>, THEN cite that
+   evidence/ path; never overwrite an existing evidence file (a report cut off halfway
+   must never cite a file that is not complete in evidence/). Never put a credential, key, token or machine
    identifier in evidence/: it is committed - record the finding, or a redacted copy.
    A LOG GOES ONCE ITS RESULT IS IN YOUR REPORT: a *.log or captured run output exists only
    to show progress if you are cut off - copy into the report anything only it holds (a
    number, the failing line, a session id), then delete that one file by its absolute path,
-   never a glob; one your report cites by path moves to evidence/; leave one git already
-   tracks.
+   never a glob; one your report cites by path is copied to evidence/; leave one git
+   already tracks.
    And AFTER your report is written, DELETE WHAT CAN BE REBUILT
    that nothing in the report points at - a copy of a project, dependency folders and build
    output (node_modules, .build, DerivedData, SourcePackages, ModuleCache, target, dist,
@@ -1493,6 +1497,8 @@ def prepend_head(cfg):
     mid, dear = dearest()
     return PREPEND.format(
         task_root=cfg["task_root"], plan_glob=cfg["plan_glob"],
+        scratch_where=cfg.get("scratch_where") or "%s/<task>/scratch/" % cfg["task_root"],
+        scratch_note=cfg.get("scratch_note") or "",
         protocol_doc=cfg["protocol_doc"],
         max_model_price=cfg.get("max_model_price", DEFAULTS["max_model_price"]),
         price_list=price_sentence() or ("the table in %s" % model_pricing.FILENAME),
@@ -4168,6 +4174,7 @@ def on_session_start(payload, root, sdir, cfg):
         log(root, "MODEL-PRICE-REFRESH-FORKED")
     model_line = model_note(cfg, sdir, avail=available_models(root))
 
+    scr = scratch_state(root, sdir)
     need = cmd_guards.required_skills(cfg)
     skills_line = ("" if not need else
                    " ⛔ BEFORE YOUR FIRST DISPATCH you must invoke %s - every dispatch is "
@@ -4196,8 +4203,8 @@ def on_session_start(payload, root, sdir, cfg):
             "sub-task prompt are written to %s/<YYYYMMDD-HHMMSS-task-name>/%s BEFORE any "
             "dispatch%s. ⛔ Everything a task produces - plans, reports, probes, captured "
             "output, evidence - goes in its task folder (intermediate files under "
-            "<task>/scratch/<NN-purpose>/, never committed; what is kept moves to "
-            "<task>/evidence/<NN-purpose>/ before it is cited), INCLUDING your own files in this "
+            "%s<NN-purpose>/%s, never committed; what is kept is copied to "
+            "<task>/evidence/<NN-purpose>/ before it is cited)%s, INCLUDING your own files in this "
             "main session, not "
             "only a sub-task's: the scratchpad or temp directory the harness names is only for "
             "throwaway files nothing will cite (a commit-message file); the harness's 'always "
@@ -4205,6 +4212,8 @@ def on_session_start(payload, root, sdir, cfg):
             "dispatching a wave run `%s --verdict` for GO/PACE/STOP - never interpret the "
             "raw numbers yourself.%s%s"
             % (cfg["protocol_doc"], cfg["task_root"], cfg["plan_glob"],
+               scratch_root.where(scr, cfg["task_root"]), scratch_root.where_note(scr, cfg["task_root"]),
+               (" - ⚠ %s" % scr["reason"]) if scr["reason"] else "",
                (" - that folder already exists, so create the task folder inside it rather "
                 "than choosing a location") if task_root_ready else
                (" - and %s could NOT be created, so create it yourself before dispatching"
@@ -4221,6 +4230,10 @@ def on_session_start(payload, root, sdir, cfg):
     # reading, so the screen channel carries only what a PERSON must act on, the once it
     # becomes true. Everything else stays in the model's context where it belongs.
     screen = [s for _c, s in pairs if s]
+    if scr["mode"] == "stop":
+        # ⭐ 0.83.0: a problem with the machine's scratch disk is the owner's to fix, and dispatches are
+        # refused until it is (owner 2026-11-25: stop at the next safe point and ask).
+        screen.append("scratch disk problem, sub-task dispatch is REFUSED until fixed: %s" % scr["reason"])
     out = {"hookSpecificOutput": {"hookEventName": "SessionStart",
                                   "additionalContext": text}}
     if screen:
@@ -4781,12 +4794,37 @@ def _wake_hint(v, sdir=None):
             "which never reaches the reset from here." % (when, wake_prompt()))
 
 
+def scratch_state(root, sdir):
+    """scratch_root.resolve(), never raising: a broken resolver keeps scratch in the repository and says so."""
+    try:
+        return scratch_root.resolve(sdir, root)
+    except Exception as exc:
+        log(root, "SCRATCH-ROOT-FAILED %r" % (exc,))
+        return {"mode": "repo", "root": None, "base": None, "configured": None,
+                "reason": "the scratch location could not be resolved (%s); scratch stays in the repository"
+                          % exc.__class__.__name__}
+
+
 def on_pre_agent(payload, root, sdir, cfg, wind=None):
     tool_input = payload.get("tool_input") or {}
     event = payload.get("hook_event_name", "PreToolUse")
     desc = str(tool_input.get("description", ""))[:40]
     sid = payload.get("session_id")
     started = session_start(sdir, sid)
+
+    # ⭐ 0.83.0: WHERE THIS SUB-TASK'S SCRATCH GOES, resolved now, at the dispatch - the safe stopping
+    # point. A problem with the machine's scratch disk refuses the dispatch until the owner fixes it
+    # (owner 2026-11-25: 「在發現問題時在可以停下來的時候就停下來並提示要求處理」); a disk that is simply
+    # not mounted falls back to the repository's scratch (owner: 「3 退回」). ADR 20261125-203407 D9.
+    scr = scratch_state(root, sdir)
+    if scr["mode"] == "stop":
+        log(root, "DENY(scratch-root) %s" % desc)
+        deny(event, "dispatch gate: the scratch disk needs the owner: %s Nothing was dispatched. Tell the "
+                    "owner this exact message and wait for them to fix it; do not work around it." % scr["reason"],
+             systemMessage="dispatch-guard: sub-task dispatch REFUSED - scratch disk problem: %s" % scr["reason"])
+        return
+    cfg = dict(cfg, scratch_where=scratch_root.where(scr, cfg["task_root"]),
+               scratch_note=scratch_root.where_note(scr, cfg["task_root"]))
 
     if started is None:
         log(root, "ADVISORY(no-session-stamp) %s" % desc)
@@ -6085,7 +6123,7 @@ def selftest():
     # ADR Memory/tasks/20261020-140124-scratch-keep-evidence-delete-build). The old "do not
     # delete them" must not come back.
     for token in ("SCRATCH FILES GO IN THE TASK FOLDER", "KEEP THE EVIDENCE, DELETE THE BUILD",
-                  "{task_root}/<task>/scratch/", "ONLY inside your own scratch/<your-subtask>/",
+                  "{scratch_where}<your-subtask>/", "ONLY inside your own scratch/<your-subtask>/",
                   "anything your report cites", "NEVER DELETE THROUGH A LINK",
                   # ⭐ 0.80.0: a log goes once its result is recorded (owner 2026-11-14; ADR
                   # Memory/tasks/20261114-105000-delete-logs-after-report).
@@ -6101,7 +6139,11 @@ def selftest():
                   # before it is cited (owner 2026-11-25; ADR
                   # Memory/tasks/20261125-201217-scratch-always-ignored D2, D7).
                   "SCRATCH IS NEVER COMMITTED", "{task_root}/<task>/evidence/<your-subtask>/",
-                  "move it first, check it arrived, THEN cite", "Never put a credential, key, token"):
+                  "copy it as <name>.partial, check it is complete, rename it to <name>, THEN cite",
+                  "Never put a credential, key, token",
+                  # ⭐ 0.83.0: the live scratch location wins over a stored work order (ADR
+                  # Memory/tasks/20261125-203407-scratch-root-on-cache-disk D4).
+                  "write where THIS says and state the path\n   you used in your report"):
         assert token in PREPEND, token
     assert "YOU DO NOT DELETE THEM" not in PREPEND, "the keep-everything scratch rule is back"
     filled = prepend_head({"task_root": "Memory/tasks", "plan_glob": "prompts*.md",
@@ -6113,6 +6155,11 @@ def selftest():
     assert "$5 per million INPUT tokens" in filled, "the limit did not interpolate"
     assert "Memory/tasks/<task>/scratch/" in filled, filled[-600:]
     assert "Memory/tasks/<task>/evidence/" in filled, filled[-600:]
+    # ⭐ 0.83.0: the external scratch path and its note render where an agent reads them.
+    ext = prepend_head({"task_root": "Memory/tasks", "plan_glob": "prompts*.md", "protocol_doc": "PROTOCOL.md",
+                        "max_model_price": 5, "scratch_where": "/c/proj-k/<task>/scratch/",
+                        "scratch_note": " (NOTE-X)"})
+    assert "/c/proj-k/<task>/scratch/<your-subtask>/ (NOTE-X), never the system" in ext, ext[-1500:]
     # The rewrite it names must survive .format(): doubled braces in PREPEND, single in the prompt.
     assert 'rm -rf "${D:?}"/*' in filled, filled[-900:]
     assert "run.sh\" scratch_clean.py <path>" in filled, filled[-900:]     # the shim, no version in it

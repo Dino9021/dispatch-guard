@@ -16,16 +16,20 @@ created by the gate at session start — do not pick another location or ask):
 `<YYYYMMDD-HHMMSS-task-name>/`, timestamp with hours-minutes-seconds. Everything the task
 produces goes there: `prompts*.md` (every prompt, BEFORE any dispatch), `progress.md`
 (written by the gate), `agent-NN-<subtask>.md` reports, external-model captures, handoffs,
-`evidence/<NN>/` (what is kept) and `scratch/<NN>/` (never committed) - see below.
+`evidence/<NN>/` (what is kept) and `scratch/<NN>/` (never committed; possibly on this machine's
+throwaway disk) - see below.
 The filesystem is the handoff — chat output dies with the session. Never write a
 credential, key, token or machine identifier into a folder that gets committed.
 
 ## Scratch files
 
-**Every intermediate file a sub-task writes goes under its own directory in the task folder:
-`<task_root>/<task>/scratch/<NN-agent-or-purpose>/`.** Probes, captured command output, half-
-built scripts, downloaded pages, generated fixtures — all of it, and named for the sub-task
-or the question it belongs to.
+**Every intermediate file a sub-task writes goes under its own scratch directory:
+`<task_root>/<task>/scratch/<NN-agent-or-purpose>/`, or - on a machine whose config sets
+`scratch_root` - `<scratch_root>/<repo-key>/<task>/scratch/<NN-agent-or-purpose>/` on that machine's
+throwaway disk.** Probes, captured command output, half-built scripts, downloaded pages, generated
+fixtures — all of it, and named for the sub-task or the question it belongs to. **The SessionStart note
+and rule 8 of every sub-task prompt give the path in force NOW; when it differs from a stored work
+order, rule 8 wins** and the report states the path actually used.
 
 ⛔ **Not the system temp directory, not the repository root, and never a path two sub-tasks
 share.** Two agents given "somewhere temporary" pick the same place, and the second one wipes
@@ -47,14 +51,37 @@ ignore, 需要留的東西歸檔到其他路徑才對」).** Every project ignor
 default root, the `.gitignore` line is `Memory/tasks/*/scratch/`. The plugin does not write a project's
 `.gitignore`; add the line yourself when it is missing.
 
+⭐ **Scratch on the machine's throwaway disk (0.83.0; owner 2026-11-25).** Set `"scratch_root"` in the
+PER-MACHINE `~/.claude/dispatch-guard/config.json` (a repository's own config is never read for it) to a
+fully qualified folder on the cache disk - not at a drive root (`D:\Cache\dg-scratch`, not `D:\scratch`),
+no folder named `scratch` in it - and create the empty marker file `.dispatch-guard-scratch-root` inside it.
+The plugin never creates the root or the marker. Each repository gets `<repo-key>` = folder name plus a
+hash of its path, with a `.repo` file naming its owner; a moved checkout gets a new key and its old
+scratch stays behind on the cache disk.
+- Root folder absent (disk not mounted): scratch falls back to the repository's `<task>/scratch/`, with
+  a note.
+- **Any other problem STOPS: every dispatch is refused and the owner is told** - the root exists without
+  its marker (the disk is unmounted and something wrote onto the system disk at the mount point, or the
+  marker was never made), the value is not a fully qualified path, it is itself a link, it is inside the
+  repository, or the key belongs to another checkout. Tell the owner the message and wait.
+- An agent never creates the root or anything above `<repo-key>`: when that folder is missing it uses
+  the repository's scratch. A disk that disappears in the middle of a run can still catch writes on the
+  system disk; the next dispatch then stops (the owner accepted this residual).
+- In a permission mode other than bypassPermissions, writes outside the working directory may ask:
+  add the root to `permissions.additionalDirectories`. A Codex run that must write scratch needs
+  `--add-dir <that folder>`.
+ADR `Memory/tasks/20261125-203407-scratch-root-on-cache-disk/`.
+
 ⭐ **Keep the evidence, delete the build.** What the sub-task ran, probes, small fixtures, diffs - and
 anything its report cites or a finding depends on (a mutation fixture, the copy a claim was measured
 on), whatever its size - is kept: it is the only way to answer "what did that agent actually see?"
-after it is gone. **Kept means moved to `<task_root>/<task>/evidence/<NN-agent-or-purpose>/`** - the
+after it is gone. **Kept means copied to `<task_root>/<task>/evidence/<NN-agent-or-purpose>/`** - the
 same `<NN>` name as its scratch directory, files that refer to each other keeping their layout.
-**Move it first, check it arrived, THEN write the citation**, and cite the `evidence/` path: a report
-cut off halfway must never point at a file still in `scratch/`. Each producer moves its own - a
-sub-task its own `scratch/<NN>/`, the main session its own files. What stays in `scratch/` is kept by
+**Copy it as `<name>.partial`, check it is complete, rename it to `<name>`, THEN write the citation**,
+and cite the `evidence/` path; never overwrite an existing evidence file - pick a new name. A report
+cut off halfway must never point at an incomplete file; a leftover `.partial` is cited by nothing and
+is ignored (`.gitignore`: `Memory/tasks/**/*.partial`). Each producer copies its own - a sub-task its
+own `scratch/<NN>/`, the main session its own files. What stays in `scratch/` is kept by
 nobody; it is still deleted only with `scratch_clean.py` below, at its usual depth.
 
 ⛔ **No credential, key, token or machine identifier goes into `evidence/`** - it is committed. Such a
@@ -67,8 +94,8 @@ show progress if the run is cut off. When THAT run's result is written into its 
 `progress.md`, whoever started the run deletes the log: first copy in anything only the log holds (a
 number, the failing line, a Codex session id, tokens used), then delete the single file by its absolute
 path (`rm "<path>"`, PowerShell `Remove-Item -LiteralPath "<path>"`) - never a glob or a directory.
-A log a report, a pending item or a committed file names by path is evidence: it moves to `evidence/`
-like any other (move, then cite); a log git already tracks is left alone; in a repository that
+A log a report, a pending item or a committed file names by path is evidence: it is copied to
+`evidence/` like any other (copy, check, rename, then cite); a log git already tracks is left alone; in a repository that
 commits task folders, delete it before the commit.
 ADR `Memory/tasks/20261114-105000-delete-logs-after-report/`.
 
@@ -77,8 +104,8 @@ ADR `Memory/tasks/20261114-105000-delete-logs-after-report/`.
 `build`) that nothing in the report points at is deleted by the sub-task AFTER its report is
 written, ONLY inside its own `scratch/<subtask>/` - never the repository's folders, never another
 sub-task's - and the report says what was built, how large, and that it was deleted. When a
-sub-task returns, the dispatcher checks THAT sub-task's scratch size (`du -sh`) and deletes leftovers
-of that kind there, after reading the report. Measured 2026-10-20: one project's sub-tasks kept review
+sub-task returns, the dispatcher checks THAT sub-task's scratch size (`du -sh`, at the path its report
+names) and deletes leftovers of that kind there, after reading the report. Measured 2026-10-20: one project's sub-tasks kept review
 copies of an iOS build and its scratch reached 37 GiB in three days. Nothing deletes or archives a task
 folder later, so nothing else will.
 
@@ -101,11 +128,13 @@ a relative glob, and on a target built from loop variables - never fire. It refu
 least two levels below a `scratch` folder (one below a `scratchpad`), a `..` path, a path reached
 through a link, and anything git tracks; it removes a link inside a deleted tree as a link. Its last
 line, `scratch_clean: <n> deleted, …`, is the evidence for the report - no last line means it did not
-run. Copy a build log - or a bundle such as an `.xcresult`, whole - that a finding depends on out of
+run. Under a configured `scratch_root` it deletes only `<root>/<key>/<task>/scratch/<NN>/<thing>`, checks
+for links from `<key>` down, and refuses everything there while the root is not usable. Copy a build log - or a bundle such as an `.xcresult`, whole - that a finding depends on out of
 the build folder into `evidence/<NN>/` before `--build`; the build folder itself is never kept.
 
-⚠ **Say both paths in the prompt** - `scratch/<NN>/` and `evidence/<NN>/`. A sub-task cannot infer
-them, and an agent told only "write your report to X" will put everything else wherever it likes.
+⚠ **Say both paths in the prompt** - its scratch folder as the SessionStart note gives it, and
+`evidence/<NN>/`. A sub-task cannot infer them, and an agent told only "write your report to X" will put
+everything else wherever it likes. The prompt file is also the record of where the scratch went.
 
 ⭐ **An existing project that tracked scratch before 2026-11-25:** by DEFAULT, add the ignore line and
 change nothing already tracked - legacy evidence keeps its path and every citation of it still works,

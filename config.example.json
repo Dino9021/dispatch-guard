@@ -226,6 +226,10 @@
     "_task_root_null_zh": "填 null 而不是路徑，會退回「相容偵測」：Memory/tasks、.agent-tasks、tasks 裡面「第一個已經存在的」會被採用，三個都不存在時則建立 Memory/tasks。這個機制存在，是為了讓一個本來就把任務資料夾放在另外兩個名字底下的儲存庫，不會被迫多出第二套慣例。新的儲存庫就直接留著下面這個值。",
     "task_root": null,
 
+    "_scratch_root": "0.83.0. Where a task's scratch goes on THIS machine: a fully qualified folder on a throwaway disk (macOS /Users/you/.cache/dg-scratch, Windows D:\\Cache\\dg-scratch - never directly at a drive root, and no folder named scratch in it). Read ONLY from this per-machine file, never from a repository's .claude/dispatch-guard.json. Create the folder AND an empty file named .dispatch-guard-scratch-root inside it yourself - the plugin never creates either. null keeps scratch in the repository's <task>/scratch/. Folder absent (disk not mounted) -> scratch falls back to the repository, with a note. Folder present without the marker, or any other problem -> every dispatch is REFUSED until you fix it. In a permission mode other than bypassPermissions, add the folder to permissions.additionalDirectories.",
+    "_scratch_root_zh": "0.83.0。這台機器上任務的 scratch 放哪裡：暫存碟上一個完整的絕對路徑（macOS /Users/you/.cache/dg-scratch，Windows D:\\Cache\\dg-scratch——不要直接放在磁碟根目錄下，路徑裡也不能有叫 scratch 的資料夾）。只從這個「每台機器各一份」的檔案讀，絕不從專案的 .claude/dispatch-guard.json 讀。資料夾和裡面一個叫 .dispatch-guard-scratch-root 的空檔案都要自己建立——外掛不會建。null 表示 scratch 留在專案的 <task>/scratch/。資料夾不存在（碟沒掛上）→ 退回專案裡，並提醒一行。資料夾存在卻沒有標記檔、或其他任何問題 → 每次派工都會被拒絕，直到你修好。不是略過權限模式時，把這個資料夾加進 permissions.additionalDirectories。",
+    "scratch_root": null,
+
     "_plan_glob": "What a dispatch plan is called inside a task folder. A dispatch with no matching file written in this session is refused.",
     "_plan_glob_zh": "在任務資料夾裡，派工計畫叫什麼名字。這個 session 沒有寫過相符檔案的派工會被拒絕。",
     "plan_glob": "prompts*.md",

@@ -39,7 +39,8 @@ project file is stricter, the stricter rule wins.
   If this project ships `dispatch-protocol`, that skill owns the layout — read it: the prompts
   go in `<task_root>/<task>/prompts*.md` (default `<repo>/Memory/tasks/`), and the hook looks
   for a `prompts*.md` newer than the session before it will allow a dispatch. Scratch files go
-  under the same task folder, one directory per sub-task, never a shared temporary path.
+  in one directory per sub-task, never a shared temporary path - under the task folder, or on the
+  machine's throwaway disk when `scratch_root` is set; the SessionStart note and rule 8 give the path.
   ⚠ Without that, an agent writes a perfectly good plan somewhere the gate cannot see and the
   refusal names a path it never used.
 - Every prompt must: **stand completely alone** (the agent has none of your context — no

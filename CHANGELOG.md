@@ -33,6 +33,18 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.83.0
+
+- **任務的 scratch 可以放到這台機器的暫存碟。**擁有者 2026-11-25：「希望各 task 的 scratch 也放去專門用來放不重要的暫存檔的磁碟」，
+  並選定「1 D、2 設定檔、3 退回」，再補一條「在發現問題時在可以停下來的時候就停下來並提示要求處理」。在**這台機器的**
+  `~/.claude/dispatch-guard/config.json` 設 `scratch_root`（專案自己的設定檔不讀這個值），並在那個資料夾裡放一個空的
+  `.dispatch-guard-scratch-root` 標記檔；之後 scratch 放在 `<scratch_root>/<專案代號>/<任務>/scratch/<編號>/`，完全不在專案資料夾裡。
+  資料夾不存在（碟沒掛上）就退回專案裡的 scratch；其他任何問題（沒有標記檔、路徑寫法不對、是連結、指到專案裡、代號被別的專案佔用）
+  都會**擋下每一次派工**並在畫面上告訴擁有者。路徑在每次工作階段開始和每次派工時重新判斷，規則第 8 條永遠帶當下有效的路徑。
+  清理工具在暫存碟上只刪 `<根目錄>/<代號>/<任務>/scratch/<編號>/` 底下的東西、檢查途中的連結，根目錄不可用時一律拒絕。
+  證據改成**複製**到 `evidence/`：先寫成 `.partial`、確認完整、改名後才引用（取代 0.82.0 的「搬」）。新模組 `hooks/scratch_root.py`。
+  ADR `Memory/tasks/20261125-203407-scratch-root-on-cache-disk/`（Codex 審查一輪加三次核對；「工作途中碟被卸載」的殘留風險由擁有者接受）。
+
 ## 0.82.0
 
 - **任務的 `scratch/` 永遠不進版控，要留的東西搬到 `evidence/`。**擁有者 2026-11-25：「scratch 應該要 ignore,
@@ -3838,6 +3850,22 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.83.0
+
+- **A task's scratch can live on the machine's throwaway disk.** Owner 2026-11-25: "I want every task's scratch on the
+  disk meant for unimportant temp files", then "1 D, 2 config file, 3 fall back", and "when a problem is found, stop at
+  the next point where it is safe to and ask for it to be handled". Set `scratch_root` in THIS machine's
+  `~/.claude/dispatch-guard/config.json` (a repository's own config is never read for it) and put an empty
+  `.dispatch-guard-scratch-root` marker in that folder; scratch then goes to `<scratch_root>/<repo-key>/<task>/scratch/<NN>/`,
+  outside the repository. Folder absent (disk not mounted) -> back to the repository's scratch. Any other problem (no
+  marker, not a fully qualified path, a link, inside the repository, a key owned by another checkout) **refuses every
+  dispatch** and tells the owner on screen. The path is resolved at every SessionStart and every dispatch, and rule 8
+  always carries the one in force. On the cache disk the cleaner deletes only below `<root>/<key>/<task>/scratch/<NN>/`,
+  checks for links on the way, and refuses everything while the root is not usable. Evidence is now COPIED into
+  `evidence/` - written as `.partial`, checked, renamed, then cited (replacing 0.82.0's "move"). New module
+  `hooks/scratch_root.py`. ADR `Memory/tasks/20261125-203407-scratch-root-on-cache-disk/` (one Codex round plus three
+  checks; the mid-run-unmount residual accepted by the owner).
 
 ## 0.82.0
 
