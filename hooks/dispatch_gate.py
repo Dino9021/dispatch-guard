@@ -1521,6 +1521,8 @@ def allow_prepended(event, tool_input, cfg, note, warn=None):
     the PreToolUse schema carries both, and the dispatcher attaches the context independently
     of the permission behaviour.
     """
+    advice = cfg.get("scratch_advice")
+    warn = " ".join(x for x in (warn, advice) if x) or None
     prompt = tool_input.get("prompt")
     if not isinstance(prompt, str):
         return
@@ -1537,6 +1539,18 @@ def allow_prepended(event, tool_input, cfg, note, warn=None):
         out["hookSpecificOutput"]["additionalContext"] = warn
         out["systemMessage"] = warn
     print(json.dumps(out, ensure_ascii=False))
+    _advised(cfg)
+
+
+def _advised(cfg):
+    """Mark the scratch_root advice as delivered for this session (see on_pre_agent)."""
+    mark = cfg.get("scratch_advice_mark") if cfg.get("scratch_advice") else None
+    if mark:
+        try:
+            with open(mark, "w") as fh:
+                fh.write("1")
+        except OSError:
+            pass
 
 
 def ask_prepended(event, tool_input, cfg, note, reason, warn=None):
@@ -1548,6 +1562,8 @@ def ask_prepended(event, tool_input, cfg, note, reason, warn=None):
     ways. `updatedInput` rides along with `ask`: the prompt shows the updated input and the
     approved call runs with it (P6b/P6c), which is what keeps an approved dispatch a gated one.
     """
+    advice = cfg.get("scratch_advice")
+    warn = " ".join(x for x in (warn, advice) if x) or None
     prompt = tool_input.get("prompt")
     if not isinstance(prompt, str):
         deny(event, reason)
@@ -1565,6 +1581,7 @@ def ask_prepended(event, tool_input, cfg, note, reason, warn=None):
         out["hookSpecificOutput"]["additionalContext"] = warn
         out["systemMessage"] = warn
     print(json.dumps(out, ensure_ascii=False))
+    _advised(cfg)
 
 
 def context_note(event, text, systemMessage=None):
@@ -4825,6 +4842,13 @@ def on_pre_agent(payload, root, sdir, cfg, wind=None):
         return
     cfg = dict(cfg, scratch_where=scratch_root.where(scr, cfg["task_root"]),
                scratch_note=scratch_root.where_note(scr, cfg["task_root"]))
+    # ⭐ 0.83.0: scratch_root UNSET (not merely unmounted) -> tell the owner why it matters and where to put
+    # it, once per session, on the first dispatch that goes through (owner 2026-11-25: 「dispatch 也要檢查如果
+    # 這個設定值是空的就提示 owner，提供建議」). Advice, never a refusal.
+    mark = os.path.join(sdir, "state", "%s.scratch-advised" % sid) if sid else None
+    if scr["mode"] == "repo" and scr.get("configured") is None and not (mark and os.path.exists(mark)):
+        cfg["scratch_advice"] = "dispatch-guard: " + scratch_root.advice(root)
+        cfg["scratch_advice_mark"] = mark
 
     if started is None:
         log(root, "ADVISORY(no-session-stamp) %s" % desc)

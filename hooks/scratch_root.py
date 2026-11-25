@@ -172,6 +172,50 @@ def where_note(res, task_root):
             "and NEVER create %s or anything above it)" % (res["base"], task_root, res["base"]))
 
 
+def suggest(repo, windows=None):
+    """A scratch_root to suggest for this machine, or None when no non-system disk is evident.
+
+    Windows: the repository's drive when it is not the system drive (`D:\\Cache\\dg-scratch` - below the drive root,
+    because the harness refuses to delete a drive root's children). POSIX: the first of ~/.cache, $XDG_CACHE_HOME,
+    the parent of $TMPDIR / $CLAUDE_CODE_TMPDIR that sits on a different device from `/` - on the owner's Mac that is
+    ~/.cache, the mount point of the cache volume.
+    """
+    windows = (os.name == "nt") if windows is None else windows
+    if windows:
+        system = (os.environ.get("SystemDrive") or "C:").upper()
+        import ntpath                                    # Windows rules even when tested elsewhere
+        drive = ntpath.splitdrive(os.path.realpath(repo))[0].upper()
+        return drive + "\\Cache\\dg-scratch" if re.match(r"^[A-Z]:$", drive) and drive != system else None
+    try:
+        system_dev = os.stat("/").st_dev
+    except OSError:
+        return None
+    candidates = [os.path.join(os.path.expanduser("~"), ".cache"), os.environ.get("XDG_CACHE_HOME")]
+    candidates += [os.path.dirname(os.environ.get(v, "").rstrip("/")) for v in ("TMPDIR", "CLAUDE_CODE_TMPDIR")]
+    for base in candidates:
+        try:
+            if base and os.path.isdir(base) and os.stat(base).st_dev != system_dev:
+                return os.path.join(base, "dg-scratch")
+        except OSError:
+            continue
+    return None
+
+
+def advice(repo, suggestion=None):
+    """What to tell the owner when scratch_root is unset (owner 2026-11-25: say why, and suggest a path)."""
+    path = suggestion or suggest(repo)
+    cfg = os.path.join(state_dir(), "config.json")
+    where = ("Suggested for this machine: %s." % path) if path else \
+        "Pick a folder on a disk that is not the system disk, below that disk's root."
+    example = path or "<that folder>"
+    return ("scratch_root is not set, so sub-task scratch (build copies, captures, downloads) is written inside "
+            "the repository, on the repository's disk. Setting it moves that throwaway output to a disk meant for "
+            "it: git and VS Code stop watching it (tens of thousands of scratch files once kept a Mac's CPU near "
+            "full for two days) and the system disk does not fill. %s To set it: create the folder, put an empty "
+            "file named %s in it, and add \"scratch_root\": %s to %s. Nothing else changes until you do." %
+            (where, MARKER, json.dumps(example), cfg))
+
+
 def under_configured(path, sdir=None):
     """(configured root, parts below it) when `path` lies under the configured scratch_root - valid or not -
     else None. Compared on the literal expanded value AND its realpath, case-folded where the OS folds."""
@@ -252,6 +296,24 @@ def _selftest():
         u = under_configured(os.path.join(root, "k", "t", "scratch", "01", "x"), sdir)
         assert u and u[1] == ["k", "t", "scratch", "01", "x"], u
         assert under_configured(os.path.join(tmp, "elsewhere", "x"), sdir) is None
+        # suggestions: Windows uses the repo's drive unless it is the system drive
+        saved_sd = os.environ.get("SystemDrive")
+        os.environ["SystemDrive"] = "C:"
+        try:
+            real_rp = os.path.realpath
+            os.path.realpath = lambda p: "D:\\WorkSpace\\proj"
+            assert suggest("x", windows=True) == "D:\\Cache\\dg-scratch"
+            os.path.realpath = lambda p: "C:\\Users\\u\\proj"
+            assert suggest("x", windows=True) is None
+        finally:
+            os.path.realpath = real_rp
+            if saved_sd is None:
+                os.environ.pop("SystemDrive", None)
+            else:
+                os.environ["SystemDrive"] = saved_sd
+        a = advice(repo, suggestion="/Volumes/cache/dg-scratch")
+        assert "/Volumes/cache/dg-scratch" in a and MARKER in a and "config.json" in a and "system disk" in a, a
+        assert "Pick a folder" in advice(repo, suggestion=None) or "Suggested" in advice(repo, suggestion=None)
     finally:
         if saved is None:
             os.environ.pop("CLAUDE_DISPATCH_DIR", None)

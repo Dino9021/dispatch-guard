@@ -33,6 +33,13 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.83.1
+
+- **沒設 `scratch_root` 時，提示擁有者為什麼要設、建議設在哪裡。**擁有者 2026-11-25：「dispatch 也要檢查如果這個設定值是空的就提示
+  owner，提供建議給 owner（告知為什麼要設這個，並建議設到什麼路徑）」。每個工作階段第一次真的放行的派工，在畫面上說明原因並給這台機器
+  的建議路徑：Windows 上專案所在磁碟不是系統碟時就用 `<那顆碟>:\Cache\dg-scratch`；macOS/Linux 上找另一顆碟上的快取資料夾
+  （例如在獨立磁碟上的 `~/.cache`）。只提示、不擋派工；碟只是沒掛上時不提示（那是 0.83.0 的退回）。
+
 ## 0.83.0
 
 - **任務的 scratch 可以放到這台機器的暫存碟。**擁有者 2026-11-25：「希望各 task 的 scratch 也放去專門用來放不重要的暫存檔的磁碟」，
@@ -3850,6 +3857,15 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.83.1
+
+- **With `scratch_root` unset, the owner is told why it matters and where to put it.** Owner 2026-11-25: "dispatch
+  should also check: if this setting is empty, prompt the owner with advice - why it should be set and what path to set
+  it to". The first dispatch that goes through in each session shows the reason and a suggestion for this machine on
+  screen: on Windows `<drive>:\Cache\dg-scratch` when the repository's drive is not the system drive; on macOS/Linux a
+  cache folder on another disk (such as `~/.cache` on a separate volume). Advice only, never a refusal; not shown when
+  the disk is merely unmounted (that is 0.83.0's fallback).
 
 ## 0.83.0
 

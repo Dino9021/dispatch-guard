@@ -58,6 +58,9 @@ no folder named `scratch` in it - and create the empty marker file `.dispatch-gu
 The plugin never creates the root or the marker. Each repository gets `<repo-key>` = folder name plus a
 hash of its path, with a `.repo` file naming its owner; a moved checkout gets a new key and its old
 scratch stays behind on the cache disk.
+- `scratch_root` not set at all: the first dispatch of each session tells the owner on screen why it
+  matters and suggests a folder (the repository's drive on Windows when it is not the system drive;
+  on macOS/Linux a cache folder on another disk, such as `~/.cache` on a separate volume). Advice only.
 - Root folder absent (disk not mounted): scratch falls back to the repository's `<task>/scratch/`, with
   a note.
 - **Any other problem STOPS: every dispatch is refused and the owner is told** - the root exists without
