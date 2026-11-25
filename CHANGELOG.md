@@ -33,6 +33,12 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.83.2
+
+- **修正：session 開始時的提示把暫存路徑接錯位置。**0.83.0 組這段文字時，填入的值順序錯了：暫存路徑被接到「BEFORE any dispatch」後面，
+  「intermediate files under」後面反而是空的。DevWK-Mac 在重開後第一個發現。現在順序正確，組文字的部分抽成 `session_text()`，
+  測試會實際組出這段文字並檢查（把順序改回錯的，測試就會失敗）。只影響給 AI 看的提示文字；派工時第 8 條規則裡的路徑一直是對的。
+
 ## 0.83.1
 
 - **沒設 `scratch_root` 時，提示擁有者為什麼要設、建議設在哪裡。**擁有者 2026-11-25：「dispatch 也要檢查如果這個設定值是空的就提示
@@ -3857,6 +3863,14 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.83.2
+
+- **Fix: the SessionStart note spliced the scratch path into the wrong place.** 0.83.0 filled the note's arguments out
+  of order, so the scratch path landed after "BEFORE any dispatch" and the slot after "intermediate files under" was
+  empty. Found live by DevWK-Mac after a restart. The order is fixed, the text is built by `session_text()`, and the
+  selftest renders it (the 0.83.0 order fails it). Only the model-facing note was wrong; the path in rule 8 of every
+  dispatch was always right.
 
 ## 0.83.1
 

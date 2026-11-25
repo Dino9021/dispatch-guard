@@ -4111,6 +4111,35 @@ def stand_down_resume(root, sdir, v, session_id=None):
             "the work instead. Nothing will wake later to redo it." % when)
 
 
+def session_text(cfg, scr, task_root_ready, skills_line, brake, model_line, notes):
+    """The SessionStart note for the model. A function so the selftest can render it (0.83.2)."""
+    return ("Sub-task dispatch is governed by %s and enforced by a hook: one sub-task at "
+            "a time, no background dispatch (one the harness backgrounds by itself counts "
+            "until it finishes), no Workflow, and the plan plus every "
+            "sub-task prompt are written to %s/<YYYYMMDD-HHMMSS-task-name>/%s BEFORE any "
+            "dispatch%s. ⛔ Everything a task produces - plans, reports, probes, captured "
+            "output, evidence - goes in its task folder (intermediate files under "
+            "%s<NN-purpose>/%s, never committed; what is kept is copied to "
+            "<task>/evidence/<NN-purpose>/ before it is cited)%s, INCLUDING your own files in this "
+            "main session, not "
+            "only a sub-task's: the scratchpad or temp directory the harness names is only for "
+            "throwaway files nothing will cite (a commit-message file); the harness's 'always "
+            "use the scratchpad' does not override this project rule.%s %s Before "
+            "dispatching a wave run `%s --verdict` for GO/PACE/STOP - never interpret the "
+            "raw numbers yourself.%s%s"
+            % (cfg["protocol_doc"], cfg["task_root"], cfg["plan_glob"],
+               # ⚠ IN THE ORDER OF THE %s ABOVE: the task-root phrase first, then the scratch path,
+               # its note and its reason. 0.83.0 put the scratch three first, which spliced the path
+               # after "BEFORE any dispatch" (found live by DevWK-Mac, fixed 0.83.2).
+               (" - that folder already exists, so create the task folder inside it rather "
+                "than choosing a location") if task_root_ready else
+               (" - and %s could NOT be created, so create it yourself before dispatching"
+                % cfg["task_root"]),
+               scratch_root.where(scr, cfg["task_root"]), scratch_root.where_note(scr, cfg["task_root"]),
+               (" - ⚠ %s" % scr["reason"]) if scr["reason"] else "", skills_line, brake,
+               runnable("usage.py"), model_line, "".join(notes)))
+
+
 def on_session_start(payload, root, sdir, cfg):
     try:
         os.makedirs(os.path.join(sdir, "state"), exist_ok=True)
@@ -4214,28 +4243,7 @@ def on_session_start(payload, root, sdir, cfg):
              stand_down_resume(root, sdir, v, payload.get("session_id"))]
     notes += [c or "" for c, _s in pairs]
 
-    text = ("Sub-task dispatch is governed by %s and enforced by a hook: one sub-task at "
-            "a time, no background dispatch (one the harness backgrounds by itself counts "
-            "until it finishes), no Workflow, and the plan plus every "
-            "sub-task prompt are written to %s/<YYYYMMDD-HHMMSS-task-name>/%s BEFORE any "
-            "dispatch%s. ⛔ Everything a task produces - plans, reports, probes, captured "
-            "output, evidence - goes in its task folder (intermediate files under "
-            "%s<NN-purpose>/%s, never committed; what is kept is copied to "
-            "<task>/evidence/<NN-purpose>/ before it is cited)%s, INCLUDING your own files in this "
-            "main session, not "
-            "only a sub-task's: the scratchpad or temp directory the harness names is only for "
-            "throwaway files nothing will cite (a commit-message file); the harness's 'always "
-            "use the scratchpad' does not override this project rule.%s %s Before "
-            "dispatching a wave run `%s --verdict` for GO/PACE/STOP - never interpret the "
-            "raw numbers yourself.%s%s"
-            % (cfg["protocol_doc"], cfg["task_root"], cfg["plan_glob"],
-               scratch_root.where(scr, cfg["task_root"]), scratch_root.where_note(scr, cfg["task_root"]),
-               (" - ⚠ %s" % scr["reason"]) if scr["reason"] else "",
-               (" - that folder already exists, so create the task folder inside it rather "
-                "than choosing a location") if task_root_ready else
-               (" - and %s could NOT be created, so create it yourself before dispatching"
-                % cfg["task_root"]), skills_line, brake,
-               runnable("usage.py"), model_line, "".join(notes)))
+    text = session_text(cfg, scr, task_root_ready, skills_line, brake, model_line, notes)
 
     # ⛔ THE ONES MARKED "TELL THE USER" NOW REACH THE USER. They were asking the MODEL to
     # relay them - which is advice a model weighs against its task, and this plugin's whole
@@ -6184,6 +6192,17 @@ def selftest():
                         "max_model_price": 5, "scratch_where": "/c/proj-k/<task>/scratch/",
                         "scratch_note": " (NOTE-X)"})
     assert "/c/proj-k/<task>/scratch/<your-subtask>/ (NOTE-X), never the system" in ext, ext[-1500:]
+    # ⭐ 0.83.2: the SessionStart note, rendered. 0.83.0 passed every pin and still spliced the scratch path
+    # after "BEFORE any dispatch" - the arguments were out of order and nothing rendered the text.
+    st = session_text({"protocol_doc": "P.md", "task_root": "Memory/tasks", "plan_glob": "prompts*.md"},
+                      {"mode": "external", "base": "/c/proj-k", "reason": ""}, True, "", "BRAKE", "", [])
+    assert "BEFORE any dispatch - that folder already exists" in st, st[:600]
+    assert "intermediate files under %s<NN-purpose>/ (on this machine" % os.path.join("/c/proj-k", "<task>",
+                                                                                     "scratch", "") in st, st[:900]
+    st = session_text({"protocol_doc": "P.md", "task_root": "Memory/tasks", "plan_glob": "prompts*.md"},
+                      {"mode": "repo", "base": None, "reason": "R-X"}, True, "", "BRAKE", "", [])
+    assert "intermediate files under Memory/tasks/<task>/scratch/<NN-purpose>/, never committed" in st, st[:900]
+    assert "before it is cited) - ⚠ R-X, INCLUDING" in st, st[:900]
     # The rewrite it names must survive .format(): doubled braces in PREPEND, single in the prompt.
     assert 'rm -rf "${D:?}"/*' in filled, filled[-900:]
     assert "run.sh\" scratch_clean.py <path>" in filled, filled[-900:]     # the shim, no version in it
