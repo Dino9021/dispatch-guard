@@ -33,6 +33,18 @@ GATE-ERROR NameError("name 'now' is not defined")
 
 ---
 
+## 0.82.0
+
+- **任務的 `scratch/` 永遠不進版控，要留的東西搬到 `evidence/`。**擁有者 2026-11-25：「scratch 應該要 ignore,
+  需要留的東西歸檔到其他路徑才對」。舊規則一邊說「證據留在 scratch」、一邊說「會 commit 就把 scratch ignore」，
+  兩句講的是同一個資料夾，各專案只好各自解讀；有一個專案把 scratch 全部納入版控，加上沒 ignore 的建置產物，
+  VS Code 的 git 監看讓 Mac 的 CPU 滿載了將近兩天。現在：每個專案 ignore `Memory/tasks/*/scratch/`；
+  要留的東西（範圍跟以前一樣）搬到 `<task>/evidence/<NN>/`，**先搬、確認搬到了，再寫引用**；憑證、機器識別碼不能進
+  `evidence/`。改了 `dispatch-protocol` 技能（兩種語言）、每個子任務提示詞前面附加的規則第 8 條、session 開始時的提示、
+  續跑時的重建說明。已經把 scratch 納入版控的專案：預設只加 ignore 那一行，已追蹤的不動；要把舊的移出版控是選擇性的，
+  需要該專案擁有者同意，步驟寫在技能裡。這個 repo 本身照預設做：加了 ignore，原本追蹤的 5,568 個檔案不動；
+  快照檔的 ignore 規則擴大到整個任務資料夾。ADR `Memory/tasks/20261125-201217-scratch-always-ignored/`（Codex 審查一輪）。
+
 ## 0.81.2
 
 - **Mac 設了 `CLAUDE_CONFIG_DIR` 之後，用量照樣讀得到。**擁有者 2026-11-22：「claude usage watcher 好像查不到用量了」。
@@ -3826,6 +3838,21 @@ GATE-ERROR NameError("name 'now' is not defined")
 **The fix:** update to 0.7.0 or later, then open a new session.
 
 ---
+
+## 0.82.0
+
+- **A task's `scratch/` is never committed; what is kept moves to `evidence/`.** Owner 2026-11-25: "scratch should be
+  ignored; what must be kept is archived to another path". The old rule said both "evidence stays in scratch" and
+  "gitignore scratch if the task folder is committed" - the same folder - so projects read it differently; one tracked
+  all of scratch, and with untracked build output beside it VS Code's git watcher kept a Mac's CPU near full for about two
+  days. Now: every project ignores `Memory/tasks/*/scratch/`; what is kept (the same scope as before) moves to
+  `<task>/evidence/<NN>/`, **moved and checked before it is cited**; no credential or machine identifier goes into
+  `evidence/`. Changed: the `dispatch-protocol` skill (both languages), rule 8 of the block prepended to every sub-task
+  prompt, the SessionStart note, the resume reconstruction text. A project that already tracks scratch: by default add the
+  ignore line and change nothing tracked; untracking legacy scratch is optional, needs that project's owner, and the steps
+  are in the skill. This repository takes the default: ignore added, its 5,568 tracked scratch files untouched, and the
+  snapshot ignore rules widened to the whole task tree. ADR `Memory/tasks/20261125-201217-scratch-always-ignored/` (one
+  Codex review round).
 
 ## 0.81.2
 

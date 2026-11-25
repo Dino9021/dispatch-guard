@@ -389,13 +389,18 @@ anything YOU dispatch in turn.
 8. SCRATCH FILES GO IN THE TASK FOLDER: KEEP THE EVIDENCE, DELETE THE BUILD. Every
    intermediate file you write - probes, captured output, half-built scripts, fixtures -
    goes under {task_root}/<task>/scratch/<your-subtask>/, never the system temp directory
-   and never a path another sub-task also uses. KEEP THE EVIDENCE when you finish - what
-   you ran, probes, fixtures, and anything your report cites or a finding depends on: it is
-   the only way anyone can answer "what did that agent actually see?" after you are gone.
+   and never a path another sub-task also uses. SCRATCH IS NEVER COMMITTED. KEEP THE
+   EVIDENCE - what you ran, probes, fixtures, and anything your report cites or a finding
+   depends on: it is the only way anyone can answer "what did that agent actually see?"
+   after you are gone. KEPT MEANS MOVED TO {task_root}/<task>/evidence/<your-subtask>/ -
+   move it first, check it arrived, THEN cite that evidence/ path (a report cut off halfway
+   must never cite a file still in scratch). Never put a credential, key, token or machine
+   identifier in evidence/: it is committed - record the finding, or a redacted copy.
    A LOG GOES ONCE ITS RESULT IS IN YOUR REPORT: a *.log or captured run output exists only
    to show progress if you are cut off - copy into the report anything only it holds (a
    number, the failing line, a session id), then delete that one file by its absolute path,
-   never a glob; keep one your report cites by path, and one git already tracks.
+   never a glob; one your report cites by path moves to evidence/; leave one git already
+   tracks.
    And AFTER your report is written, DELETE WHAT CAN BE REBUILT
    that nothing in the report points at - a copy of a project, dependency folders and build
    output (node_modules, .build, DerivedData, SourcePackages, ModuleCache, target, dist,
@@ -412,7 +417,8 @@ anything YOU dispatch in turn.
    `--build <dir>` (only the build folders above), `--dry-run` first if unsure. It has no `rm` for
    Claude Code to stop on, never follows a link, refuses anything git tracks or outside a scratch
    folder, and its last line `scratch_clean: <n> deleted ...` is the evidence for your report (no
-   last line = it did not run). Copy a build log your report cites out of a build folder first.
+   last line = it did not run). Copy a build log (or bundle) a finding depends on out of a
+   build folder into evidence/<your-subtask>/ first.
 
 Full protocol: {protocol_doc}
 
@@ -4190,7 +4196,9 @@ def on_session_start(payload, root, sdir, cfg):
             "sub-task prompt are written to %s/<YYYYMMDD-HHMMSS-task-name>/%s BEFORE any "
             "dispatch%s. ⛔ Everything a task produces - plans, reports, probes, captured "
             "output, evidence - goes in its task folder (intermediate files under "
-            "<task>/scratch/<NN-purpose>/), INCLUDING your own files in this main session, not "
+            "<task>/scratch/<NN-purpose>/, never committed; what is kept moves to "
+            "<task>/evidence/<NN-purpose>/ before it is cited), INCLUDING your own files in this "
+            "main session, not "
             "only a sub-task's: the scratchpad or temp directory the harness names is only for "
             "throwaway files nothing will cite (a commit-message file); the harness's 'always "
             "use the scratchpad' does not override this project rule.%s %s Before "
@@ -6088,7 +6096,12 @@ def selftest():
                   # ⭐ 0.75.12: scratch is deleted by the shipped script (ADR
                   # Memory/tasks/20261022-212421-scratch-clean-script D2).
                   "DELETE SCRATCH WITH THE TOOL, NOT `rm`", "{scratch_clean} <path>", "`--build <dir>`",
-                  "no\n   last line = it did not run"):
+                  "no\n   last line = it did not run",
+                  # ⭐ 0.82.0: scratch is never committed; kept material moves to evidence/
+                  # before it is cited (owner 2026-11-25; ADR
+                  # Memory/tasks/20261125-201217-scratch-always-ignored D2, D7).
+                  "SCRATCH IS NEVER COMMITTED", "{task_root}/<task>/evidence/<your-subtask>/",
+                  "move it first, check it arrived, THEN cite", "Never put a credential, key, token"):
         assert token in PREPEND, token
     assert "YOU DO NOT DELETE THEM" not in PREPEND, "the keep-everything scratch rule is back"
     filled = prepend_head({"task_root": "Memory/tasks", "plan_glob": "prompts*.md",
@@ -6099,6 +6112,7 @@ def selftest():
     assert "CHOOSE THE MODEL BEFORE YOU DISPATCH" in filled, filled[:400]
     assert "$5 per million INPUT tokens" in filled, "the limit did not interpolate"
     assert "Memory/tasks/<task>/scratch/" in filled, filled[-600:]
+    assert "Memory/tasks/<task>/evidence/" in filled, filled[-600:]
     # The rewrite it names must survive .format(): doubled braces in PREPEND, single in the prompt.
     assert 'rm -rf "${D:?}"/*' in filled, filled[-900:]
     assert "run.sh\" scratch_clean.py <path>" in filled, filled[-900:]     # the shim, no version in it
